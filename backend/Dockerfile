@@ -6,11 +6,11 @@ WORKDIR /app
 
 RUN apk add --no-cache   chromium   nss   freetype   harfbuzz   ca-certificates   ttf-freefont   font-noto-emoji
 
-COPY package*.json ./
+COPY backend/package*.json ./
 
 RUN npm install --omit=dev
 
-COPY . .
+COPY backend/ ./
 
 RUN mkdir -p uploads/cookies uploads/images
 
