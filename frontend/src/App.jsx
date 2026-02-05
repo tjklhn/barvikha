@@ -1397,6 +1397,7 @@ function App() {
             WebkitBackgroundClip: "text",
             WebkitTextFillColor: "transparent"
           }}>Kleinanzeigen Manager</h1>
+          {tokenStatus.state === "valid" && (
           <div style={{ position: "relative" }} ref={profilePanelRef}>
             <button
               onClick={() => setShowProfilePanel((prev) => !prev)}
@@ -1518,6 +1519,7 @@ function App() {
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
 

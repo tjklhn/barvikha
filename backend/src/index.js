@@ -92,6 +92,29 @@ const getPublishRequestLogPath = () => path.join(ensureDebugDir(), "publish-requ
 const getServerErrorLogPath = () => path.join(ensureDebugDir(), "server-errors.log");
 
 const normalizeTokenValue = (value) => String(value || "").trim();
+const parseEnvTokenList = (value) => String(value || "")
+  .split(/[,\n;]/)
+  .map((item) => normalizeTokenValue(item))
+  .filter(Boolean);
+
+const getEnvTokens = () => {
+  const tokens = [
+    ...parseEnvTokenList(process.env.KL_ACCESS_TOKENS),
+    ...parseEnvTokenList(process.env.KL_VALID_TOKENS),
+    ...parseEnvTokenList(process.env.ACCESS_TOKENS),
+    ...parseEnvTokenList(process.env.VALID_TOKENS)
+  ];
+  return Array.from(new Set(tokens));
+};
+
+const findEnvToken = (token) => {
+  const normalized = normalizeTokenValue(token);
+  if (!normalized) return null;
+  const tokens = getEnvTokens();
+  if (!tokens.length) return null;
+  if (!tokens.includes(normalized)) return null;
+  return { token: normalized, role: "user" };
+};
 
 const parseTokenExpiryMs = (value) => {
   if (value === undefined || value === null || value === "") return null;
@@ -153,7 +176,7 @@ const getSubscriptionTokenStatus = (token) => {
   if (!normalized) {
     return { valid: false, reason: "Токен не указан" };
   }
-  const entry = findSubscriptionToken(normalized);
+  const entry = findSubscriptionToken(normalized) || findEnvToken(normalized);
   if (!entry) {
     return { valid: false, reason: "Токен не найден" };
   }
