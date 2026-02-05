@@ -45,6 +45,8 @@ const pickDeviceProfile = () => {
 };
 
 const proxyChain = require("proxy-chain");
+const axios = require("axios");
+const proxyChecker = require("./proxyChecker");
 const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -54,6 +56,8 @@ const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
 const RETRY_PROTOCOL_ERRORS = process.env.PUPPETEER_RETRY_PROTOCOL_ERRORS !== "0";
 const MAX_PROTOCOL_RETRIES = Math.max(0, Number(process.env.PUPPETEER_PROTOCOL_RETRIES || 1));
+const PROXY_PREFLIGHT_ENABLED = process.env.KL_PROXY_PREFLIGHT !== "0";
+const PROXY_PREFLIGHT_TIMEOUT = Number(process.env.KL_PROXY_PREFLIGHT_TIMEOUT || 12000);
 
 const isProtocolTimeoutError = (error) => {
   const message = String(error?.message || "");
@@ -81,6 +85,11 @@ const buildLaunchArgs = (baseArgs, attempt) => {
 const isTimeoutLikeError = (error) => {
   const message = String(error?.message || "");
   return /ERR_TIMED_OUT|Navigation timeout|net::ERR/i.test(message);
+};
+
+const isProxyConnectionError = (error) => {
+  const message = String(error?.message || "");
+  return /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_SOCKS_CONNECTION_FAILED|ERR_NO_SUPPORTED_PROXIES/i.test(message);
 };
 
 const gotoWithRetries = async (page, url, options = {}, retries = 2) => {
@@ -124,7 +133,37 @@ const validateCookies = async (rawCookieText, options = {}) => {
     };
   }
 
-  const runValidation = async (attempt = 0) => {
+  if (!options.proxy) {
+    return {
+      valid: false,
+      reason: "Прокси не задан для проверки cookies.",
+      deviceProfile
+    };
+  }
+
+  if (PROXY_PREFLIGHT_ENABLED) {
+    try {
+      const connectionCheck = await proxyChecker.checkProxyConnection(options.proxy, "www.kleinanzeigen.de", 443);
+      if (!connectionCheck.ok) {
+        return {
+          valid: false,
+          reason: connectionCheck.error || "Прокси не отвечает",
+          deviceProfile
+        };
+      }
+      const axiosConfig = proxyChecker.buildAxiosConfig(options.proxy, PROXY_PREFLIGHT_TIMEOUT);
+      const client = axios.create(axiosConfig);
+      await client.get("https://www.kleinanzeigen.de/robots.txt", { timeout: PROXY_PREFLIGHT_TIMEOUT });
+    } catch (error) {
+      return {
+        valid: false,
+        reason: `Прокси не открывает kleinanzeigen.de: ${error.message || error}`,
+        deviceProfile
+      };
+    }
+  }
+
+  const runValidation = async (attempt = 0, useProxyChain = needsProxyChain) => {
     let localAnonymizedProxyUrl = "";
     let browser;
     const baseLaunchArgs = [
@@ -137,11 +176,11 @@ const validateCookies = async (rawCookieText, options = {}) => {
     ];
 
     if (proxyServer) {
-      if (needsProxyChain) {
+      if (useProxyChain) {
         localAnonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
         baseLaunchArgs.push(`--proxy-server=${localAnonymizedProxyUrl}`);
       } else {
-        baseLaunchArgs.push(`--proxy-server=${proxyServer}`);
+        baseLaunchArgs.push(`--proxy-server=${proxyUrl}`);
       }
     }
 
@@ -158,7 +197,8 @@ const validateCookies = async (rawCookieText, options = {}) => {
       const page = await browser.newPage();
       page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
       page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
-      if (!localAnonymizedProxyUrl && (options.proxy?.username || options.proxy?.password)) {
+      const shouldAuthenticate = !localAnonymizedProxyUrl && useProxyChain === false ? false : !localAnonymizedProxyUrl && (options.proxy?.username || options.proxy?.password);
+      if (shouldAuthenticate) {
         await page.authenticate({
           username: options.proxy.username || "",
           password: options.proxy.password || ""
@@ -241,17 +281,36 @@ const validateCookies = async (rawCookieText, options = {}) => {
     }
   };
 
+  const proxyType = String(options.proxy?.type || "").toLowerCase();
+  const prefersDirect = proxyType.startsWith("socks");
+  const strategies = [];
+  if (prefersDirect) {
+    strategies.push({ useProxyChain: false });
+  }
+  if (needsProxyChain) {
+    strategies.push({ useProxyChain: true });
+  }
+  if (!prefersDirect) {
+    strategies.push({ useProxyChain: false });
+  }
+
   let lastError;
-  const retries = RETRY_PROTOCOL_ERRORS ? MAX_PROTOCOL_RETRIES : 0;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    try {
-      return await runValidation(attempt);
-    } catch (error) {
-      lastError = error;
-      if (!RETRY_PROTOCOL_ERRORS || !isProtocolTimeoutError(error) || attempt === retries) {
-        break;
+  for (let strategyIndex = 0; strategyIndex < strategies.length; strategyIndex += 1) {
+    const { useProxyChain } = strategies[strategyIndex];
+    const retries = RETRY_PROTOCOL_ERRORS ? MAX_PROTOCOL_RETRIES : 0;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        return await runValidation(attempt, useProxyChain);
+      } catch (error) {
+        lastError = error;
+        if (!RETRY_PROTOCOL_ERRORS || !isProtocolTimeoutError(error) || attempt === retries) {
+          break;
+        }
+        await sleep(800 + attempt * 800);
       }
-      await sleep(800 + attempt * 800);
+    }
+    if (!isProxyConnectionError(lastError)) {
+      break;
     }
   }
 
