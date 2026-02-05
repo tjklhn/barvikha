@@ -78,6 +78,28 @@ const buildLaunchArgs = (baseArgs, attempt) => {
   return next;
 };
 
+const isTimeoutLikeError = (error) => {
+  const message = String(error?.message || "");
+  return /ERR_TIMED_OUT|Navigation timeout|net::ERR/i.test(message);
+};
+
+const gotoWithRetries = async (page, url, options = {}, retries = 2) => {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: PUPPETEER_NAV_TIMEOUT, ...options });
+      return true;
+    } catch (error) {
+      lastError = error;
+      if (!isTimeoutLikeError(error) || attempt === retries) {
+        throw error;
+      }
+      await sleep(800 + attempt * 900);
+    }
+  }
+  throw lastError;
+};
+
 const sanitizeProfileName = (value) => {
   const normalized = (value || "").replace(/\s+/g, " ").trim();
   if (!normalized) return "";
@@ -160,13 +182,11 @@ const validateCookies = async (rawCookieText, options = {}) => {
         await page.setGeolocation(deviceProfile.geolocation);
       }
 
-      await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+      await gotoWithRetries(page, "https://www.kleinanzeigen.de/");
       await humanPause();
       await page.setCookie(...cookies);
       await humanPause();
-      await page.goto("https://www.kleinanzeigen.de/m-nachrichten.html", {
-        waitUntil: "domcontentloaded"
-      });
+      await gotoWithRetries(page, "https://www.kleinanzeigen.de/m-nachrichten.html");
       await humanPause(180, 320);
 
       const currentUrl = page.url();
@@ -179,7 +199,7 @@ const validateCookies = async (rawCookieText, options = {}) => {
       let profileEmail = "";
       if (loggedIn) {
         try {
-          await page.goto("https://www.kleinanzeigen.de/m-meine-anzeigen.html", { waitUntil: "domcontentloaded" });
+          await gotoWithRetries(page, "https://www.kleinanzeigen.de/m-meine-anzeigen.html");
           await page.waitForSelector("[data-testid='ownprofile-header'] h2, h2.text-title2", { timeout: 15000 }).catch(() => {});
           await humanPause(160, 280);
           const profileData = await page.evaluate(() => {
