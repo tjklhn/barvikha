@@ -1,0 +1,110 @@
+{
+  "ads": [
+    {
+      "accountId": 9,
+      "title": "Gesangsunterricht",
+      "price": "2",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-01T21:56:16.853Z"
+    },
+    {
+      "accountId": 14,
+      "title": "Shampoo Axe",
+      "price": "4",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-02T04:35:40.569Z"
+    },
+    {
+      "accountId": 15,
+      "title": "Shampoo Axe",
+      "price": "3",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-03T02:47:50.763Z"
+    },
+    {
+      "accountId": 15,
+      "title": "Shampoo Axe",
+      "price": "2",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-03T01:06:33.277Z"
+    },
+    {
+      "accountId": 16,
+      "title": "Dksfdbjdfsb fsdgsdg",
+      "price": "3",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-03T15:42:14.429Z"
+    },
+    {
+      "accountId": 16,
+      "title": "Jheyhijeyh",
+      "price": "3",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-03T16:49:09.221Z"
+    },
+    {
+      "accountId": 16,
+      "title": "dwgjkge qjwe fger",
+      "price": "2",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-03T17:04:44.152Z"
+    },
+    {
+      "accountId": 16,
+      "title": "uwdfwiuof wduibfw",
+      "price": "2",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-03T17:20:57.618Z"
+    },
+    {
+      "accountId": 16,
+      "title": "Shampoo Axe",
+      "price": "3",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-04T13:42:18.003Z"
+    },
+    {
+      "accountId": 16,
+      "title": "wqdfmqwefewfrr",
+      "price": "3",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-04T11:53:13.376Z"
+    },
+    {
+      "accountId": 16,
+      "title": "Shampoo Axe",
+      "price": "2",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-04T13:53:51.906Z"
+    },
+    {
+      "accountId": 17,
+      "title": "SVS 3000 Micro Subwoofer",
+      "price": "300",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-05T03:40:11.044Z",
+      "ownerId": "224009eefb76f769"
+    },
+    {
+      "accountId": 18,
+      "title": "Zendure HYPER 2000",
+      "price": "180",
+      "image": "",
+      "status": "Aktiv",
+      "createdAt": "2026-02-05T17:06:17.558Z",
+      "ownerId": "224009eefb76f769"
+    }
+  ]
+}

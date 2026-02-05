@@ -1,0 +1,847 @@
+﻿import React, { useState, useEffect } from "react";
+import AddAccountModal from "./components/AddAccountModal";
+import MessagesTab from "./components/MessagesTab";
+
+function App() {
+  const [accounts, setAccounts] = useState([]);
+  const [proxies, setProxies] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [showAddAccountModal, setShowAddAccountModal] = useState(false);
+  const [showAddProxyModal, setShowAddProxyModal] = useState(false);
+  const [showAdModal, setShowAdModal] = useState(false);
+  const [newAd, setNewAd] = useState({
+    title: "",
+    description: "",
+    price: "",
+    currency: "EUR",
+    category: ""
+  });
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      const [accountsRes, proxiesRes, statsRes] = await Promise.all([
+        fetch("http://localhost:5000/api/accounts").then(r => r.json()),
+        fetch("http://localhost:5000/api/proxies").then(r => r.json()),
+        fetch("http://localhost:5000/api/stats").then(r => r.json())
+      ]);
+      
+      setAccounts(accountsRes);
+      setProxies(proxiesRes);
+      setStats(statsRes);
+    } catch (error) {
+      console.error("Ошибка загрузки данных:", error);
+    }
+  };
+
+  const handleAddAccount = (newAccount) => {
+    setAccounts([newAccount, ...accounts]);
+    if (stats) {
+      setStats({
+        ...stats,
+        accounts: {
+          ...stats.accounts,
+          total: stats.accounts.total + 1,
+          checking: stats.accounts.checking + 1
+        }
+      });
+    }
+  };
+
+  const handleDeleteAccount = async (id) => {
+    if (!window.confirm("Удалить аккаунт?")) return;
+    
+    try {
+      const response = await fetch(`http://localhost:5000/api/accounts/${id}`, {
+        method: "DELETE"
+      });
+      
+      const result = await response.json();
+      if (result.success) {
+        setAccounts(accounts.filter(acc => acc.id !== id));
+        alert("Аккаунт удален");
+      }
+    } catch (error) {
+      alert("Ошибка при удалении");
+    }
+  };
+
+  const handleCreateAd = async () => {
+    if (!newAd.title.trim() || !newAd.description.trim() || !newAd.price.trim()) {
+      alert("Заполните все обязательные поля");
+      return;
+    }
+
+    try {
+      const response = await fetch("http://localhost:5000/api/ads/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(newAd)
+      });
+      
+      const result = await response.json();
+      if (result.success) {
+        alert("Объявление успешно создано!");
+        setShowAdModal(false);
+        setNewAd({
+          title: "",
+          description: "",
+          price: "",
+          currency: "EUR",
+          category: ""
+        });
+      }
+    } catch (error) {
+      alert("Ошибка при создании объявления");
+    }
+  };
+
+  const DashboardTab = () => (
+    <div>
+      <h2>📊 Дашборд</h2>
+      {stats && (
+        <div style={{ display: "flex", gap: "20px", marginTop: "20px", flexWrap: "wrap" }}>
+          <div style={{ 
+            padding: "20px", 
+            background: "#f0f2f5", 
+            borderRadius: "8px",
+            flex: 1,
+            minWidth: "200px"
+          }}>
+            <h3>Аккаунты</h3>
+            <p style={{ fontSize: "32px", fontWeight: "bold", margin: "10px 0" }}>{stats.accounts.total}</p>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px" }}>
+              <span style={{ color: "#52c41a" }}>✓ {stats.accounts.active}</span>
+              <span style={{ color: "#faad14" }}>⏳ {stats.accounts.checking}</span>
+              <span style={{ color: "#ff4d4f" }}>✗ {stats.accounts.failed}</span>
+            </div>
+          </div>
+          <div style={{ 
+            padding: "20px", 
+            background: "#f0f2f5", 
+            borderRadius: "8px",
+            flex: 1,
+            minWidth: "200px"
+          }}>
+            <h3>Сообщения</h3>
+            <p style={{ fontSize: "32px", fontWeight: "bold", margin: "10px 0" }}>{stats.messages.total}</p>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px" }}>
+              <span style={{ color: "#1890ff" }}>📨 {stats.messages.today} сегодня</span>
+              <span style={{ color: "#52c41a" }}>🔔 {stats.messages.unread} новых</span>
+            </div>
+          </div>
+          <div style={{ 
+            padding: "20px", 
+            background: "#f0f2f5", 
+            borderRadius: "8px",
+            flex: 1,
+            minWidth: "200px"
+          }}>
+            <h3>Прокси</h3>
+            <p style={{ fontSize: "32px", fontWeight: "bold", margin: "10px 0" }}>{stats.proxies.total}</p>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px" }}>
+              <span style={{ color: "#52c41a" }}>✓ {stats.proxies.active} активны</span>
+              <span style={{ color: "#999" }}>⚡ {stats.proxies.total - stats.proxies.active}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ 
+        marginTop: "40px", 
+        padding: "30px", 
+        background: "white",
+        borderRadius: "8px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+      }}>
+        <h3>Быстрые действия</h3>
+        <div style={{ display: "flex", gap: "15px", marginTop: "20px", flexWrap: "wrap" }}>
+          <button 
+            onClick={() => setShowAddAccountModal(true)}
+            style={{
+              padding: "15px 25px",
+              background: "#52c41a",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px"
+            }}
+          >
+            <span style={{ fontSize: "20px" }}>+</span>
+            Добавить аккаунт
+          </button>
+          <button 
+            onClick={() => setShowAdModal(true)}
+            style={{
+              padding: "15px 25px",
+              background: "#1890ff",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px"
+            }}
+          >
+            <span style={{ fontSize: "20px" }}>📢</span>
+            Создать объявление
+          </button>
+          <button 
+            onClick={() => setShowAddProxyModal(true)}
+            style={{
+              padding: "15px 25px",
+              background: "#722ed1",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px"
+            }}
+          >
+            <span style={{ fontSize: "20px" }}>🔗</span>
+            Добавить прокси
+          </button>
+          <button 
+            onClick={() => setActiveTab("messages")}
+            style={{
+              padding: "15px 25px",
+              background: "#fa8c16",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "16px",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px"
+            }}
+          >
+            <span style={{ fontSize: "20px" }}>💬</span>
+            Проверить сообщения
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const AccountsTab = () => (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+        <h2 style={{ margin: 0 }}>👥 Аккаунты</h2>
+        <button 
+          onClick={() => setShowAddAccountModal(true)}
+          style={{
+            padding: "10px 20px",
+            background: "#52c41a",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}
+        >
+          <span>+</span>
+          Добавить аккаунт
+        </button>
+      </div>
+      
+      <div style={{ 
+        background: "white",
+        borderRadius: "8px",
+        overflow: "hidden",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+      }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead style={{ background: "#fafafa" }}>
+            <tr>
+              <th style={{ padding: "16px", textAlign: "left" }}>ID</th>
+              <th style={{ padding: "16px", textAlign: "left" }}>Имя пользователя</th>
+              <th style={{ padding: "16px", textAlign: "left" }}>Статус</th>
+              <th style={{ padding: "16px", textAlign: "left" }}>Прокси</th>
+              <th style={{ padding: "16px", textAlign: "left" }}>Добавлен</th>
+              <th style={{ padding: "16px", textAlign: "left" }}>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map(account => (
+              <tr key={account.id} style={{ borderTop: "1px solid #f0f0f0" }}>
+                <td style={{ padding: "16px" }}>{account.id}</td>
+                <td style={{ padding: "16px" }}>{account.username}</td>
+                <td style={{ padding: "16px" }}>
+                  <span style={{
+                    padding: "4px 12px",
+                    borderRadius: "10px",
+                    background: 
+                      account.status === "active" ? "#52c41a" :
+                      account.status === "checking" ? "#faad14" : "#ff4d4f",
+                    color: "white",
+                    fontSize: "12px"
+                  }}>
+                    {account.status}
+                  </span>
+                </td>
+                <td style={{ padding: "16px" }}>{account.proxy || "Нет"}</td>
+                <td style={{ padding: "16px" }}>{account.added}</td>
+                <td style={{ padding: "16px" }}>
+                  <button 
+                    onClick={() => handleDeleteAccount(account.id)}
+                    style={{
+                      padding: "6px 12px",
+                      background: "#ff4d4f",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "4px",
+                      cursor: "pointer",
+                      fontSize: "12px"
+                    }}
+                  >
+                    Удалить
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const ProxiesTab = () => (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+        <h2 style={{ margin: 0 }}>🔗 Прокси</h2>
+        <button 
+          onClick={() => setShowAddProxyModal(true)}
+          style={{
+            padding: "10px 20px",
+            background: "#722ed1",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px"
+          }}
+        >
+          <span>+</span>
+          Добавить прокси
+        </button>
+      </div>
+      
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "20px" }}>
+        {proxies.map(proxy => (
+          <div key={proxy.id} style={{
+            padding: "20px",
+            background: "white",
+            borderRadius: "8px",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+            flex: "1 1 300px"
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
+              <h3 style={{ margin: 0 }}>{proxy.name}</h3>
+              <span style={{
+                padding: "4px 12px",
+                borderRadius: "10px",
+                background: proxy.status === "active" ? "#52c41a" : "#faad14",
+                color: "white",
+                fontSize: "12px"
+              }}>
+                {proxy.status}
+              </span>
+            </div>
+            <p><strong>Тип:</strong> {proxy.type}</p>
+            <p><strong>Адрес:</strong> {proxy.host}:{proxy.port}</p>
+            <div style={{ marginTop: "20px", display: "flex", gap: "10px" }}>
+              <button style={{
+                padding: "8px 16px",
+                background: "#f0f2f5",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                flex: 1
+              }}>
+                Тестировать
+              </button>
+              <button style={{
+                padding: "8px 16px",
+                background: "#1890ff",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                flex: 1
+              }}>
+                Использовать
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const AdModal = () => (
+    <div style={{
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 1000
+    }}>
+      <div style={{
+        background: "white",
+        borderRadius: "8px",
+        padding: "30px",
+        width: "600px",
+        maxWidth: "90%",
+        maxHeight: "90%",
+        overflow: "auto"
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <h2 style={{ margin: 0 }}>Создать объявление</h2>
+          <button 
+            onClick={() => setShowAdModal(false)}
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: "20px",
+              cursor: "pointer",
+              color: "#999"
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
+          <div>
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "bold" }}>
+              Название объявления:
+            </label>
+            <input
+              type="text"
+              value={newAd.title}
+              onChange={(e) => setNewAd({...newAd, title: e.target.value})}
+              placeholder="Введите название (10-65 символов)"
+              style={{
+                width: "100%",
+                padding: "10px",
+                border: "1px solid #d9d9d9",
+                borderRadius: "4px"
+              }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "bold" }}>
+              Описание:
+            </label>
+            <textarea
+              value={newAd.description}
+              onChange={(e) => setNewAd({...newAd, description: e.target.value})}
+              placeholder="Введите описание (10-4000 символов)"
+              rows="4"
+              style={{
+                width: "100%",
+                padding: "10px",
+                border: "1px solid #d9d9d9",
+                borderRadius: "4px",
+                resize: "vertical"
+              }}
+            />
+          </div>
+
+          <div style={{ display: "flex", gap: "15px" }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", marginBottom: "8px", fontWeight: "bold" }}>
+                Цена:
+              </label>
+              <input
+                type="number"
+                value={newAd.price}
+                onChange={(e) => setNewAd({...newAd, price: e.target.value})}
+                placeholder="0.00"
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  border: "1px solid #d9d9d9",
+                  borderRadius: "4px"
+                }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", marginBottom: "8px", fontWeight: "bold" }}>
+                Валюта:
+              </label>
+              <select
+                value={newAd.currency}
+                onChange={(e) => setNewAd({...newAd, currency: e.target.value})}
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  border: "1px solid #d9d9d9",
+                  borderRadius: "4px"
+                }}
+              >
+                <option value="EUR">EUR</option>
+                <option value="RUB">₽ RUB</option>
+                <option value="USD">$ USD</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label style={{ display: "block", marginBottom: "8px", fontWeight: "bold" }}>
+              Категория:
+            </label>
+            <select
+              value={newAd.category}
+              onChange={(e) => setNewAd({...newAd, category: e.target.value})}
+              style={{
+                width: "100%",
+                padding: "10px",
+                border: "1px solid #d9d9d9",
+                borderRadius: "4px"
+              }}
+            >
+              <option value="">Выберите категорию</option>
+              <option value="auto">Автомобили</option>
+              <option value="electronics">Электроника</option>
+              <option value="fashion">Мода</option>
+              <option value="home">Дом и сад</option>
+            </select>
+          </div>
+
+          <div style={{ marginTop: "20px", display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+            <button
+              onClick={() => setShowAdModal(false)}
+              style={{
+                padding: "10px 20px",
+                background: "#f0f0f0",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer"
+              }}
+            >
+              Отмена
+            </button>
+            <button
+              onClick={handleCreateAd}
+              style={{
+                padding: "10px 20px",
+                background: "#1890ff",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer"
+              }}
+            >
+              Создать объявление
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const AddProxyModal = () => (
+    <div style={{
+      position: "fixed",
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      zIndex: 1000
+    }}>
+      <div style={{
+        background: "white",
+        borderRadius: "8px",
+        padding: "30px",
+        width: "500px",
+        maxWidth: "90%"
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <h2 style={{ margin: 0 }}>Добавить прокси</h2>
+          <button 
+            onClick={() => setShowAddProxyModal(false)}
+            style={{
+              background: "none",
+              border: "none",
+              fontSize: "20px",
+              cursor: "pointer",
+              color: "#999"
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div style={{ textAlign: "center", padding: "40px 20px" }}>
+          <div style={{ fontSize: "48px", marginBottom: "20px", color: "#722ed1" }}>🔗</div>
+          <h3>Функция в разработке</h3>
+          <p style={{ color: "#666", marginBottom: "30px" }}>
+            Добавление пользовательских прокси будет доступно в следующей версии
+          </p>
+          <button
+            onClick={() => setShowAddProxyModal(false)}
+            style={{
+              padding: "10px 30px",
+              background: "#722ed1",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}
+          >
+            Понятно
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ 
+      minHeight: "100vh",
+      background: "#f0f2f5",
+      fontFamily: "Arial, sans-serif"
+    }}>
+      {/* Header */}
+      <div style={{
+        background: "white",
+        padding: "0 24px",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)"
+      }}>
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          maxWidth: "1200px",
+          margin: "0 auto",
+          height: "64px"
+        }}>
+          <h1 style={{ margin: 0, color: "#1890ff" }}>Kleinanzeigen Manager</h1>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ color: "#52c41a" }}>✓ Система работает</span>
+            <button 
+              onClick={loadData}
+              style={{
+                padding: "6px 12px",
+                background: "#1890ff",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontSize: "14px"
+              }}
+            >
+              Обновить
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <div style={{
+        background: "white",
+        marginTop: "1px",
+        borderBottom: "1px solid #f0f0f0"
+      }}>
+        <div style={{
+          display: "flex",
+          maxWidth: "1200px",
+          margin: "0 auto",
+          padding: "0 24px"
+        }}>
+          <button
+            onClick={() => setActiveTab("dashboard")}
+            style={{
+              padding: "16px 24px",
+              background: activeTab === "dashboard" ? "#1890ff" : "transparent",
+              color: activeTab === "dashboard" ? "white" : "inherit",
+              border: "none",
+              cursor: "pointer",
+              fontSize: "16px"
+            }}
+          >
+            📊 Дашборд
+          </button>
+          <button
+            onClick={() => setActiveTab("accounts")}
+            style={{
+              padding: "16px 24px",
+              background: activeTab === "accounts" ? "#1890ff" : "transparent",
+              color: activeTab === "accounts" ? "white" : "inherit",
+              border: "none",
+              cursor: "pointer",
+              fontSize: "16px"
+            }}
+          >
+            👥 Аккаунты
+          </button>
+          <button
+            onClick={() => setActiveTab("proxies")}
+            style={{
+              padding: "16px 24px",
+              background: activeTab === "proxies" ? "#1890ff" : "transparent",
+              color: activeTab === "proxies" ? "white" : "inherit",
+              border: "none",
+              cursor: "pointer",
+              fontSize: "16px"
+            }}
+          >
+            🔗 Прокси
+          </button>
+          <button
+            onClick={() => setActiveTab("messages")}
+            style={{
+              padding: "16px 24px",
+              background: activeTab === "messages" ? "#1890ff" : "transparent",
+              color: activeTab === "messages" ? "white" : "inherit",
+              border: "none",
+              cursor: "pointer",
+              fontSize: "16px"
+            }}
+          >
+            💬 Сообщения
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div style={{
+        maxWidth: "1200px",
+        margin: "24px auto",
+        padding: "0 24px"
+      }}>
+        {activeTab === "dashboard" && <DashboardTab />}
+        {activeTab === "accounts" && <AccountsTab />}
+        {activeTab === "proxies" && <ProxiesTab />}
+        {activeTab === "messages" && <MessagesTab />}
+
+        {/* Footer */}
+        <div style={{
+          marginTop: "40px",
+          padding: "20px",
+          background: "#e6f7ff",
+          borderRadius: "8px",
+          fontSize: "14px"
+        }}>
+          <h3>📚 Информация о проекте</h3>
+          <p><strong>Мультиаккаунт менеджер для Kleinanzeigen</strong> с полным функционалом:</p>
+          <ul style={{ margin: "10px 0", paddingLeft: "20px" }}>
+            <li>Добавление аккаунтов через файлы cookies</li>
+            <li>Управление прокси-серверами</li>
+            <li>Создание и публикация объявлений</li>
+            <li>Работа с сообщениями (чат)</li>
+            <li>Статистика и мониторинг</li>
+          </ul>
+          <p><strong>Технологии:</strong> React, Express.js, REST API, Docker</p>
+          <div style={{ marginTop: "15px", display: "flex", gap: "15px", flexWrap: "wrap" }}>
+            <a 
+              href="http://localhost:5000" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ 
+                padding: "8px 16px",
+                background: "#1890ff",
+                color: "white",
+                textDecoration: "none",
+                borderRadius: "4px",
+                fontSize: "13px"
+              }}
+            >
+              Backend API
+            </a>
+            <a 
+              href="http://localhost:5000/api/accounts" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ 
+                padding: "8px 16px",
+                background: "#52c41a",
+                color: "white",
+                textDecoration: "none",
+                borderRadius: "4px",
+                fontSize: "13px"
+              }}
+            >
+              API Аккаунты
+            </a>
+            <a 
+              href="http://localhost:5000/api/messages" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ 
+                padding: "8px 16px",
+                background: "#fa8c16",
+                color: "white",
+                textDecoration: "none",
+                borderRadius: "4px",
+                fontSize: "13px"
+              }}
+            >
+              API Сообщения
+            </a>
+            <a 
+              href="http://localhost:5000/health" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              style={{ 
+                padding: "8px 16px",
+                background: "#722ed1",
+                color: "white",
+                textDecoration: "none",
+                borderRadius: "4px",
+                fontSize: "13px"
+              }}
+            >
+              Health Check
+            </a>
+          </div>
+        </div>
+      </div>
+
+      {/* Модальные окна */}
+      {showAddAccountModal && (
+        <AddAccountModal
+          isOpen={showAddAccountModal}
+          onClose={() => setShowAddAccountModal(false)}
+          onSuccess={handleAddAccount}
+        />
+      )}
+
+      {showAddProxyModal && <AddProxyModal />}
+      {showAdModal && <AdModal />}
+    </div>
+  );
+}
+
+export default App;

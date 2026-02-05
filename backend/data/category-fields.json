@@ -1,0 +1,1751 @@
+{
+  "updatedAt": "2026-02-05T16:45:19.871Z",
+  "items": {
+    "93": {
+      "savedAt": 1770162230184,
+      "expiresAt": 1770767030184,
+      "fields": [
+        {
+          "name": "attributeMap[bueromoebel.color_s]",
+          "label": "Farbe",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "beige",
+              "label": "Beige"
+            },
+            {
+              "value": "blau",
+              "label": "Blau"
+            },
+            {
+              "value": "braun",
+              "label": "Braun"
+            },
+            {
+              "value": "bunt",
+              "label": "Bunt"
+            },
+            {
+              "value": "burgunderrot",
+              "label": "Burgunderrot"
+            },
+            {
+              "value": "gelb",
+              "label": "Gelb"
+            },
+            {
+              "value": "gold",
+              "label": "Gold"
+            },
+            {
+              "value": "grau",
+              "label": "Grau"
+            },
+            {
+              "value": "grün",
+              "label": "Grün"
+            },
+            {
+              "value": "holz",
+              "label": "Holz"
+            },
+            {
+              "value": "khaki",
+              "label": "Khaki"
+            },
+            {
+              "value": "lila",
+              "label": "Lila"
+            },
+            {
+              "value": "orange",
+              "label": "Orange"
+            },
+            {
+              "value": "rosa",
+              "label": "Rosa"
+            },
+            {
+              "value": "rot",
+              "label": "Rot"
+            },
+            {
+              "value": "schwarz",
+              "label": "Schwarz"
+            },
+            {
+              "value": "silber",
+              "label": "Silber"
+            },
+            {
+              "value": "transparent",
+              "label": "Transparent"
+            },
+            {
+              "value": "weiß",
+              "label": "Weiß"
+            },
+            {
+              "value": "sonstige",
+              "label": "Andere Farben"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[bueromoebel.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[bueromoebel.material_s]",
+          "label": "Material",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "bronze",
+              "label": "Bronze"
+            },
+            {
+              "value": "oak",
+              "label": "Eiche"
+            },
+            {
+              "value": "iron",
+              "label": "Eisen"
+            },
+            {
+              "value": "glass",
+              "label": "Glas"
+            },
+            {
+              "value": "wood",
+              "label": "Holz"
+            },
+            {
+              "value": "ceramic",
+              "label": "Keramik"
+            },
+            {
+              "value": "pine",
+              "label": "Kiefer"
+            },
+            {
+              "value": "rattan_wicker",
+              "label": "Korb & Rattan"
+            },
+            {
+              "value": "plastic",
+              "label": "Kunststoff"
+            },
+            {
+              "value": "lacquered",
+              "label": "Lackiert"
+            },
+            {
+              "value": "leather",
+              "label": "Leder"
+            },
+            {
+              "value": "marble",
+              "label": "Marmor"
+            },
+            {
+              "value": "solid_wood",
+              "label": "Massivholz"
+            },
+            {
+              "value": "metal",
+              "label": "Metall"
+            },
+            {
+              "value": "velvet",
+              "label": "Samt"
+            },
+            {
+              "value": "formica",
+              "label": "Schichtstoff"
+            },
+            {
+              "value": "steel",
+              "label": "Stahl"
+            },
+            {
+              "value": "stone",
+              "label": "Stein"
+            },
+            {
+              "value": "fabric",
+              "label": "Stoff"
+            },
+            {
+              "value": "other",
+              "label": "Sonstige"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[bueromoebel.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "111": {
+      "savedAt": 1770215202603,
+      "expiresAt": 1770820002603,
+      "fields": [
+        {
+          "name": "attributeMap[bau_handwerk_produktion.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "bauhelfer",
+              "label": "Bauhelfer/-in"
+            },
+            {
+              "value": "dachdecker",
+              "label": "Dachdecker/-in"
+            },
+            {
+              "value": "elektriker",
+              "label": "Elektriker/-in"
+            },
+            {
+              "value": "fliesenleger",
+              "label": "Fliesenleger/-in"
+            },
+            {
+              "value": "maler",
+              "label": "Maler/-in"
+            },
+            {
+              "value": "maurer",
+              "label": "Maurer/-in"
+            },
+            {
+              "value": "produktionshelfer",
+              "label": "Produktionshelfer/-in"
+            },
+            {
+              "value": "schlosser",
+              "label": "Schlosser/-in"
+            },
+            {
+              "value": "tischler",
+              "label": "Tischler/-in"
+            },
+            {
+              "value": "weitere",
+              "label": "Weitere Berufe"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[bau_handwerk_produktion.work_experience_s]",
+          "label": "Berufserfahrung",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "without_work_experience",
+              "label": "Ohne Berufserfahrung"
+            },
+            {
+              "value": "with_work_experience",
+              "label": "Mit Berufserfahrung"
+            },
+            {
+              "value": "lead_position",
+              "label": "Mit Personalverantwortung"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[bau_handwerk_produktion.working_hours_s]",
+          "label": "Arbeitszeit",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "full_time",
+              "label": "Vollzeit"
+            },
+            {
+              "value": "part_time",
+              "label": "Teilzeit"
+            }
+          ]
+        }
+      ]
+    },
+    "172": {
+      "savedAt": 1770215199404,
+      "expiresAt": 1770819999404,
+      "fields": [
+        {
+          "name": "attributeMap[audio_hifi.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[audio_hifi.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "cd_player",
+              "label": "CD Player"
+            },
+            {
+              "value": "lautsprecher_kopfhoerer",
+              "label": "Lautsprecher & Kopfhörer"
+            },
+            {
+              "value": "mp3_player",
+              "label": "MP3 Player"
+            },
+            {
+              "value": "radio_receiver",
+              "label": "Radio & Receiver"
+            },
+            {
+              "value": "stereoanlagen",
+              "label": "Stereoanlagen"
+            },
+            {
+              "value": "sonstiges",
+              "label": "Weiteres Audio & Hifi"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[audio_hifi.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "173": {
+      "savedAt": 1770160425936,
+      "expiresAt": 1770765225936,
+      "fields": [
+        {
+          "name": "attributeMap[handy_telekom.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "apple",
+              "label": "Apple"
+            },
+            {
+              "value": "google_handy",
+              "label": "Google"
+            },
+            {
+              "value": "htc_handy",
+              "label": "HTC"
+            },
+            {
+              "value": "huawai_handy",
+              "label": "Huawei"
+            },
+            {
+              "value": "lg_handy",
+              "label": "LG"
+            },
+            {
+              "value": "motorola_handy",
+              "label": "Motorola"
+            },
+            {
+              "value": "nokia_handy",
+              "label": "Nokia"
+            },
+            {
+              "value": "samsung_handy",
+              "label": "Samsung"
+            },
+            {
+              "value": "siemens_handy",
+              "label": "Siemens"
+            },
+            {
+              "value": "sony_handy",
+              "label": "Sony"
+            },
+            {
+              "value": "xiaomi_handy",
+              "label": "Xiaomi"
+            },
+            {
+              "value": "faxgeraete",
+              "label": "Faxgeräte"
+            },
+            {
+              "value": "telefone",
+              "label": "Telefone"
+            },
+            {
+              "value": "sonstige",
+              "label": "Weitere Handys & Telefone"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[handy_telekom.color_s]",
+          "label": "Farbe",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "silber",
+              "label": "Silber"
+            },
+            {
+              "value": "weiß",
+              "label": "Weiß"
+            },
+            {
+              "value": "blau",
+              "label": "Blau"
+            },
+            {
+              "value": "grau",
+              "label": "Grau"
+            },
+            {
+              "value": "gelb",
+              "label": "Gelb"
+            },
+            {
+              "value": "braun",
+              "label": "Braun"
+            },
+            {
+              "value": "schwarz",
+              "label": "Schwarz"
+            },
+            {
+              "value": "gold",
+              "label": "Gold"
+            },
+            {
+              "value": "rose_gold",
+              "label": "Roségold"
+            },
+            {
+              "value": "orange",
+              "label": "Orange"
+            },
+            {
+              "value": "pink",
+              "label": "Pink"
+            },
+            {
+              "value": "rot",
+              "label": "Rot"
+            },
+            {
+              "value": "grün",
+              "label": "Grün"
+            },
+            {
+              "value": "lila",
+              "label": "Lila"
+            },
+            {
+              "value": "beige",
+              "label": "Beige"
+            },
+            {
+              "value": "sonstige",
+              "label": "Andere Farben"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[handy_telekom.device_equipment_s]",
+          "label": "Gerät & Zubehör",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "only_device",
+              "label": "Gerät"
+            },
+            {
+              "value": "only_equipment",
+              "label": "Zubehör"
+            },
+            {
+              "value": "device_and_equipment",
+              "label": "Gerät & Zubehör"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[handy_telekom.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[handy_telekom.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "176": {
+      "savedAt": 1770162372059,
+      "expiresAt": 1770767172059,
+      "fields": [
+        {
+          "name": "attributeMap[haushaltsgeraete.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "haushaltskleingeraete",
+              "label": "Haushaltskleingeräte"
+            },
+            {
+              "value": "herde_backoefen",
+              "label": "Herde & Backöfen"
+            },
+            {
+              "value": "kaffee_espressomaschinen",
+              "label": "Kaffee- & Espressomaschinen"
+            },
+            {
+              "value": "kuehlschraenke_gefriergeraete",
+              "label": "Kühlschränke & Gefriergeräte"
+            },
+            {
+              "value": "spuelmaschinen",
+              "label": "Spülmaschinen"
+            },
+            {
+              "value": "staubsauger",
+              "label": "Staubsauger"
+            },
+            {
+              "value": "waschmaschinen_trockner",
+              "label": "Waschmaschinen & Trockner"
+            },
+            {
+              "value": "sonstige",
+              "label": "Weitere Haushaltsgeräte"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[haushaltsgeraete.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[haushaltsgeraete.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "216": {
+      "savedAt": 1770162284836,
+      "expiresAt": 1770767084836,
+      "fields": [
+        {
+          "name": "attributeMap[autos.marke_s]",
+          "label": "Marke",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "abarth",
+              "label": "Abarth"
+            },
+            {
+              "value": "aixam",
+              "label": "Aixam"
+            },
+            {
+              "value": "alfa_romeo",
+              "label": "Alfa Romeo"
+            },
+            {
+              "value": "aston_martin",
+              "label": "Aston Martin"
+            },
+            {
+              "value": "audi",
+              "label": "Audi"
+            },
+            {
+              "value": "bentley",
+              "label": "Bentley"
+            },
+            {
+              "value": "bmw",
+              "label": "BMW"
+            },
+            {
+              "value": "byd",
+              "label": "BYD"
+            },
+            {
+              "value": "cadillac",
+              "label": "Cadillac"
+            },
+            {
+              "value": "chevrolet",
+              "label": "Chevrolet"
+            },
+            {
+              "value": "chrysler",
+              "label": "Chrysler"
+            },
+            {
+              "value": "citroen",
+              "label": "Citroen"
+            },
+            {
+              "value": "corvette",
+              "label": "Corvette"
+            },
+            {
+              "value": "cupra",
+              "label": "Cupra"
+            },
+            {
+              "value": "dacia",
+              "label": "Dacia"
+            },
+            {
+              "value": "daewoo",
+              "label": "Daewoo"
+            },
+            {
+              "value": "daihatsu",
+              "label": "Daihatsu"
+            },
+            {
+              "value": "dodge",
+              "label": "Dodge"
+            },
+            {
+              "value": "ds",
+              "label": "DS Automobiles"
+            },
+            {
+              "value": "ferrari",
+              "label": "Ferrari"
+            },
+            {
+              "value": "fiat",
+              "label": "Fiat"
+            },
+            {
+              "value": "ford",
+              "label": "Ford"
+            },
+            {
+              "value": "honda",
+              "label": "Honda"
+            },
+            {
+              "value": "hyundai",
+              "label": "Hyundai"
+            },
+            {
+              "value": "infiniti",
+              "label": "Infiniti"
+            },
+            {
+              "value": "iveco",
+              "label": "Iveco"
+            },
+            {
+              "value": "jaguar",
+              "label": "Jaguar"
+            },
+            {
+              "value": "jeep",
+              "label": "Jeep"
+            },
+            {
+              "value": "kgm",
+              "label": "KGM"
+            },
+            {
+              "value": "kia",
+              "label": "Kia"
+            },
+            {
+              "value": "lada",
+              "label": "Lada"
+            },
+            {
+              "value": "lamborghini",
+              "label": "Lamborghini"
+            },
+            {
+              "value": "lancia",
+              "label": "Lancia"
+            },
+            {
+              "value": "land_rover",
+              "label": "Land Rover"
+            },
+            {
+              "value": "lexus",
+              "label": "Lexus"
+            },
+            {
+              "value": "maserati",
+              "label": "Maserati"
+            },
+            {
+              "value": "mazda",
+              "label": "Mazda"
+            },
+            {
+              "value": "mercedes_benz",
+              "label": "Mercedes Benz"
+            },
+            {
+              "value": "mg",
+              "label": "MG"
+            },
+            {
+              "value": "microcar",
+              "label": "Microcar"
+            },
+            {
+              "value": "mini",
+              "label": "Mini"
+            },
+            {
+              "value": "mitsubishi",
+              "label": "Mitsubishi"
+            },
+            {
+              "value": "nissan",
+              "label": "Nissan"
+            },
+            {
+              "value": "opel",
+              "label": "Opel"
+            },
+            {
+              "value": "peugeot",
+              "label": "Peugeot"
+            },
+            {
+              "value": "polestar",
+              "label": "Polestar"
+            },
+            {
+              "value": "porsche",
+              "label": "Porsche"
+            },
+            {
+              "value": "renault",
+              "label": "Renault"
+            },
+            {
+              "value": "rolls_royce",
+              "label": "Rolls-Royce"
+            },
+            {
+              "value": "rover",
+              "label": "Rover"
+            },
+            {
+              "value": "saab",
+              "label": "Saab"
+            },
+            {
+              "value": "seat",
+              "label": "Seat"
+            },
+            {
+              "value": "skoda",
+              "label": "Skoda"
+            },
+            {
+              "value": "smart",
+              "label": "Smart"
+            },
+            {
+              "value": "ssangyong",
+              "label": "Ssangyong"
+            },
+            {
+              "value": "subaru",
+              "label": "Subaru"
+            },
+            {
+              "value": "suzuki",
+              "label": "Suzuki"
+            },
+            {
+              "value": "tesla",
+              "label": "Tesla"
+            },
+            {
+              "value": "toyota",
+              "label": "Toyota"
+            },
+            {
+              "value": "trabant",
+              "label": "Trabant"
+            },
+            {
+              "value": "triumph",
+              "label": "Triumph"
+            },
+            {
+              "value": "volkswagen",
+              "label": "Volkswagen"
+            },
+            {
+              "value": "volvo",
+              "label": "Volvo"
+            },
+            {
+              "value": "wartburg",
+              "label": "Wartburg"
+            },
+            {
+              "value": "sonstige_autos",
+              "label": "Weitere Automarken"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.model_s]",
+          "label": "Modell",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "311",
+              "label": "311"
+            },
+            {
+              "value": "353",
+              "label": "353"
+            },
+            {
+              "value": "andere",
+              "label": "Weitere Wartburg"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.schaden_s]",
+          "label": "Fahrzeugzustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Beschädigtes Fahrzeug"
+            },
+            {
+              "value": "nein",
+              "label": "Unbeschädigtes Fahrzeug"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.ezm_i]",
+          "label": "Erstzulassung Monat",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Monat"
+            },
+            {
+              "value": "1",
+              "label": "Januar"
+            },
+            {
+              "value": "2",
+              "label": "Februar"
+            },
+            {
+              "value": "3",
+              "label": "März"
+            },
+            {
+              "value": "4",
+              "label": "April"
+            },
+            {
+              "value": "5",
+              "label": "Mai"
+            },
+            {
+              "value": "6",
+              "label": "Juni"
+            },
+            {
+              "value": "7",
+              "label": "Juli"
+            },
+            {
+              "value": "8",
+              "label": "August"
+            },
+            {
+              "value": "9",
+              "label": "September"
+            },
+            {
+              "value": "10",
+              "label": "Oktober"
+            },
+            {
+              "value": "11",
+              "label": "November"
+            },
+            {
+              "value": "12",
+              "label": "Dezember"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.fuel_s]",
+          "label": "Kraftstoffart",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "benzin",
+              "label": "Benzin"
+            },
+            {
+              "value": "diesel",
+              "label": "Diesel"
+            },
+            {
+              "value": "cng",
+              "label": "Erdgas (CNG)"
+            },
+            {
+              "value": "lpg",
+              "label": "Autogas (LPG)"
+            },
+            {
+              "value": "hybrid",
+              "label": "Hybrid"
+            },
+            {
+              "value": "elektro",
+              "label": "Elektro"
+            },
+            {
+              "value": "andere",
+              "label": "Andere Kraftstoffarten"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.shift_s]",
+          "label": "Getriebe",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "automatik",
+              "label": "Automatik"
+            },
+            {
+              "value": "manuell",
+              "label": "Manuell"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.typ_s]",
+          "label": "Fahrzeugtyp",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "kleinwagen",
+              "label": "Kleinwagen"
+            },
+            {
+              "value": "limousine",
+              "label": "Limousine"
+            },
+            {
+              "value": "kombi",
+              "label": "Kombi"
+            },
+            {
+              "value": "cabrio",
+              "label": "Cabrio"
+            },
+            {
+              "value": "suv",
+              "label": "SUV/Geländewagen"
+            },
+            {
+              "value": "bus",
+              "label": "Van/Bus"
+            },
+            {
+              "value": "coupe",
+              "label": "Coupé"
+            },
+            {
+              "value": "andere",
+              "label": "Andere Fahrzeugtypen"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.anzahl_tueren_s]",
+          "label": "Anzahl Türen",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "2_3",
+              "label": "2/3"
+            },
+            {
+              "value": "4_5",
+              "label": "4/5"
+            },
+            {
+              "value": "6_7",
+              "label": "6/7"
+            },
+            {
+              "value": "andere",
+              "label": "Andere Türanzahl"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.tuevm_i]",
+          "label": "HU bis Monat",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Monat"
+            },
+            {
+              "value": "1",
+              "label": "Januar"
+            },
+            {
+              "value": "2",
+              "label": "Februar"
+            },
+            {
+              "value": "3",
+              "label": "März"
+            },
+            {
+              "value": "4",
+              "label": "April"
+            },
+            {
+              "value": "5",
+              "label": "Mai"
+            },
+            {
+              "value": "6",
+              "label": "Juni"
+            },
+            {
+              "value": "7",
+              "label": "Juli"
+            },
+            {
+              "value": "8",
+              "label": "August"
+            },
+            {
+              "value": "9",
+              "label": "September"
+            },
+            {
+              "value": "10",
+              "label": "Oktober"
+            },
+            {
+              "value": "11",
+              "label": "November"
+            },
+            {
+              "value": "12",
+              "label": "Dezember"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.tuevy_i]",
+          "label": "HU bis Jahr",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Jahr"
+            },
+            {
+              "value": "2026",
+              "label": "2026"
+            },
+            {
+              "value": "2027",
+              "label": "2027"
+            },
+            {
+              "value": "2028",
+              "label": "2028"
+            },
+            {
+              "value": "2029",
+              "label": "2029"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.umweltplakette_s]",
+          "label": "Umweltplakette",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "4_gruen",
+              "label": "4 (Grün)"
+            },
+            {
+              "value": "3_yellow",
+              "label": "3 (Gelb)"
+            },
+            {
+              "value": "2_red",
+              "label": "2 (Rot)"
+            },
+            {
+              "value": "1_none",
+              "label": "1 (Keine)"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.schadstoffklasse_s]",
+          "label": "Schadstoffklasse",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "euro1",
+              "label": "Euro1"
+            },
+            {
+              "value": "euro2",
+              "label": "Euro2"
+            },
+            {
+              "value": "euro3",
+              "label": "Euro3"
+            },
+            {
+              "value": "euro4",
+              "label": "Euro4"
+            },
+            {
+              "value": "euro5",
+              "label": "Euro5"
+            },
+            {
+              "value": "euro6",
+              "label": "Euro6"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.aussenfarbe_s]",
+          "label": "Außenfarbe",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "beige",
+              "label": "Beige"
+            },
+            {
+              "value": "blau",
+              "label": "Blau"
+            },
+            {
+              "value": "braun",
+              "label": "Braun"
+            },
+            {
+              "value": "gelb",
+              "label": "Gelb"
+            },
+            {
+              "value": "gold",
+              "label": "Gold"
+            },
+            {
+              "value": "grau",
+              "label": "Grau"
+            },
+            {
+              "value": "grün",
+              "label": "Grün"
+            },
+            {
+              "value": "orange",
+              "label": "Orange"
+            },
+            {
+              "value": "rot",
+              "label": "Rot"
+            },
+            {
+              "value": "schwarz",
+              "label": "Schwarz"
+            },
+            {
+              "value": "silber",
+              "label": "Silber"
+            },
+            {
+              "value": "violet",
+              "label": "Violet"
+            },
+            {
+              "value": "weiß",
+              "label": "Weiß"
+            },
+            {
+              "value": "sonstige",
+              "label": "Andere Farben"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[autos.material_innenausstattung_s]",
+          "label": "Material Innenausstattung",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "volleder",
+              "label": "Vollleder"
+            },
+            {
+              "value": "teilleder",
+              "label": "Teilleder"
+            },
+            {
+              "value": "stoff",
+              "label": "Stoff"
+            },
+            {
+              "value": "velours",
+              "label": "Velours"
+            },
+            {
+              "value": "alcantara",
+              "label": "Alcantara"
+            },
+            {
+              "value": "andere",
+              "label": "Andere Materialien Innenausstattung"
+            }
+          ]
+        }
+      ]
+    },
+    "224": {
+      "savedAt": 1770162454959,
+      "expiresAt": 1770767254959,
+      "fields": [
+        {
+          "name": "attributeMap[beauty_gesundheit.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "make_up",
+              "label": "Make-Up & Gesichtspflege"
+            },
+            {
+              "value": "haarpflege",
+              "label": "Haarpflege"
+            },
+            {
+              "value": "koerperpflege",
+              "label": "Körperpflege"
+            },
+            {
+              "value": "handpflege",
+              "label": "Hand- & Nagelpflege"
+            },
+            {
+              "value": "gesundheit",
+              "label": "Gesundheit"
+            },
+            {
+              "value": "sonstiges",
+              "label": "Weiteres Beauty & Gesundheit"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[beauty_gesundheit.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "230": {
+      "savedAt": 1770309918836,
+      "expiresAt": 1770914718836,
+      "fields": [
+        {
+          "name": "attributeMap[sport_camping.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ballsport",
+              "label": "Ballsport"
+            },
+            {
+              "value": "camping",
+              "label": "Camping & Outdoor"
+            },
+            {
+              "value": "fitness",
+              "label": "Fitness"
+            },
+            {
+              "value": "radsport",
+              "label": "Radsport"
+            },
+            {
+              "value": "tanzen_laufen",
+              "label": "Tanzen & Laufen"
+            },
+            {
+              "value": "wassersport",
+              "label": "Wassersport"
+            },
+            {
+              "value": "wintersport",
+              "label": "Wintersport"
+            },
+            {
+              "value": "sonstige",
+              "label": "Weiteres Sport & Camping"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[sport_camping.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[sport_camping.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "245": {
+      "savedAt": 1770215528562,
+      "expiresAt": 1770820328562,
+      "fields": [
+        {
+          "name": "attributeMap[foto.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "camera",
+              "label": "Kamera"
+            },
+            {
+              "value": "lens",
+              "label": "Objektiv"
+            },
+            {
+              "value": "equipment",
+              "label": "Zubehör"
+            },
+            {
+              "value": "camera_and_equipment",
+              "label": "Kamera & Zubehör"
+            },
+            {
+              "value": "other",
+              "label": "Weiteres Foto"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[foto.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[foto.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

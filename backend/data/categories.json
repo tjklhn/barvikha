@@ -1,0 +1,962 @@
+{
+  "updatedAt": "2026-02-05T16:39:08.211Z",
+  "categories": [
+    {
+      "id": "210",
+      "name": "Auto, Rad & Boot",
+      "url": "https://www.kleinanzeigen.de/s-auto-rad-boot/c210",
+      "children": [
+        {
+          "id": "216",
+          "name": "Autos",
+          "url": "https://www.kleinanzeigen.de/s-autos/c216",
+          "children": []
+        },
+        {
+          "id": "223",
+          "name": "Autoteile & Reifen",
+          "url": "https://www.kleinanzeigen.de/s-autoteile-reifen/c223",
+          "children": []
+        },
+        {
+          "id": "211",
+          "name": "Boote & Bootszubehör",
+          "url": "https://www.kleinanzeigen.de/s-boote-bootszubehoer/c211",
+          "children": []
+        },
+        {
+          "id": "217",
+          "name": "Fahrräder & Zubehör",
+          "url": "https://www.kleinanzeigen.de/s-fahrraeder/c217",
+          "children": []
+        },
+        {
+          "id": "305",
+          "name": "Motorräder & Motorroller",
+          "url": "https://www.kleinanzeigen.de/s-motorraeder-roller/c305",
+          "children": []
+        },
+        {
+          "id": "306",
+          "name": "Motorradteile & Zubehör",
+          "url": "https://www.kleinanzeigen.de/s-motorraeder-roller-teile/c306",
+          "children": []
+        },
+        {
+          "id": "276",
+          "name": "Nutzfahrzeuge & Anhänger",
+          "url": "https://www.kleinanzeigen.de/s-anhaenger-nutzfahrzeuge/c276",
+          "children": []
+        },
+        {
+          "id": "280",
+          "name": "Reparaturen & Dienstleistungen",
+          "url": "https://www.kleinanzeigen.de/s-reparaturen-dienstleistungen/c280",
+          "children": []
+        },
+        {
+          "id": "220",
+          "name": "Wohnwagen & -mobile",
+          "url": "https://www.kleinanzeigen.de/s-wohnwagen-mobile/c220",
+          "children": []
+        },
+        {
+          "id": "241",
+          "name": "Weiteres Auto, Rad & Boot",
+          "url": "https://www.kleinanzeigen.de/s-auto-rad-boot/sonstiges/c241",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "161",
+      "name": "Elektronik",
+      "url": "https://www.kleinanzeigen.de/s-multimedia-elektronik/c161",
+      "children": [
+        {
+          "id": "172",
+          "name": "Audio & Hifi",
+          "url": "https://www.kleinanzeigen.de/s-audio-hifi/c172",
+          "children": []
+        },
+        {
+          "id": "226",
+          "name": "Dienstleistungen Elektronik",
+          "url": "https://www.kleinanzeigen.de/s-dienstleistungen-edv/c226",
+          "children": []
+        },
+        {
+          "id": "245",
+          "name": "Foto",
+          "url": "https://www.kleinanzeigen.de/s-foto/c245",
+          "children": []
+        },
+        {
+          "id": "173",
+          "name": "Handy & Telefon",
+          "url": "https://www.kleinanzeigen.de/s-handy-telekom/c173",
+          "children": []
+        },
+        {
+          "id": "176",
+          "name": "Haushaltsgeräte",
+          "url": "https://www.kleinanzeigen.de/s-haushaltsgeraete/c176",
+          "children": []
+        },
+        {
+          "id": "279",
+          "name": "Konsolen",
+          "url": "https://www.kleinanzeigen.de/s-konsolen/c279",
+          "children": []
+        },
+        {
+          "id": "278",
+          "name": "Notebooks",
+          "url": "https://www.kleinanzeigen.de/s-notebooks/c278",
+          "children": []
+        },
+        {
+          "id": "228",
+          "name": "PCs",
+          "url": "https://www.kleinanzeigen.de/s-pcs/c228",
+          "children": []
+        },
+        {
+          "id": "225",
+          "name": "PC-Zubehör & Software",
+          "url": "https://www.kleinanzeigen.de/s-pc-zubehoer-software/c225",
+          "children": []
+        },
+        {
+          "id": "285",
+          "name": "Tablets & Reader",
+          "url": "https://www.kleinanzeigen.de/s-tablets-reader/c285",
+          "children": []
+        },
+        {
+          "id": "175",
+          "name": "TV & Video",
+          "url": "https://www.kleinanzeigen.de/s-tv-video/c175",
+          "children": []
+        },
+        {
+          "id": "227",
+          "name": "Videospiele",
+          "url": "https://www.kleinanzeigen.de/s-pc-videospiele/c227",
+          "children": []
+        },
+        {
+          "id": "168",
+          "name": "Weitere Elektronik",
+          "url": "https://www.kleinanzeigen.de/s-multimedia-elektronik/sonstiges/c168",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "80",
+      "name": "Haus & Garten",
+      "url": "https://www.kleinanzeigen.de/s-haus-garten/c80",
+      "children": [
+        {
+          "id": "91",
+          "name": "Badezimmer",
+          "url": "https://www.kleinanzeigen.de/s-badezimmer/c91",
+          "children": []
+        },
+        {
+          "id": "93",
+          "name": "Büro",
+          "url": "https://www.kleinanzeigen.de/s-bueromoebel/c93",
+          "children": []
+        },
+        {
+          "id": "246",
+          "name": "Dekoration",
+          "url": "https://www.kleinanzeigen.de/s-dekoration/c246",
+          "children": []
+        },
+        {
+          "id": "239",
+          "name": "Dienstleistungen Haus & Garten",
+          "url": "https://www.kleinanzeigen.de/s-dienstleistungen-haus-garten/c239",
+          "children": []
+        },
+        {
+          "id": "89",
+          "name": "Gartenzubehör & Pflanzen",
+          "url": "https://www.kleinanzeigen.de/s-garten-pflanzen/c89",
+          "children": []
+        },
+        {
+          "id": "90",
+          "name": "Heimtextilien",
+          "url": "https://www.kleinanzeigen.de/s-heimtextilien/c90",
+          "children": []
+        },
+        {
+          "id": "84",
+          "name": "Heimwerken",
+          "url": "https://www.kleinanzeigen.de/s-heimwerken/c84",
+          "children": []
+        },
+        {
+          "id": "86",
+          "name": "Küche & Esszimmer",
+          "url": "https://www.kleinanzeigen.de/s-kueche-esszimmer/c86",
+          "children": []
+        },
+        {
+          "id": "82",
+          "name": "Lampen & Licht",
+          "url": "https://www.kleinanzeigen.de/s-lampen-licht/c82",
+          "children": []
+        },
+        {
+          "id": "81",
+          "name": "Schlafzimmer",
+          "url": "https://www.kleinanzeigen.de/s-schlafzimmer/c81",
+          "children": []
+        },
+        {
+          "id": "88",
+          "name": "Wohnzimmer",
+          "url": "https://www.kleinanzeigen.de/s-wohnzimmer/c88",
+          "children": []
+        },
+        {
+          "id": "87",
+          "name": "Weiteres Haus & Garten",
+          "url": "https://www.kleinanzeigen.de/s-haus-garten/sonstiges/c87",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "102",
+      "name": "Jobs",
+      "url": "https://www.kleinanzeigen.de/s-jobs/c102",
+      "children": [
+        {
+          "id": "118",
+          "name": "Ausbildung",
+          "url": "https://www.kleinanzeigen.de/s-ausbildung/c118",
+          "children": []
+        },
+        {
+          "id": "111",
+          "name": "Bau, Handwerk & Produktion",
+          "url": "https://www.kleinanzeigen.de/s-bau-handwerk-produktion/c111",
+          "children": []
+        },
+        {
+          "id": "114",
+          "name": "Büroarbeit & Verwaltung",
+          "url": "https://www.kleinanzeigen.de/s-bueroarbeit-verwaltung/c114",
+          "children": []
+        },
+        {
+          "id": "110",
+          "name": "Gastronomie & Tourismus",
+          "url": "https://www.kleinanzeigen.de/s-gastronomie-tourismus/c110",
+          "children": []
+        },
+        {
+          "id": "105",
+          "name": "Kundenservice & Call Center",
+          "url": "https://www.kleinanzeigen.de/s-kundenservice-callcenter/c105",
+          "children": []
+        },
+        {
+          "id": "107",
+          "name": "Mini- & Nebenjobs",
+          "url": "https://www.kleinanzeigen.de/s-heimarbeit-mini-nebenjobs/c107",
+          "children": []
+        },
+        {
+          "id": "125",
+          "name": "Praktika",
+          "url": "https://www.kleinanzeigen.de/s-praktika/c125",
+          "children": []
+        },
+        {
+          "id": "123",
+          "name": "Sozialer Sektor & Pflege",
+          "url": "https://www.kleinanzeigen.de/s-sozialer-sektor-pflege/c123",
+          "children": []
+        },
+        {
+          "id": "247",
+          "name": "Transport, Logistik & Verkehr",
+          "url": "https://www.kleinanzeigen.de/s-transport-logistik-verkehr/c247",
+          "children": []
+        },
+        {
+          "id": "117",
+          "name": "Vertrieb, Einkauf & Verkauf",
+          "url": "https://www.kleinanzeigen.de/s-vertrieb-einkauf-verkauf/c117",
+          "children": []
+        },
+        {
+          "id": "109",
+          "name": "Weitere Jobs",
+          "url": "https://www.kleinanzeigen.de/s-sonstige-berufe/c109",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "400",
+      "name": "Nachbarschaftshilfe",
+      "url": "https://www.kleinanzeigen.de/s-nachbarschaftshilfe/c400",
+      "children": [
+        {
+          "id": "401",
+          "name": "Nachbarschaftshilfe",
+          "url": "https://www.kleinanzeigen.de/s-nachbarschaftshilfe/c401",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "297",
+      "name": "Dienstleistungen",
+      "url": "https://www.kleinanzeigen.de/s-dienstleistungen/c297",
+      "children": [
+        {
+          "id": "288",
+          "name": "Altenpflege",
+          "url": "https://www.kleinanzeigen.de/s-altenpflege/c288",
+          "children": []
+        },
+        {
+          "id": "289",
+          "name": "Auto, Rad & Boot",
+          "url": "https://www.kleinanzeigen.de/s-auto-rad-boot/c289",
+          "children": []
+        },
+        {
+          "id": "290",
+          "name": "Babysitter/-in & Kinderbetreuung",
+          "url": "https://www.kleinanzeigen.de/s-babysitter-kinderbetreuung/c290",
+          "children": []
+        },
+        {
+          "id": "293",
+          "name": "Elektronik",
+          "url": "https://www.kleinanzeigen.de/s-multimedia-elektronik/c293",
+          "children": []
+        },
+        {
+          "id": "291",
+          "name": "Haus & Garten",
+          "url": "https://www.kleinanzeigen.de/s-haus-garten/c291",
+          "children": []
+        },
+        {
+          "id": "292",
+          "name": "Künstler/-in & Musiker/-in",
+          "url": "https://www.kleinanzeigen.de/s-kuenstler-musiker/c292",
+          "children": []
+        },
+        {
+          "id": "294",
+          "name": "Reise & Event",
+          "url": "https://www.kleinanzeigen.de/s-reise-event/c294",
+          "children": []
+        },
+        {
+          "id": "295",
+          "name": "Tierbetreuung & Training",
+          "url": "https://www.kleinanzeigen.de/s-tierbetreuung-training/c295",
+          "children": []
+        },
+        {
+          "id": "296",
+          "name": "Umzug & Transport",
+          "url": "https://www.kleinanzeigen.de/s-umzug-transport/c296",
+          "children": []
+        },
+        {
+          "id": "298",
+          "name": "Weitere Dienstleistungen",
+          "url": "https://www.kleinanzeigen.de/s-sonstige/c298",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "17",
+      "name": "Familie, Kind & Baby",
+      "url": "https://www.kleinanzeigen.de/s-familie-kind-baby/c17",
+      "children": [
+        {
+          "id": "236",
+          "name": "Altenpflege",
+          "url": "https://www.kleinanzeigen.de/s-altenpflege/c236",
+          "children": []
+        },
+        {
+          "id": "22",
+          "name": "Baby- & Kinderkleidung",
+          "url": "https://www.kleinanzeigen.de/s-baby-kinderkleidung/c22",
+          "children": []
+        },
+        {
+          "id": "19",
+          "name": "Baby- & Kinderschuhe",
+          "url": "https://www.kleinanzeigen.de/s-baby-kinderschuhe/c19",
+          "children": []
+        },
+        {
+          "id": "258",
+          "name": "Baby-Ausstattung",
+          "url": "https://www.kleinanzeigen.de/s-babyausstattung/c258",
+          "children": []
+        },
+        {
+          "id": "21",
+          "name": "Babyschalen & Kindersitze",
+          "url": "https://www.kleinanzeigen.de/s-babyschalen-kindersitze/c21",
+          "children": []
+        },
+        {
+          "id": "237",
+          "name": "Babysitter/-in & Kinderbetreuung",
+          "url": "https://www.kleinanzeigen.de/s-babysitter-kinderbetreuung/c237",
+          "children": []
+        },
+        {
+          "id": "25",
+          "name": "Kinderwagen & Buggys",
+          "url": "https://www.kleinanzeigen.de/s-kinderwagen-buggys/c25",
+          "children": []
+        },
+        {
+          "id": "20",
+          "name": "Kinderzimmermöbel",
+          "url": "https://www.kleinanzeigen.de/s-kinderzimmermoebel/c20",
+          "children": []
+        },
+        {
+          "id": "23",
+          "name": "Spielzeug",
+          "url": "https://www.kleinanzeigen.de/s-spielzeug/c23",
+          "children": []
+        },
+        {
+          "id": "18",
+          "name": "Weiteres Familie, Kind & Baby",
+          "url": "https://www.kleinanzeigen.de/s-familie-kind-baby/sonstiges/c18",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "130",
+      "name": "Haustiere",
+      "url": "https://www.kleinanzeigen.de/s-haustiere/c130",
+      "children": [
+        {
+          "id": "138",
+          "name": "Fische",
+          "url": "https://www.kleinanzeigen.de/s-fische/c138",
+          "children": []
+        },
+        {
+          "id": "134",
+          "name": "Hunde",
+          "url": "https://www.kleinanzeigen.de/s-hunde/c134",
+          "children": []
+        },
+        {
+          "id": "136",
+          "name": "Katzen",
+          "url": "https://www.kleinanzeigen.de/s-katzen/c136",
+          "children": []
+        },
+        {
+          "id": "132",
+          "name": "Kleintiere",
+          "url": "https://www.kleinanzeigen.de/s-kleintiere/c132",
+          "children": []
+        },
+        {
+          "id": "135",
+          "name": "Nutztiere",
+          "url": "https://www.kleinanzeigen.de/s-nutztiere/c135",
+          "children": []
+        },
+        {
+          "id": "139",
+          "name": "Pferde",
+          "url": "https://www.kleinanzeigen.de/s-pferde/c139",
+          "children": []
+        },
+        {
+          "id": "133",
+          "name": "Tierbetreuung & Training",
+          "url": "https://www.kleinanzeigen.de/s-tierbetreuung-training/c133",
+          "children": []
+        },
+        {
+          "id": "283",
+          "name": "Vermisste Tiere",
+          "url": "https://www.kleinanzeigen.de/s-vermisste-tiere/c283",
+          "children": []
+        },
+        {
+          "id": "243",
+          "name": "Vögel",
+          "url": "https://www.kleinanzeigen.de/s-vogel/c243",
+          "children": []
+        },
+        {
+          "id": "313",
+          "name": "Zubehör",
+          "url": "https://www.kleinanzeigen.de/s-zubehoer/c313",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "153",
+      "name": "Mode & Beauty",
+      "url": "https://www.kleinanzeigen.de/s-mode-beauty/c153",
+      "children": [
+        {
+          "id": "224",
+          "name": "Beauty & Gesundheit",
+          "url": "https://www.kleinanzeigen.de/s-beauty-gesundheit/c224",
+          "children": []
+        },
+        {
+          "id": "154",
+          "name": "Damenbekleidung",
+          "url": "https://www.kleinanzeigen.de/s-kleidung-damen/c154",
+          "children": []
+        },
+        {
+          "id": "159",
+          "name": "Damenschuhe",
+          "url": "https://www.kleinanzeigen.de/s-schuhe-damen/c159",
+          "children": []
+        },
+        {
+          "id": "160",
+          "name": "Herrenbekleidung",
+          "url": "https://www.kleinanzeigen.de/s-kleidung-herren/c160",
+          "children": []
+        },
+        {
+          "id": "158",
+          "name": "Herrenschuhe",
+          "url": "https://www.kleinanzeigen.de/s-schuhe-herren/c158",
+          "children": []
+        },
+        {
+          "id": "156",
+          "name": "Taschen & Accessoires",
+          "url": "https://www.kleinanzeigen.de/s-accessoires-schmuck/c156",
+          "children": []
+        },
+        {
+          "id": "157",
+          "name": "Uhren & Schmuck",
+          "url": "https://www.kleinanzeigen.de/s-uhren-schmuck/c157",
+          "children": []
+        },
+        {
+          "id": "155",
+          "name": "Weiteres Mode & Beauty",
+          "url": "https://www.kleinanzeigen.de/s-mode-beauty/sonstiges/c155",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "235",
+      "name": "Unterricht & Kurse",
+      "url": "https://www.kleinanzeigen.de/s-unterricht-kurse/c235",
+      "children": [
+        {
+          "id": "269",
+          "name": "Beauty & Gesundheit",
+          "url": "https://www.kleinanzeigen.de/s-beauty-gesundheit/c269",
+          "children": []
+        },
+        {
+          "id": "260",
+          "name": "Computerkurse",
+          "url": "https://www.kleinanzeigen.de/s-computerkurse/c260",
+          "children": []
+        },
+        {
+          "id": "265",
+          "name": "Esoterik & Spirituelles",
+          "url": "https://www.kleinanzeigen.de/s-esoterik-spirituelles/c265",
+          "children": []
+        },
+        {
+          "id": "263",
+          "name": "Kochen & Backen",
+          "url": "https://www.kleinanzeigen.de/s-kochen-backen/c263",
+          "children": []
+        },
+        {
+          "id": "264",
+          "name": "Kunst & Gestaltung",
+          "url": "https://www.kleinanzeigen.de/s-kunst-gestaltung/c264",
+          "children": []
+        },
+        {
+          "id": "262",
+          "name": "Musik & Gesang",
+          "url": "https://www.kleinanzeigen.de/s-musik-gesang/c262",
+          "children": []
+        },
+        {
+          "id": "268",
+          "name": "Nachhilfe",
+          "url": "https://www.kleinanzeigen.de/s-nachhilfe/c268",
+          "children": []
+        },
+        {
+          "id": "261",
+          "name": "Sportkurse",
+          "url": "https://www.kleinanzeigen.de/s-sportkurse/c261",
+          "children": []
+        },
+        {
+          "id": "271",
+          "name": "Sprachkurse",
+          "url": "https://www.kleinanzeigen.de/s-sprachkurse/c271",
+          "children": []
+        },
+        {
+          "id": "267",
+          "name": "Tanzkurse",
+          "url": "https://www.kleinanzeigen.de/s-tanzkurse/c267",
+          "children": []
+        },
+        {
+          "id": "266",
+          "name": "Weiterbildung",
+          "url": "https://www.kleinanzeigen.de/s-weiterbildung/c266",
+          "children": []
+        },
+        {
+          "id": "270",
+          "name": "Weitere Unterricht & Kurse",
+          "url": "https://www.kleinanzeigen.de/s-sonstige/c270",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "231",
+      "name": "Eintrittskarten & Tickets",
+      "url": "https://www.kleinanzeigen.de/s-eintrittskarten-tickets/c231",
+      "children": [
+        {
+          "id": "286",
+          "name": "Bahn & ÖPNV",
+          "url": "https://www.kleinanzeigen.de/s-bahn-oepnv/c286",
+          "children": []
+        },
+        {
+          "id": "254",
+          "name": "Comedy & Kabarett",
+          "url": "https://www.kleinanzeigen.de/s-comedy-kabarett/c254",
+          "children": []
+        },
+        {
+          "id": "287",
+          "name": "Gutscheine",
+          "url": "https://www.kleinanzeigen.de/s-gutscheine/c287",
+          "children": []
+        },
+        {
+          "id": "252",
+          "name": "Kinder",
+          "url": "https://www.kleinanzeigen.de/s-kinder/c252",
+          "children": []
+        },
+        {
+          "id": "255",
+          "name": "Konzerte",
+          "url": "https://www.kleinanzeigen.de/s-konzerte/c255",
+          "children": []
+        },
+        {
+          "id": "257",
+          "name": "Sport",
+          "url": "https://www.kleinanzeigen.de/s-sport/c257",
+          "children": []
+        },
+        {
+          "id": "251",
+          "name": "Theater & Musical",
+          "url": "https://www.kleinanzeigen.de/s-klassik-kultur/c251",
+          "children": []
+        },
+        {
+          "id": "256",
+          "name": "Weitere Eintrittskarten & Tickets",
+          "url": "https://www.kleinanzeigen.de/s-sonstige/c256",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "185",
+      "name": "Freizeit, Hobby & Nachbarschaft",
+      "url": "https://www.kleinanzeigen.de/s-freizeit-nachbarschaft/c185",
+      "children": [
+        {
+          "id": "232",
+          "name": "Esoterik & Spirituelles",
+          "url": "https://www.kleinanzeigen.de/s-esoterik-spirituelles/c232",
+          "children": []
+        },
+        {
+          "id": "248",
+          "name": "Essen & Trinken",
+          "url": "https://www.kleinanzeigen.de/s-essen-trinken/c248",
+          "children": []
+        },
+        {
+          "id": "187",
+          "name": "Freizeitaktivitäten",
+          "url": "https://www.kleinanzeigen.de/s-freizeitaktivitaeten/c187",
+          "children": []
+        },
+        {
+          "id": "282",
+          "name": "Handarbeit, Basteln & Kunsthandwerk",
+          "url": "https://www.kleinanzeigen.de/s-handarbeit-basteln-kunsthandwerk/c282",
+          "children": []
+        },
+        {
+          "id": "240",
+          "name": "Kunst & Antiquitäten",
+          "url": "https://www.kleinanzeigen.de/s-kunst/c240",
+          "children": []
+        },
+        {
+          "id": "191",
+          "name": "Künstler/-in & Musiker/-in",
+          "url": "https://www.kleinanzeigen.de/s-kuenstler-musiker/c191",
+          "children": []
+        },
+        {
+          "id": "249",
+          "name": "Modellbau",
+          "url": "https://www.kleinanzeigen.de/s-modellbau/c249",
+          "children": []
+        },
+        {
+          "id": "233",
+          "name": "Reise & Eventservices",
+          "url": "https://www.kleinanzeigen.de/s-reise-eventservices/c233",
+          "children": []
+        },
+        {
+          "id": "234",
+          "name": "Sammeln",
+          "url": "https://www.kleinanzeigen.de/s-sammeln/c234",
+          "children": []
+        },
+        {
+          "id": "230",
+          "name": "Sport & Camping",
+          "url": "https://www.kleinanzeigen.de/s-sport-camping/c230",
+          "children": []
+        },
+        {
+          "id": "250",
+          "name": "Trödel",
+          "url": "https://www.kleinanzeigen.de/s-troedel-kistenweise/c250",
+          "children": []
+        },
+        {
+          "id": "189",
+          "name": "Verloren & Gefunden",
+          "url": "https://www.kleinanzeigen.de/s-verloren-gefunden/c189",
+          "children": []
+        },
+        {
+          "id": "242",
+          "name": "Weiteres Freizeit, Hobby & Nachbarschaft",
+          "url": "https://www.kleinanzeigen.de/s-freizeit-nachbarschaft/sonstiges/c242",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "195",
+      "name": "Immobilien",
+      "url": "https://www.kleinanzeigen.de/s-immobilien/c195",
+      "children": [
+        {
+          "id": "199",
+          "name": "Auf Zeit & WG",
+          "url": "https://www.kleinanzeigen.de/s-auf-zeit-wg/c199",
+          "children": []
+        },
+        {
+          "id": "402",
+          "name": "Container",
+          "url": "https://www.kleinanzeigen.de/s-container/c402",
+          "children": []
+        },
+        {
+          "id": "196",
+          "name": "Eigentumswohnungen",
+          "url": "https://www.kleinanzeigen.de/s-wohnung-kaufen/c196",
+          "children": []
+        },
+        {
+          "id": "275",
+          "name": "Ferien- & Auslandsimmobilien",
+          "url": "https://www.kleinanzeigen.de/s-ferienwohnung-ferienhaus/c275",
+          "children": []
+        },
+        {
+          "id": "197",
+          "name": "Garagen & Stellplätze",
+          "url": "https://www.kleinanzeigen.de/s-garage-lagerraum/c197",
+          "children": []
+        },
+        {
+          "id": "277",
+          "name": "Gewerbeimmobilien",
+          "url": "https://www.kleinanzeigen.de/s-gewerbeimmobilien/c277",
+          "children": []
+        },
+        {
+          "id": "207",
+          "name": "Grundstücke & Gärten",
+          "url": "https://www.kleinanzeigen.de/s-grundstuecke-garten/c207",
+          "children": []
+        },
+        {
+          "id": "208",
+          "name": "Häuser zum Kauf",
+          "url": "https://www.kleinanzeigen.de/s-haus-kaufen/c208",
+          "children": []
+        },
+        {
+          "id": "205",
+          "name": "Häuser zur Miete",
+          "url": "https://www.kleinanzeigen.de/s-haus-mieten/c205",
+          "children": []
+        },
+        {
+          "id": "203",
+          "name": "Mietwohnungen",
+          "url": "https://www.kleinanzeigen.de/s-wohnung-mieten/c203",
+          "children": []
+        },
+        {
+          "id": "403",
+          "name": "Neubauprojekte",
+          "url": "https://www.kleinanzeigen.de/s-neubauprojekte/c403",
+          "children": []
+        },
+        {
+          "id": "238",
+          "name": "Umzug & Transport",
+          "url": "https://www.kleinanzeigen.de/s-umzug-transport/c238",
+          "children": []
+        },
+        {
+          "id": "198",
+          "name": "Weitere Immobilien",
+          "url": "https://www.kleinanzeigen.de/s-immobilien/sonstiges/c198",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "73",
+      "name": "Musik, Filme & Bücher",
+      "url": "https://www.kleinanzeigen.de/s-musik-film-buecher/c73",
+      "children": [
+        {
+          "id": "76",
+          "name": "Bücher & Zeitschriften",
+          "url": "https://www.kleinanzeigen.de/s-buecher-zeitschriften/c76",
+          "children": []
+        },
+        {
+          "id": "281",
+          "name": "Büro & Schreibwaren",
+          "url": "https://www.kleinanzeigen.de/s-buero-schreibwaren/c281",
+          "children": []
+        },
+        {
+          "id": "284",
+          "name": "Comics",
+          "url": "https://www.kleinanzeigen.de/s-comics/c284",
+          "children": []
+        },
+        {
+          "id": "77",
+          "name": "Fachbücher, Schule & Studium",
+          "url": "https://www.kleinanzeigen.de/s-fachbuecher-schule-studium/c77",
+          "children": []
+        },
+        {
+          "id": "79",
+          "name": "Film & DVD",
+          "url": "https://www.kleinanzeigen.de/s-film-dvd/c79",
+          "children": []
+        },
+        {
+          "id": "78",
+          "name": "Musik & CDs",
+          "url": "https://www.kleinanzeigen.de/s-musik-cds/c78",
+          "children": []
+        },
+        {
+          "id": "74",
+          "name": "Musikinstrumente",
+          "url": "https://www.kleinanzeigen.de/s-musikinstrumente/c74",
+          "children": []
+        },
+        {
+          "id": "75",
+          "name": "Weitere Musik, Filme & Bücher",
+          "url": "https://www.kleinanzeigen.de/s-musik-film-buecher/sonstiges/c75",
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "272",
+      "name": "Verschenken & Tauschen",
+      "url": "https://www.kleinanzeigen.de/s-zu-verschenken-tauschen/c272",
+      "children": [
+        {
+          "id": "273",
+          "name": "Tauschen",
+          "url": "https://www.kleinanzeigen.de/s-tauschen/c273",
+          "children": []
+        },
+        {
+          "id": "274",
+          "name": "Verleihen",
+          "url": "https://www.kleinanzeigen.de/s-verleihen/c274",
+          "children": []
+        },
+        {
+          "id": "192",
+          "name": "Verschenken",
+          "url": "https://www.kleinanzeigen.de/s-zu-verschenken/c192",
+          "children": []
+        }
+      ]
+    }
+  ]
+}

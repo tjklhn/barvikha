@@ -1,0 +1,92 @@
+[
+  {
+    "id": 1770249839313,
+    "name": "123",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 10894,
+    "username": "IWpoVeNTOTUyxJMV",
+    "password": "IWpoVeNTOTUyxJMV",
+    "ownerId": "224009eefb76f769",
+    "status": "active",
+    "lastChecked": "2026-02-05T16:34:48.964Z",
+    "checkResult": {
+      "success": true,
+      "ip": "37.201.196.78",
+      "location": {
+        "country": "DE",
+        "city": "Duisburg",
+        "region": "NW",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS3209 Vodafone GmbH",
+      "responseTime": 1304,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-05T16:34:48.964Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "37.201.196.78",
+        "hostname": "ip-037-201-196-078.um10.pools.vodafone-ip.de",
+        "city": "Duisburg",
+        "region": "North Rhine-Westphalia",
+        "country": "DE",
+        "loc": "51.4325,6.7652",
+        "org": "AS3209 Vodafone GmbH",
+        "postal": "47051",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 3,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770121963048,
+    "name": "kjljk",
+    "type": "socks5",
+    "host": "185.186.76.222",
+    "port": 13172,
+    "username": "WWswGeWbgUL6WHfz",
+    "password": "WWswGeWbgUL6WHfz",
+    "status": "active",
+    "lastChecked": "2026-02-04T17:23:44.098Z",
+    "checkResult": {
+      "success": true,
+      "ip": "216.131.114.32",
+      "location": {
+        "country": "DE",
+        "city": "Frankfurt am Main",
+        "region": "HE",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS62240 Clouvider",
+      "responseTime": 1523,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-04T17:23:44.098Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "216.131.114.32",
+        "city": "Frankfurt am Main",
+        "region": "Hesse",
+        "country": "DE",
+        "loc": "50.1137,8.7119",
+        "org": "AS62240 Clouvider",
+        "postal": "60314",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 1,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  }
+]

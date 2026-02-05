@@ -1,0 +1,45 @@
+{
+  "items": [
+    {
+      "token": "f31801f499630e010c4aa45db39e96354b9ce875082a3559",
+      "label": "client-1",
+      "createdAt": "2026-02-04T15:08:23.054Z",
+      "expiresAt": "2026-03-06T15:08:23.054Z"
+    },
+    {
+      "token": "cb08873372bb988dfa868dd1b2d20e666e866d47fc37e066",
+      "label": "client-2",
+      "role": "user",
+      "createdAt": "2026-02-05T18:13:17.018Z",
+      "expiresAt": "2026-03-07T18:13:17.018Z"
+    },
+    {
+      "token": "1a8da40405c4880fe559fb986821d6acd9c3f025e3ae4d79",
+      "label": "client-3",
+      "role": "user",
+      "createdAt": "2026-02-05T18:14:06.523Z",
+      "expiresAt": "2026-03-07T18:14:06.523Z"
+    },
+    {
+      "token": "a9fef8db02956e3e0d95ea617a948565175bc550b25892a0",
+      "label": "client-4",
+      "role": "user",
+      "createdAt": "2026-02-05T18:14:13.145Z",
+      "expiresAt": "2026-03-07T18:14:13.145Z"
+    },
+    {
+      "token": "a0ccca298d85170c0bb99205d8896d179b3854df7a96c019",
+      "label": "client-5",
+      "role": "user",
+      "createdAt": "2026-02-05T18:14:21.749Z",
+      "expiresAt": "2026-03-07T18:14:21.749Z"
+    },
+    {
+      "token": "5669b080c6f0e1e43480523d8d2d4c8392d2cff455dbb139",
+      "label": "admin",
+      "role": "admin",
+      "createdAt": "2026-02-05T18:18:34.304Z",
+      "expiresAt": "2027-02-05T18:18:34.304Z"
+    }
+  ]
+}

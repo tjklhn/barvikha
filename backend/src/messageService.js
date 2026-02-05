@@ -1,0 +1,2500 @@
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const axios = require("axios");
+const ProxyAgent = require("proxy-agent");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const proxyChain = require("proxy-chain");
+const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
+const { pickDeviceProfile } = require("./cookieValidator");
+
+puppeteer.use(StealthPlugin());
+
+const MESSAGE_LIST_URL = "https://www.kleinanzeigen.de/m-nachrichten.html";
+const MESSAGEBOX_API_HOST = "https://gateway.kleinanzeigen.de";
+const MESSAGEBOX_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const DEBUG_MESSAGES = process.env.KL_DEBUG_MESSAGES === "1";
+const FORCE_WEB_MESSAGES = process.env.KL_FORCE_WEB_MESSAGES === "1";
+const buildConversationUrl = (conversationId, conversationUrl) => {
+  if (conversationUrl) return conversationUrl;
+  if (!conversationId) return MESSAGE_LIST_URL;
+  return `${MESSAGE_LIST_URL}?conversationId=${encodeURIComponent(conversationId)}`;
+};
+
+const normalizeMatch = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+const normalizeImageUrl = (value, baseUrl = MESSAGE_LIST_URL) => {
+  const src = String(value || "").trim();
+  if (!src) return "";
+  const lowered = src.toLowerCase();
+  if (["null", "undefined", "none", "false"].includes(lowered)) return "";
+  if (src.includes("data:image/") || src.includes("placeholder")) return "";
+  const normalizedSrc = src.replace(/^\/+/, "/");
+  if (normalizedSrc.startsWith("/api/v1/prod-ads/images/")) {
+    try {
+      return new URL(normalizedSrc, "https://img.kleinanzeigen.de").href;
+    } catch (error) {
+      return `https://img.kleinanzeigen.de${normalizedSrc}`;
+    }
+  }
+  if (/^img\.kleinanzeigen\.de/i.test(normalizedSrc)) {
+    return `https://${normalizedSrc}`;
+  }
+  if (/^\/\//.test(src)) {
+    return `https:${src}`;
+  }
+  try {
+    return new URL(src, baseUrl).href;
+  } catch (error) {
+    return src;
+  }
+};
+
+const isValidImageUrl = (value) => {
+  const normalized = normalizeImageUrl(value);
+  if (!normalized) return false;
+  return /^https?:\/\//i.test(normalized);
+};
+
+const pickAdImageFromApi = (conversation) => {
+  if (!conversation) return "";
+  const candidates = [
+    conversation.adImage,
+    conversation.adImageUrl,
+    conversation.adImageURL,
+    conversation.adImageUrlLarge,
+    conversation.adImageUrlMedium,
+    conversation.adImageUrlSmall,
+    conversation.adImageThumbnail,
+    conversation.adImageThumbnailUrl,
+    conversation.adImageSmall,
+    conversation.adImageMedium,
+    conversation.adImageLarge,
+    conversation.imageUrlSmall,
+    conversation.imageUrlMedium,
+    conversation.imageUrlLarge,
+    conversation.imageUrl,
+    conversation.image,
+    conversation.thumbnailUrl,
+    conversation.thumbnail
+  ];
+
+  const adPayload = conversation.ad || conversation.adInfo || conversation.item || conversation.advertisement || {};
+  if (adPayload) {
+    candidates.push(
+      adPayload.image,
+      adPayload.image?.url,
+      adPayload.image?.src,
+      adPayload.imageUrl,
+      adPayload.imageUrlSmall,
+      adPayload.imageUrlMedium,
+      adPayload.imageUrlLarge,
+      adPayload.imageURL,
+      adPayload.thumbnailUrl,
+      adPayload.thumbnailUrlSmall,
+      adPayload.thumbnailUrlMedium,
+      adPayload.thumbnailUrlLarge,
+      adPayload.thumbnail
+    );
+    if (Array.isArray(adPayload.images) && adPayload.images.length) {
+      candidates.push(adPayload.images[0]);
+      candidates.push(adPayload.images[0]?.url);
+      candidates.push(adPayload.images[0]?.src);
+    }
+  }
+
+  if (Array.isArray(conversation.adImages) && conversation.adImages.length) {
+    candidates.push(conversation.adImages[0]);
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (typeof candidate === "string") {
+      const normalized = normalizeImageUrl(candidate);
+      if (normalized) return normalized;
+    } else if (typeof candidate === "object") {
+      const nested = candidate.url || candidate.src || candidate.imageUrl || candidate.image;
+      const normalized = normalizeImageUrl(nested);
+      if (normalized) return normalized;
+    }
+  }
+  return "";
+};
+
+const matchConversation = (conversation, criteria) => {
+  const wantedParticipant = normalizeMatch(criteria.participant);
+  const wantedAdTitle = normalizeMatch(criteria.adTitle);
+  const participant = normalizeMatch(conversation.participant);
+  const adTitle = normalizeMatch(conversation.adTitle);
+
+  if (wantedParticipant && wantedAdTitle) {
+    return participant.includes(wantedParticipant) && adTitle.includes(wantedAdTitle);
+  }
+  if (wantedParticipant) return participant.includes(wantedParticipant);
+  if (wantedAdTitle) return adTitle.includes(wantedAdTitle);
+  return false;
+};
+
+const pickParticipantFromApi = (conversation, userId) => {
+  if (!conversation) return "";
+  const buyerId = conversation.userIdBuyer != null ? String(conversation.userIdBuyer) : "";
+  const sellerId = conversation.userIdSeller != null ? String(conversation.userIdSeller) : "";
+  const currentId = userId ? String(userId) : "";
+
+  if (currentId && buyerId && currentId === buyerId) {
+    return conversation.sellerName || "";
+  }
+  if (currentId && sellerId && currentId === sellerId) {
+    return conversation.buyerName || "";
+  }
+  return conversation.sellerName || conversation.buyerName || "";
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const humanPause = (min = 120, max = 240) => sleep(Math.floor(min + Math.random() * (max - min)));
+const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
+
+const decodeJwtPayload = (token) => {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    return JSON.parse(decoded);
+  } catch (error) {
+    return null;
+  }
+};
+
+const extractJwtToken = (token) => String(token || "").replace(/^Bearer\s+/i, "").trim();
+
+const getUserIdFromCookies = (cookies) => {
+  const accessToken = (cookies || []).find((cookie) => cookie.name === "access_token");
+  if (!accessToken?.value) return "";
+  const payload = decodeJwtPayload(accessToken.value);
+  return payload?.preferred_username || payload?.uid || payload?.sub || "";
+};
+
+const getUserIdFromAccessToken = (token) => {
+  const payload = decodeJwtPayload(extractJwtToken(token));
+  return payload?.preferred_username || payload?.uid || payload?.sub || "";
+};
+
+const buildCookieHeader = (cookies) =>
+  (cookies || [])
+    .filter((cookie) => cookie?.name && cookie?.value)
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join("; ");
+
+const buildAxiosConfig = ({ proxy, headers = {}, timeout = 20000 } = {}) => {
+  const config = {
+    headers,
+    timeout,
+    validateStatus: (status) => status >= 200 && status < 500
+  };
+  const proxyUrl = buildProxyUrl(proxy);
+  if (proxyUrl) {
+    let agent = null;
+    if (typeof ProxyAgent === "function") {
+      try {
+        agent = new ProxyAgent(proxyUrl);
+      } catch (error) {
+        agent = ProxyAgent(proxyUrl);
+      }
+    } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
+      agent = new ProxyAgent.ProxyAgent(proxyUrl);
+    }
+    config.httpAgent = agent;
+    config.httpsAgent = agent;
+    config.proxy = false;
+  }
+  return config;
+};
+
+const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile }) => {
+  const cookieHeader = buildCookieHeader(cookies);
+  if (!cookieHeader) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
+  const response = await axios.get(
+    "https://www.kleinanzeigen.de/m-access-token.json",
+    buildAxiosConfig({
+      proxy,
+      headers: {
+        Cookie: cookieHeader,
+        "User-Agent": userAgent,
+        Accept: "application/json"
+      }
+    })
+  );
+
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  const token = response.headers?.authorization || response.headers?.Authorization || "";
+  if (!token) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  const messageboxHeader = response.headers?.messagebox || response.headers?.Messagebox || "";
+  const messageboxKey = messageboxHeader ? messageboxHeader.split(" ")[1] : "";
+  const expiration = response.data?.expiration || 0;
+
+  return { token, messageboxKey, expiration };
+};
+
+const fetchConversationListViaApi = async ({
+  userId,
+  accessToken,
+  cookies,
+  proxy,
+  deviceProfile,
+  page = 0,
+  size = 20
+}) => {
+  const cookieHeader = buildCookieHeader(cookies);
+  const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
+  const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations`
+    + `?page=${page}&size=${size}`;
+
+  const response = await axios.get(
+    url,
+    buildAxiosConfig({
+      proxy,
+      headers: {
+        Accept: "application/json",
+        Authorization: accessToken,
+        "X-ECG-USER-AGENT": "messagebox-1",
+        Cookie: cookieHeader,
+        "User-Agent": userAgent
+      }
+    })
+  );
+
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  if (response.status >= 400) {
+    throw new Error(`MESSAGEBOX_API_ERROR_${response.status}`);
+  }
+
+  return response.data || {};
+};
+
+const fetchConversationDetailViaApi = async ({
+  userId,
+  conversationId,
+  accessToken,
+  cookies,
+  proxy,
+  deviceProfile
+}) => {
+  const cookieHeader = buildCookieHeader(cookies);
+  const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
+  const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations/${encodeURIComponent(conversationId)}`
+    + "?contentWarnings=true";
+
+  const response = await axios.get(
+    url,
+    buildAxiosConfig({
+      proxy,
+      headers: {
+        Accept: "application/json",
+        Authorization: accessToken,
+        "X-ECG-USER-AGENT": "messagebox-1",
+        Cookie: cookieHeader,
+        "User-Agent": userAgent
+      }
+    })
+  );
+
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  if (response.status >= 400) {
+    throw new Error(`MESSAGEBOX_API_ERROR_${response.status}`);
+  }
+
+  return response.data || {};
+};
+
+const sendConversationMessageViaApi = async ({
+  userId,
+  conversationId,
+  accessToken,
+  cookies,
+  proxy,
+  deviceProfile,
+  text
+}) => {
+  const cookieHeader = buildCookieHeader(cookies);
+  const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
+  const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations/${encodeURIComponent(conversationId)}`;
+
+  const response = await axios.post(
+    url,
+    { message: text },
+    buildAxiosConfig({
+      proxy,
+      headers: {
+        Accept: "application/json",
+        Authorization: accessToken,
+        "X-ECG-USER-AGENT": "messagebox-1",
+        "Content-Type": "application/json",
+        Cookie: cookieHeader,
+        "User-Agent": userAgent
+      }
+    })
+  );
+
+  if (response.status === 401 || response.status === 403) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  if (response.status >= 400) {
+    throw new Error(`MESSAGEBOX_API_ERROR_${response.status}`);
+  }
+
+  return response.data || {};
+};
+
+const sanitizeFilename = (value) => (value || "account")
+  .toString()
+  .replace(/[^a-z0-9._-]+/gi, "_")
+  .slice(0, 60);
+
+const dumpMessageListDebug = async (page, accountLabel) => {
+  try {
+    const debugDir = path.join(__dirname, "..", "data", "debug");
+    if (!fs.existsSync(debugDir)) {
+      fs.mkdirSync(debugDir, { recursive: true });
+    }
+
+    const safeLabel = sanitizeFilename(accountLabel);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const base = `messages-${safeLabel}-${timestamp}`;
+    const htmlPath = path.join(debugDir, `${base}.html`);
+    const screenshotPath = path.join(debugDir, `${base}.png`);
+    const metaPath = path.join(debugDir, `${base}.json`);
+
+    const [html, meta] = await Promise.all([
+      page.content().catch(() => ""),
+      page.evaluate(() => {
+        const pickAttrValues = (attr) => {
+          const values = new Set();
+          document.querySelectorAll(`[${attr}]`).forEach((node) => {
+            const val = node.getAttribute(attr);
+            if (val && /message|conversation|chat|inbox|thread/i.test(val)) {
+              values.add(val);
+            }
+          });
+          return Array.from(values).slice(0, 80);
+        };
+
+        const count = (selector) => {
+          try { return document.querySelectorAll(selector).length; } catch (e) { return 0; }
+        };
+
+        return {
+          url: location.href,
+          title: document.title,
+          counts: {
+            anchors: count("a[href]"),
+            nachrichtenLinks: count("a[href*='nachrichten']"),
+            conversationLinks: count("a[href*='conversationId']"),
+            messageListItems: count("[data-testid*='message-list-item'], [data-qa*='message-list-item']"),
+            conversationItems: count("[data-testid*='conversation'], [data-qa*='conversation']"),
+            listItems: count("li"),
+            roleListItems: count("[role='listitem']"),
+            buttons: count("button, [role='button']")
+          },
+          testIds: pickAttrValues("data-testid"),
+          qaIds: pickAttrValues("data-qa")
+        };
+      })
+    ]);
+
+    if (html) {
+      fs.writeFileSync(htmlPath, html, "utf8");
+    }
+    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+
+    console.log(`[messageService] Debug saved: ${htmlPath}`);
+    console.log(`[messageService] Debug meta: ${metaPath}`);
+    console.log(`[messageService] Debug screenshot: ${screenshotPath}`);
+  } catch (error) {
+    console.log(`[messageService] Debug dump failed: ${error.message}`);
+  }
+};
+
+const isHandleVisible = async (handle) => {
+  if (!handle) return false;
+  const box = await handle.boundingBox().catch(() => null);
+  return Boolean(box && box.width > 0 && box.height > 0);
+};
+
+const findFirstVisibleHandle = async (context, selectors) => {
+  for (const selector of selectors) {
+    let handles = [];
+    try {
+      handles = await context.$$(selector);
+    } catch (error) {
+      continue;
+    }
+    for (const handle of handles) {
+      if (await isHandleVisible(handle)) return handle;
+    }
+  }
+  return null;
+};
+
+const findMessageInputHandle = async (page, selectors) => {
+  const contexts = [page, ...page.frames()];
+  for (const context of contexts) {
+    const handle = await findFirstVisibleHandle(context, selectors);
+    if (handle) return { handle, context };
+  }
+  return null;
+};
+
+const getDeviceProfile = (account) => {
+  if (!account?.deviceProfile) return pickDeviceProfile();
+  try {
+    return typeof account.deviceProfile === "string"
+      ? JSON.parse(account.deviceProfile)
+      : account.deviceProfile;
+  } catch (error) {
+    return pickDeviceProfile();
+  }
+};
+
+const parseTimestamp = (value) => {
+  if (!value) return { date: "", time: "", iso: "" };
+  const raw = String(value).trim();
+  const normalized = raw.replace(/\s+/g, " ");
+  const timeMatch = normalized.match(/(\d{1,2}:\d{2})/);
+  let date = "";
+  let time = timeMatch ? timeMatch[1] : "";
+  let dateObj = null;
+
+  const isoCandidate = /\d{4}-\d{2}-\d{2}T/.test(normalized) ? normalized : "";
+  if (isoCandidate) {
+    const fixedIso = isoCandidate.replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+    const parsed = new Date(fixedIso);
+    if (!Number.isNaN(parsed.getTime())) {
+      dateObj = parsed;
+    }
+  }
+
+  const dateMatch = normalized.match(/(\d{1,2})[./](\d{1,2})[./](\d{2,4})/);
+  if (!dateObj && dateMatch) {
+    const day = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]) - 1;
+    const year = Number(dateMatch[3].length === 2 ? `20${dateMatch[3]}` : dateMatch[3]);
+    const parsed = new Date(year, month, day);
+    if (!Number.isNaN(parsed.getTime())) {
+      dateObj = parsed;
+    }
+  }
+
+  if (!dateObj && /heute/i.test(normalized)) {
+    dateObj = new Date();
+  }
+
+  if (!dateObj && /gestern/i.test(normalized)) {
+    dateObj = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  }
+
+  if (dateObj) {
+    date = dateObj.toISOString().slice(0, 10);
+    if (!time && /\d{1,2}:\d{2}/.test(normalized)) {
+      time = normalized.match(/\d{1,2}:\d{2}/)?.[0] || "";
+    }
+    return { date, time, iso: dateObj.toISOString() };
+  }
+
+  return { date: "", time, iso: "" };
+};
+
+const extractConversationId = (href) => {
+  if (!href) return "";
+  try {
+    const url = new URL(href, MESSAGE_LIST_URL);
+    return url.searchParams.get("conversationId")
+      || url.searchParams.get("conversation")
+      || url.searchParams.get("id")
+      || "";
+  } catch (error) {
+    return "";
+  }
+};
+
+const isAuthFailure = async (page) => {
+  const currentUrl = page.url();
+  if (/m-einloggen/.test(currentUrl)) return true;
+  const content = await page.content();
+  return /einloggen|anmelden|login/i.test(content) && /passwort|konto/i.test(content);
+};
+
+const waitForDynamicContent = async (page, selectors, timeout = 15000) => {
+  const selectorString = selectors.join(", ");
+  await page.waitForFunction(
+    (sel) => document.querySelectorAll(sel).length > 0,
+    { timeout },
+    selectorString
+  ).catch(() => {});
+};
+
+const parseConversationList = async (page) => {
+  await waitForDynamicContent(page, [
+    "#conversation-list article",
+    "[data-testid='conversation-list'] article",
+    "a[href*='conversationId']",
+    "a[href*='m-nachrichten']",
+    "a[href*='nachrichten']",
+    "a.AdImage img",
+    "#conversation-list img",
+    "[data-testid*='conversation']",
+    "[data-qa*='conversation']",
+    "[data-qa*='message-list']",
+    "[data-testid*='message-list-item']",
+    "[data-qa*='message-list-item']",
+    "[class*='Conversation']",
+    "[class*='conversation']",
+    "[class*='MessageList']",
+    "[class*='messagelist']"
+  ]);
+
+  return page.evaluate(() => {
+    const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+    const cleanTitle = (text) => normalize(text).replace(/^(gelösch[^\s]*|gelöscht|reserviert|inaktiv)\s*[•-]?\s*/i, "").trim();
+    const isTimeLike = (text) => {
+      if (!text) return false;
+      if (/\\b(heute|gestern|today|yesterday)\\b/i.test(text)) return true;
+      if (/\\d{1,2}[:.]\\d{2}/.test(text)) return true;
+      if (/\\d{1,2}\\.\\d{1,2}\\.\\d{2,4}/.test(text)) return true;
+      return false;
+    };
+    const pickText = (root, selectors) => {
+      for (const selector of selectors) {
+        const nodes = Array.from(root.querySelectorAll(selector));
+        for (const node of nodes) {
+          const text = normalize(node.textContent);
+          if (text) return text;
+        }
+      }
+      return "";
+    };
+
+    const extractConversationId = (href, fallback) => {
+      if (!href && !fallback) return "";
+      try {
+        const url = new URL(href || fallback, window.location.origin);
+        return url.searchParams.get("conversationId")
+          || url.searchParams.get("id")
+          || url.searchParams.get("conversation")
+          || "";
+      } catch (e) {
+        return "";
+      }
+    };
+
+    const extractConversationIdFromTestIdValue = (value) => {
+      const trimmed = (value || "").trim();
+      if (!trimmed) return "";
+      if (/\\s/.test(trimmed)) return "";
+      if (!trimmed.includes(":")) return "";
+      return trimmed;
+    };
+
+    const pickImage = (root, selectors) => {
+      const extractFromNode = (node) => {
+        if (!node) return "";
+        const tag = node.tagName ? node.tagName.toLowerCase() : "";
+        const candidates = [];
+        if (tag === "img" || tag === "source") {
+          const srcset = node.getAttribute("data-srcset")
+            || node.getAttribute("srcset")
+            || "";
+          if (srcset) {
+            candidates.push(srcset.split(",")[0].trim().split(" ")[0]);
+          }
+          candidates.push(
+            node.getAttribute("data-src"),
+            node.getAttribute("data-lazy-src"),
+            node.getAttribute("data-original"),
+            node.currentSrc,
+            node.src
+          );
+        } else {
+          candidates.push(
+            node.getAttribute("data-src"),
+            node.getAttribute("data-lazy-src"),
+            node.getAttribute("data-original"),
+            node.getAttribute("data-bg"),
+            node.getAttribute("data-background")
+          );
+          const style = node.getAttribute("style") || "";
+          const match = style.match(/url\\([\"']?([^\"')]+)[\"']?\\)/i);
+          if (match) candidates.push(match[1]);
+        }
+
+        for (const candidate of candidates) {
+          let src = (candidate || "").trim();
+          if (!src) continue;
+          if (src.includes(",")) {
+            src = src.split(",")[0].trim().split(" ")[0];
+          }
+          if (src.includes("data:image/") || src.includes("placeholder")) continue;
+          try {
+            return new URL(src, window.location.origin).href;
+          } catch (e) {
+            return src;
+          }
+        }
+
+        return "";
+      };
+
+      for (const selector of selectors) {
+        const node = root.querySelector(selector);
+        const src = extractFromNode(node);
+        if (src) return src;
+      }
+      return "";
+    };
+
+    // Find conversation list container
+    const listContainers = [
+      "[data-testid*='message-list']",
+      "[data-qa*='message-list']",
+      "[data-testid*='conversation-list']",
+      "[data-qa*='conversation-list']",
+      "[class*='MessageList']",
+      "[class*='message-list']",
+      "[class*='ConversationList']",
+      "[class*='conversation-list']",
+      "ul[role='list']",
+      "ul"
+    ]
+      .map((selector) => document.querySelector(selector))
+      .filter(Boolean);
+    const searchRoots = listContainers.length ? listContainers : [document];
+
+    const baseUrl = "https://www.kleinanzeigen.de/m-nachrichten.html";
+
+    const buildHrefFromId = (id) => {
+      if (!id) return "";
+      try {
+        return `${baseUrl}?conversationId=${encodeURIComponent(id)}`;
+      } catch (e) {
+        return "";
+      }
+    };
+
+    const pickHrefFromNode = (node) => {
+      if (!node) return "";
+      return node.getAttribute("href")
+        || node.getAttribute("data-href")
+        || node.getAttribute("data-url")
+        || node.getAttribute("data-link")
+        || node.getAttribute("data-target")
+        || node.getAttribute("data-routerlink")
+        || "";
+    };
+
+    const findHrefInCard = (card) => {
+      if (!card) return "";
+      const direct = pickHrefFromNode(card);
+      if (direct) return direct;
+      const candidate = card.querySelector("[href], [data-href], [data-url], [data-link], [data-target], [data-routerlink]");
+      return candidate ? pickHrefFromNode(candidate) : "";
+    };
+
+    const extractConversationIdFromAttrs = (node) => {
+      if (!node) return "";
+      return node.getAttribute("data-conversation-id")
+        || node.getAttribute("data-qa-conversation-id")
+        || node.getAttribute("data-conversationid")
+        || node.getAttribute("data-conversation")
+        || node.getAttribute("data-id")
+        || "";
+    };
+
+    const extractConversationIdFromTestId = (node) => {
+      if (!node) return "";
+      const direct = extractConversationIdFromTestIdValue(node.getAttribute("data-testid"));
+      if (direct) return direct;
+      const candidates = Array.from(node.querySelectorAll("[data-testid]"));
+      for (const candidate of candidates) {
+        const value = extractConversationIdFromTestIdValue(candidate.getAttribute("data-testid"));
+        if (value) return value;
+      }
+      return "";
+    };
+
+    const pickParticipantFromHeader = (card) => {
+      const header = card.querySelector("header");
+      if (!header) return "";
+      const spans = Array.from(header.querySelectorAll("span"));
+      for (const span of spans) {
+        const text = normalize(span.textContent);
+        if (!text) continue;
+        if (isTimeLike(text)) continue;
+        return text;
+      }
+      return "";
+    };
+
+    // Find conversation links using multiple strategies
+    const linkSelectors = [
+      "a[href*='conversationId']",
+      "a[href*='m-nachrichten.html?']",
+      "a[href*='m-nachrichten']",
+      "a[href*='nachrichten']",
+      "[data-qa*='conversation-link']",
+      "[data-testid*='conversation-link']",
+      "[data-qa*='message-link']",
+      "[data-testid*='message-link']"
+    ];
+    const allAnchors = [];
+    for (const root of searchRoots) {
+      for (const sel of linkSelectors) {
+        const nodes = Array.from(root.querySelectorAll(sel));
+        for (const node of nodes) {
+          if (node.tagName === "A") {
+            allAnchors.push(node);
+          } else {
+            const anchor = node.closest("a[href]");
+            if (anchor) allAnchors.push(anchor);
+          }
+        }
+      }
+    }
+    const uniqueAnchors = Array.from(new Set(allAnchors));
+
+    // Find conversation cards (closest meaningful container)
+    const strongCardSelectors =
+      "li, article, [role='listitem'], [data-testid*='conversation'], [data-qa*='conversation'], "
+      + "[class*='conversation'], [class*='Conversation'], [class*='message-item'], [class*='MessageItem']";
+    const linkCountSelector = "a[href*='conversationId'], a[href*='m-nachrichten'], a[href*='nachrichten']";
+
+    const pickCardForAnchor = (anchor) => {
+      if (!anchor) return null;
+      let lastCandidate = anchor.closest(strongCardSelectors) || anchor;
+      let current = anchor;
+      while (current && current !== document.body) {
+        if (current.matches && current.matches(strongCardSelectors)) return current;
+        if (current.matches && (current.matches("div") || current.matches("section"))) {
+          const linkCount = current.querySelectorAll(linkCountSelector).length;
+          if (linkCount === 1) {
+            lastCandidate = current;
+          } else if (linkCount > 1) {
+            break;
+          }
+        }
+        current = current.parentElement;
+      }
+      return lastCandidate || anchor;
+    };
+
+    const directCards = Array.from(document.querySelectorAll(
+      "#conversation-list article, [data-testid='conversation-list'] article, article.ConversationListItem"
+    ));
+
+    let cards = directCards.length
+      ? directCards
+      : uniqueAnchors
+        .map((anchor) => pickCardForAnchor(anchor))
+        .filter(Boolean);
+
+    if (!cards.length) {
+      const fallbackCardSelectors = [
+        "[data-testid*='conversation']",
+        "[data-qa*='conversation']",
+        "[data-testid*='conversation-item']",
+        "[data-qa*='conversation-item']",
+        "[data-testid*='message-item']",
+        "[data-qa*='message-item']",
+        "[data-testid*='message-list-item']",
+        "[data-qa*='message-list-item']",
+        "[class*='conversation']",
+        "[class*='Conversation']",
+        "[class*='message-item']",
+        "[class*='MessageItem']",
+        "[class*='messageListItem']",
+        "[class*='MessageListItem']",
+        "[role='button']",
+        "[role='listitem']",
+        "li",
+        "article"
+      ];
+      const fallbackCandidates = [];
+      for (const root of searchRoots) {
+        for (const selector of fallbackCardSelectors) {
+          try {
+            fallbackCandidates.push(...Array.from(root.querySelectorAll(selector)));
+          } catch (e) {}
+        }
+      }
+      const uniqueCandidates = Array.from(new Set(fallbackCandidates));
+      const refinedCandidates = uniqueCandidates.filter((node) => {
+        if (!node) return false;
+        const hasId = Boolean(extractConversationIdFromAttrs(node));
+        if (hasId) return true;
+        const descendantWithId = node.querySelector(
+          "[data-conversation-id], [data-qa-conversation-id], [data-conversationid], [data-conversation], [data-id]"
+        );
+        if (descendantWithId) return true;
+        const linkCount = node.querySelectorAll(linkCountSelector).length;
+        return linkCount <= 1;
+      });
+      const leafCandidates = refinedCandidates.filter(
+        (node) => !refinedCandidates.some((other) => other !== node && node.contains(other))
+      );
+      cards = leafCandidates.length ? leafCandidates : refinedCandidates;
+    }
+    const uniqueCards = Array.from(new Set(cards));
+
+    return uniqueCards
+      .map((card) => {
+        // Find conversation link
+        const link = card.querySelector("a[href*='conversationId']")
+          || card.querySelector("a[href*='m-nachrichten.html?']")
+          || card.querySelector("a[href*='m-nachrichten']")
+          || card.querySelector("a[href*='nachrichten']");
+        let href = link ? (link.href || link.getAttribute("href") || "") : "";
+        if (!href) href = findHrefInCard(card);
+        if (href && /\/(s-anzeige|zur-anzeige)\//.test(href)) href = "";
+
+        let conversationId = extractConversationId(href)
+          || extractConversationIdFromAttrs(card)
+          || extractConversationIdFromTestId(card);
+        if (!conversationId) {
+          const dataNode = card.querySelector("[data-conversation-id], [data-qa-conversation-id], [data-conversationid], [data-conversation], [data-id], [data-testid]");
+          conversationId = extractConversationIdFromAttrs(dataNode)
+            || extractConversationIdFromTestId(dataNode);
+        }
+        if (!href && conversationId) href = buildHrefFromId(conversationId);
+
+        // Extract participant name
+        const participantFromHeader = pickParticipantFromHeader(card);
+        const participant = participantFromHeader || pickText(card, [
+          "[data-testid*='username']",
+          "[data-testid*='user-name']",
+          "[data-testid*='conversation-title']",
+          "[data-qa*='username']",
+          "[data-qa*='user-name']",
+          "[data-qa*='conversation-title']",
+          "[data-qa*='partner']",
+          "[data-qa*='participant']",
+          "[data-testid*='sender']",
+          "[data-testid*='participant']",
+          "[class*='username']",
+          "[class*='userName']",
+          "[class*='UserName']",
+          ".conversation-title",
+          ".conversation__title",
+          ".conversation__name",
+          "[class*='sender']",
+          "[class*='Sender']",
+          "strong",
+          "b",
+          "h4"
+        ]);
+
+        // Extract ad title
+        let adTitle = pickText(card, [
+          "a[href*='/zur-anzeige/']",
+          "a[href*='/s-anzeige/']",
+          "[data-testid*='ad-title']",
+          "[data-testid*='item-title']",
+          "[data-testid*='subject']",
+          "[data-qa*='ad-title']",
+          "[data-qa*='item-title']",
+          "[data-qa*='subject']",
+          "[data-qa*='title']",
+          "[class*='adTitle']",
+          "[class*='AdTitle']",
+          "[class*='ad-title']",
+          "[class*='itemTitle']",
+          ".conversation__ad-title",
+          ".ad-title",
+          ".conversation__subject",
+          ".message-list__title",
+          "[class*='subject']",
+          "[class*='Subject']",
+          "h3",
+          "h2"
+        ]);
+        adTitle = cleanTitle(adTitle);
+
+        // Extract last message preview
+        const lastMessage = pickText(card, [
+          "[data-testid*='snippet']",
+          "[data-testid*='preview']",
+          "[data-testid*='last-message']",
+          "[data-qa*='snippet']",
+          "[data-qa*='preview']",
+          "[data-qa*='last-message']",
+          "[data-qa*='message-preview']",
+          "[class*='snippet']",
+          "[class*='Snippet']",
+          "[class*='preview']",
+          "[class*='Preview']",
+          "[class*='lastMessage']",
+          ".conversation__snippet",
+          ".conversation__preview",
+          ".message-preview",
+          ".conversation__message",
+          ".conversation__last-message",
+          ".message__preview",
+          ".text",
+          "p"
+        ]);
+
+        // Extract ad image
+        const adImage = pickImage(card, [
+          "a.AdImage img",
+          "a.AdImage picture img",
+          "a.AdImage picture source",
+          "a.AdImage source",
+          ".AdImage img",
+          "[class*='AdImage'] img",
+          "img[src*='img.kleinanzeigen.de']",
+          "img[src*='prod-ads/images']",
+          "[data-testid*='ad'] img",
+          "[data-testid*='item'] img",
+          "[data-testid*='image'] img",
+          "[data-qa*='ad'] img",
+          "[data-qa*='item'] img",
+          "[data-qa*='image'] img",
+          "[class*='ad-image'] img",
+          "[class*='itemImage'] img",
+          ".conversation__image img",
+          ".ad-image img",
+          "img[alt*='Anzeige']",
+          "img[alt*='anzeige']",
+          "img[alt*='ad']",
+          "picture img",
+          "picture source",
+          "source",
+          "[style*='background-image']",
+          "img"
+        ]);
+
+        // Extract timestamp
+        const timeText = pickText(card, [
+          "time",
+          "[datetime]",
+          "[data-testid*='time']",
+          "[data-testid*='date']",
+          "[data-testid*='timestamp']",
+          "[data-qa*='time']",
+          "[data-qa*='date']",
+          "[data-qa*='timestamp']",
+          "[class*='time']",
+          "[class*='Time']",
+          "[class*='date']",
+          "[class*='Date']",
+          "[class*='timestamp']",
+          ".conversation__time",
+          ".timestamp"
+        ]);
+
+        // Detect unread status
+        const cardClass = (card.className || "") + " " + (card.getAttribute("data-testid") || "");
+        const unread = /unread|new|highlight|unseen|badge/i.test(cardClass)
+          || Boolean(card.querySelector(
+          ".badge, .unread, [data-testid*='unread'], [data-testid*='badge'], "
+            + "[class*='unread'], [class*='Unread'], [class*='badge'], [class*='Badge'], "
+            + "[class*='unseen'], [class*='Unseen'], [class*='new-message']"
+          ));
+
+        // Extract avatar
+        const avatar = pickImage(card, [
+          "[data-testid*='avatar'] img",
+          "[data-qa*='avatar'] img",
+          "[class*='avatar'] img",
+          "[class*='Avatar'] img",
+          ".user-avatar img",
+          "img[class*='avatar']",
+          "img[class*='Avatar']"
+        ]);
+
+        return {
+          href,
+          conversationId,
+          participant,
+          adTitle,
+          adImage,
+          lastMessage,
+          timeText,
+          unread,
+          avatar
+        };
+      })
+      .filter((item) => item.href || item.conversationId || item.participant || item.adTitle);
+  });
+};
+
+const parseMessagesFromThread = async (page, fallbackSender) => {
+  await waitForDynamicContent(page, [
+    "[data-message-id]",
+    "[data-testid*='message']",
+    "[data-qa*='message']",
+    "[class*='message']",
+    "[class*='Message']",
+    "[class*='chat']",
+    "[class*='Chat']"
+  ], 12000);
+
+  return page.evaluate((senderFallback) => {
+    const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+    const threadRoots = [
+      "[data-testid*='message-thread']",
+      "[data-qa*='message-thread']",
+      "[data-testid*='chat-thread']",
+      "[data-qa*='chat-thread']",
+      "[class*='MessageThread']",
+      "[class*='message-thread']",
+      "[class*='ChatThread']",
+      "[class*='chat-thread']",
+      "[class*='conversation-thread']",
+      "[class*='ConversationThread']"
+    ]
+      .map((selector) => document.querySelector(selector))
+      .filter(Boolean);
+    const searchRoots = threadRoots.length ? threadRoots : [document];
+
+    const selectorList = [
+      "[data-message-id]",
+      "[data-qa*='message']",
+      "[data-testid*='message']",
+      "[data-testid*='chat-message']",
+      "[data-testid*='bubble']",
+      "[data-qa*='chat-message']",
+      "[data-qa*='bubble']",
+      "[data-qa*='message-item']",
+      "[data-testid*='message-item']",
+      "[class*='MessageBubble']",
+      "[class*='messageBubble']",
+      "[class*='message-bubble']",
+      "[class*='ChatMessage']",
+      "[class*='chatMessage']",
+      ".message",
+      ".chat-message",
+      ".msg",
+      ".message-thread__message",
+      ".chat__message",
+      "[class*='Message'][class*='item']",
+      "[class*='message'][class*='item']"
+    ];
+
+    const allNodes = [];
+    for (const root of searchRoots) {
+      for (const selector of selectorList) {
+        try { allNodes.push(...Array.from(root.querySelectorAll(selector))); } catch (e) {}
+      }
+    }
+    const uniqueNodes = Array.from(new Set(allNodes));
+    const nodes = uniqueNodes.filter(
+      (node) => !uniqueNodes.some((other) => other !== node && other.contains(node))
+    );
+
+    return nodes
+      .map((node, index) => {
+        const messageId = node.getAttribute("data-message-id")
+          || node.getAttribute("data-qa-message-id")
+          || node.getAttribute("data-testid")
+          || node.getAttribute("id")
+          || `message-${index}`;
+
+        const textSelectors = [
+          "[data-qa*='text']",
+          "[data-testid*='text']",
+          "[data-testid*='body']",
+          "[data-testid*='content']",
+          "[data-qa*='message-text']",
+          "[data-qa*='message-body']",
+          "[data-qa*='message-content']",
+          "[class*='messageText']",
+          "[class*='MessageText']",
+          "[class*='message-text']",
+          "[class*='messageBody']",
+          "[class*='MessageBody']",
+          "[class*='message-body']",
+          "[class*='messageContent']",
+          "[class*='MessageContent']",
+          ".message-text",
+          ".message__text",
+          ".chat-message__text",
+          ".text",
+          "span[dir='auto']",
+          "p"
+        ];
+        let textNode = null;
+        for (const sel of textSelectors) {
+          textNode = node.querySelector(sel);
+          if (textNode) break;
+        }
+        const rawText = normalize(textNode ? textNode.textContent : "");
+        const text = rawText || normalize(node.textContent);
+        if (!text) return null;
+
+        const timeSelectors = [
+          "time",
+          "[datetime]",
+          "[data-testid*='time']",
+          "[data-testid*='date']",
+          "[data-testid*='timestamp']",
+          "[data-qa*='time']",
+          "[data-qa*='date']",
+          "[data-qa*='timestamp']",
+          "[class*='time']",
+          "[class*='Time']",
+          "[class*='date']",
+          "[class*='Date']",
+          "[class*='timestamp']",
+          ".message__time",
+          ".chat-message__time"
+        ];
+        let timeNode = null;
+        for (const sel of timeSelectors) {
+          timeNode = node.querySelector(sel);
+          if (timeNode) break;
+        }
+        const timeLabel = timeNode ? normalize(timeNode.textContent) : "";
+        const dateTime = timeNode
+          ? (timeNode.getAttribute("datetime") || timeNode.getAttribute("data-time") || "")
+          : "";
+
+        const fullClass = (node.className || "") + " " + (node.getAttribute("data-testid") || "")
+          + " " + (node.getAttribute("data-qa") || "") + " " + (node.getAttribute("data-direction") || "");
+        const parentClass = node.parentElement ? (node.parentElement.className || "") : "";
+        const combinedClass = fullClass + " " + parentClass;
+
+        const qaData = `${node.getAttribute("data-qa") || ""} ${node.getAttribute("data-testid") || ""}`;
+        const ariaLabel = `${node.getAttribute("aria-label") || ""}`;
+        const isOutgoing = /outgoing|sent|from-me|own|self|right|align-right|myMessage|my-message/i.test(combinedClass)
+          || /outgoing|sent|own|self|from-me/i.test(qaData)
+          || /du:|von dir|you:/i.test(ariaLabel)
+          || node.getAttribute("data-direction") === "outgoing"
+          || node.getAttribute("data-type") === "sent";
+
+        // Try to extract sender name from the message
+        const senderSelectors = [
+          "[data-testid*='sender']",
+          "[data-testid*='author']",
+          "[data-testid*='username']",
+          "[class*='sender']",
+          "[class*='Sender']",
+          "[class*='author']",
+          "[class*='Author']",
+          "[class*='username']",
+          "[class*='UserName']",
+          ".message__sender",
+          ".message__author"
+        ];
+        let senderNode = null;
+        for (const sel of senderSelectors) {
+          senderNode = node.querySelector(sel);
+          if (senderNode) break;
+        }
+        const extractedSender = senderNode ? normalize(senderNode.textContent) : "";
+        const sender = isOutgoing ? "Вы" : (extractedSender || senderFallback || "");
+
+        return {
+          id: messageId,
+          text,
+          timeLabel,
+          dateTime,
+          direction: isOutgoing ? "outgoing" : "incoming",
+          sender
+        };
+      })
+      .filter(Boolean);
+  }, fallbackSender);
+};
+
+const parseConversationMetaFromThread = async (page) => {
+  return page.evaluate(() => {
+    const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+    const headerRoots = [
+      "[data-testid*='message-header']",
+      "[data-qa*='message-header']",
+      "[data-testid*='conversation-header']",
+      "[data-qa*='conversation-header']",
+      "[class*='message-header']",
+      "[class*='MessageHeader']",
+      "[class*='conversation-header']",
+      "[class*='ConversationHeader']",
+      "header"
+    ]
+      .map((selector) => document.querySelector(selector))
+      .filter(Boolean);
+    const searchRoots = headerRoots.length ? headerRoots : [document];
+
+    const pickText = (selectors) => {
+      for (const root of searchRoots) {
+        for (const selector of selectors) {
+          try {
+            const nodes = Array.from(root.querySelectorAll(selector));
+            for (const node of nodes) {
+              const text = normalize(node.textContent);
+              if (text) return text;
+            }
+          } catch (e) {}
+        }
+      }
+      return "";
+    };
+    const pickImage = (selectors) => {
+      const extractFromNode = (node) => {
+        if (!node) return "";
+        const tag = node.tagName ? node.tagName.toLowerCase() : "";
+        const candidates = [];
+        if (tag === "img" || tag === "source") {
+          const srcset = node.getAttribute("data-srcset")
+            || node.getAttribute("srcset")
+            || "";
+          if (srcset) {
+            candidates.push(srcset.split(",")[0].trim().split(" ")[0]);
+          }
+          candidates.push(
+            node.getAttribute("data-src"),
+            node.getAttribute("data-lazy-src"),
+            node.getAttribute("data-original"),
+            node.currentSrc,
+            node.src
+          );
+        } else {
+          candidates.push(
+            node.getAttribute("data-src"),
+            node.getAttribute("data-lazy-src"),
+            node.getAttribute("data-original"),
+            node.getAttribute("data-bg"),
+            node.getAttribute("data-background")
+          );
+          const style = node.getAttribute("style") || "";
+          const match = style.match(/url\\([\"']?([^\"')]+)[\"']?\\)/i);
+          if (match) candidates.push(match[1]);
+        }
+
+        for (const candidate of candidates) {
+          let src = (candidate || "").trim();
+          if (!src) continue;
+          if (src.includes(",")) {
+            src = src.split(",")[0].trim().split(" ")[0];
+          }
+          if (src.includes("data:image/") || src.includes("placeholder")) continue;
+          try {
+            return new URL(src, window.location.origin).href;
+          } catch (e) {
+            return src;
+          }
+        }
+        return "";
+      };
+
+      for (const root of searchRoots) {
+        for (const selector of selectors) {
+          try {
+            const node = root.querySelector(selector);
+            const src = extractFromNode(node);
+            if (src) return src;
+          } catch (e) {}
+        }
+      }
+      return "";
+    };
+
+    let adTitle = pickText([
+      "[data-testid*='ad-title']",
+      "[data-testid*='item-title']",
+      "[data-testid*='subject']",
+      "[data-qa*='ad-title']",
+      "[data-qa*='item-title']",
+      "[data-qa*='subject']",
+      "[data-qa*='title']",
+      "[class*='adTitle']",
+      "[class*='AdTitle']",
+      "[class*='ad-title']",
+      "[class*='itemTitle']",
+      "[class*='ItemTitle']",
+      ".message-header__title",
+      ".conversation__ad-title",
+      ".chat-header__subject",
+      ".message-header__subject",
+      ".chat-header__title",
+      "[class*='header'] a[href*='/zur-anzeige/']",
+      "[class*='header'] a[href*='/s-anzeige/']",
+      "a[href*='/zur-anzeige/']",
+      "a[href*='/s-anzeige/']",
+      "h1",
+      "h2"
+    ]);
+    adTitle = normalize(adTitle).replace(/^(gelösch[^\s]*|gelöscht|reserviert|inaktiv)\s*[•-]?\s*/i, "").trim();
+    const adImageFromLink = pickImage([
+      "a.AdImage img",
+      "a.AdImage picture img",
+      "a.AdImage picture source",
+      "a.AdImage source",
+      "a[href*='/zur-anzeige/'] img",
+      "a[href*='/zur-anzeige/'] picture img",
+      "a[href*='/zur-anzeige/'] picture source",
+      "a[href*='/zur-anzeige/'] source",
+      "a[href*='/zur-anzeige/'] [style*='background-image']",
+      "a[href*='/s-anzeige/'] img",
+      "a[href*='/s-anzeige/'] picture img",
+      "a[href*='/s-anzeige/'] picture source",
+      "a[href*='/s-anzeige/'] source",
+      "a[href*='/s-anzeige/'] [style*='background-image']"
+    ]);
+    const adImage = adImageFromLink || pickImage([
+      "[data-testid*='ad-image'] img",
+      "[data-testid*='ad'] img",
+      "[data-testid*='item-image'] img",
+      "[data-testid*='item'] img",
+      "[data-qa*='ad-image'] img",
+      "[data-qa*='ad'] img",
+      "[data-qa*='item-image'] img",
+      "[data-qa*='item'] img",
+      "[class*='adImage'] img",
+      "[class*='AdImage'] img",
+      "[class*='ad-image'] img",
+      "[class*='itemImage'] img",
+      "[class*='ItemImage'] img",
+      ".message-header__image img",
+      ".conversation__image img",
+      ".chat-header__image img",
+      "[class*='header'] img",
+      "img[alt*='Anzeige']",
+      "img[alt*='anzeige']",
+      "picture img",
+      "picture source",
+      "source",
+      "[style*='background-image']",
+      "img"
+    ]);
+
+    // Also try to extract participant name from thread header
+    const participant = pickText([
+      "[data-testid*='username']",
+      "[data-testid*='user-name']",
+      "[data-testid*='partner']",
+      "[data-testid*='participant']",
+      "[data-qa*='username']",
+      "[data-qa*='user-name']",
+      "[data-qa*='partner']",
+      "[data-qa*='participant']",
+      "[class*='partnerName']",
+      "[class*='PartnerName']",
+      "[class*='partner-name']",
+      "[class*='username']",
+      "[class*='UserName']"
+    ]);
+
+    return { adTitle, adImage, participant };
+  });
+};
+
+const buildConversationKey = (conversation, accountId) => {
+  const href = conversation?.href || conversation?.conversationUrl || "";
+  const resolvedId = conversation?.conversationId || extractConversationId(href);
+  const participant = (conversation?.participant || conversation?.sender || "").trim().toLowerCase();
+  const adTitle = (conversation?.adTitle || "").trim().toLowerCase();
+  const lastMessage = (conversation?.lastMessage || conversation?.message || "").trim().toLowerCase();
+  const timeText = (conversation?.timeText || conversation?.time || "").trim().toLowerCase();
+  const accountKey = accountId ?? conversation?.accountId ?? "unknown";
+  if (resolvedId) return `id:${accountKey}:${resolvedId}`;
+  return `fallback:${accountKey}:${participant}|${adTitle}|${lastMessage}|${timeText}`;
+};
+
+const dedupeConversationList = (conversations, accountId) => {
+  const seen = new Set();
+  const deduped = [];
+  for (const conversation of conversations) {
+    const key = buildConversationKey(conversation, accountId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(conversation);
+  }
+  return deduped;
+};
+
+const fetchConversationListFromWeb = async ({
+  account,
+  proxy,
+  accountLabel,
+  deviceProfile,
+  cookies,
+  maxConversations
+}) => {
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl;
+
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
+  const profileDir = createTempProfileDir();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: launchArgs,
+    userDataDir: profileDir
+  });
+
+  try {
+    const page = await browser.newPage();
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
+
+    await page.setUserAgent(deviceProfile.userAgent);
+    await page.setViewport(deviceProfile.viewport);
+    await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    await page.emulateTimezone(deviceProfile.timezone);
+    await page.evaluateOnNewDocument((platform) => {
+      Object.defineProperty(navigator, "platform", {
+        get: () => platform
+      });
+    }, deviceProfile.platform);
+
+    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await humanPause();
+    await page.setCookie(...cookies);
+    await humanPause();
+    await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+    await humanPause(180, 320);
+
+    if (await isAuthFailure(page)) {
+      const error = new Error("AUTH_REQUIRED");
+      error.code = "AUTH_REQUIRED";
+      throw error;
+    }
+
+    const conversations = await parseConversationList(page);
+    const limited = maxConversations ? conversations.slice(0, maxConversations) : conversations;
+    console.log(`[messageService] Web list conversations: ${limited.length} for ${accountLabel}`);
+    return limited.map((conversation) => ({
+      ...conversation,
+      accountId: account.id,
+      accountLabel
+    }));
+  } finally {
+    await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+};
+
+const fetchConversationHeaderPreviews = async ({
+  account,
+  proxy,
+  accountLabel,
+  deviceProfile,
+  cookies,
+  conversations
+}) => {
+  if (!Array.isArray(conversations) || conversations.length === 0) return [];
+
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl;
+
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
+  const profileDir = createTempProfileDir();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: launchArgs,
+    userDataDir: profileDir
+  });
+
+  try {
+    const page = await browser.newPage();
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
+
+    await page.setUserAgent(deviceProfile.userAgent);
+    await page.setViewport(deviceProfile.viewport);
+    await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    await page.emulateTimezone(deviceProfile.timezone);
+    await page.evaluateOnNewDocument((platform) => {
+      Object.defineProperty(navigator, "platform", {
+        get: () => platform
+      });
+    }, deviceProfile.platform);
+
+    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await humanPause();
+    await page.setCookie(...cookies);
+    await humanPause();
+    await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+    await humanPause(180, 320);
+
+    if (await isAuthFailure(page)) {
+      const error = new Error("AUTH_REQUIRED");
+      error.code = "AUTH_REQUIRED";
+      throw error;
+    }
+
+    const results = [];
+    for (const conversation of conversations) {
+      const href = conversation.conversationUrl
+        || conversation.href
+        || (conversation.conversationId ? buildConversationUrl(conversation.conversationId) : "");
+      if (!href) continue;
+
+      await page.goto(href, { waitUntil: "domcontentloaded" });
+      await humanPause(160, 280);
+
+      const meta = await parseConversationMetaFromThread(page);
+      const resolvedId = conversation.conversationId || extractConversationId(href);
+      const adImage = normalizeImageUrl(meta.adImage);
+      results.push({
+        conversationId: resolvedId,
+        adImage,
+        adTitle: meta.adTitle || conversation.adTitle || "",
+        participant: meta.participant || conversation.participant || "",
+        href
+      });
+    }
+    console.log(`[messageService] Header previews fetched: ${results.length} for ${accountLabel}`);
+    return results;
+  } finally {
+    await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+};
+
+const sendConversationMessage = async ({
+  account,
+  proxy,
+  conversationId,
+  conversationUrl,
+  participant,
+  adTitle,
+  text
+}) => {
+  if (!conversationId && !conversationUrl && !participant && !adTitle) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+
+  const deviceProfile = getDeviceProfile(account);
+  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  if (!cookies.length) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  let userId = getUserIdFromCookies(cookies);
+  let accessTokenInfo = null;
+  if (!FORCE_WEB_MESSAGES) {
+    if (!userId) {
+      try {
+        accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+        userId = getUserIdFromAccessToken(accessTokenInfo.token);
+      } catch (error) {
+        console.log(`[messageService] Access token lookup failed: ${error.message}`);
+      }
+    }
+    if (userId) {
+      try {
+        if (!accessTokenInfo) {
+          accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+        }
+        let resolvedConversationId = conversationId || extractConversationId(conversationUrl);
+
+        if (!resolvedConversationId) {
+          const apiList = await fetchConversationListViaApi({
+            userId,
+            accessToken: accessTokenInfo.token,
+            cookies,
+            proxy,
+            deviceProfile,
+            page: 0,
+            size: 50
+          });
+          const candidates = Array.isArray(apiList?.conversations) ? apiList.conversations : [];
+          const matched = candidates.find((item) => {
+            const participantName = pickParticipantFromApi(item, userId);
+            return matchConversation(
+              { participant: participantName, adTitle: item.adTitle || "" },
+              { participant, adTitle }
+            );
+          });
+          if (matched) {
+            resolvedConversationId = matched.id;
+          }
+        }
+
+        if (!resolvedConversationId) {
+          const error = new Error("CONVERSATION_ID_REQUIRED");
+          error.code = "CONVERSATION_ID_REQUIRED";
+          throw error;
+        }
+
+        await sendConversationMessageViaApi({
+          userId,
+          conversationId: resolvedConversationId,
+          accessToken: accessTokenInfo.token,
+          cookies,
+          proxy,
+          deviceProfile,
+          text
+        });
+
+        const detail = await fetchConversationDetailViaApi({
+          userId,
+          conversationId: resolvedConversationId,
+          accessToken: accessTokenInfo.token,
+          cookies,
+          proxy,
+          deviceProfile
+        });
+
+        const participantName = pickParticipantFromApi(detail, userId);
+        const apiMessages = (detail.messages || [])
+          .map((message, index) => {
+            const text = message.text || message.textShort || message.title || "";
+            if (!text) return null;
+            const direction = message.boundness === "OUTBOUND" ? "outgoing" : "incoming";
+            return {
+              id: message.messageId || `message-${index}`,
+              text,
+              timeLabel: message.receivedDate || "",
+              dateTime: message.receivedDate || "",
+              direction,
+              sender: direction === "outgoing" ? "Вы" : (participantName || "")
+            };
+          })
+          .filter(Boolean);
+
+        const normalizedMessages = apiMessages.map((message) => {
+          const parsed = parseTimestamp(message.dateTime || message.timeLabel || "");
+          return {
+            ...message,
+            date: parsed.date,
+            time: parsed.time
+          };
+        });
+
+        return {
+          messages: normalizedMessages,
+          adTitle: detail.adTitle || "",
+          adImage: detail.adImage || "",
+          participant: participantName || "",
+          conversationId: resolvedConversationId,
+          conversationUrl: buildConversationUrl(resolvedConversationId, conversationUrl)
+        };
+      } catch (error) {
+        console.log(`[messageService] API send failed: ${error.message}`);
+      }
+    }
+  }
+
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl;
+
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
+  const profileDir = createTempProfileDir();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: launchArgs,
+    userDataDir: profileDir
+  });
+
+  try {
+    const page = await browser.newPage();
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
+
+    await page.setUserAgent(deviceProfile.userAgent);
+    await page.setViewport(deviceProfile.viewport);
+    await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    await page.emulateTimezone(deviceProfile.timezone);
+    await page.evaluateOnNewDocument((platform) => {
+      Object.defineProperty(navigator, "platform", {
+        get: () => platform
+      });
+    }, deviceProfile.platform);
+
+    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await humanPause();
+    await page.setCookie(...cookies);
+    await humanPause();
+    let resolvedConversationId = conversationId;
+    let resolvedConversationUrl = conversationUrl;
+    if (!resolvedConversationId && !resolvedConversationUrl) {
+      await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+      await humanPause(120, 240);
+      const conversations = await parseConversationList(page);
+      const matched = conversations.find((item) => matchConversation(item, { participant, adTitle }));
+      if (matched) {
+        resolvedConversationUrl = matched.href
+          || (matched.conversationId ? buildConversationUrl(matched.conversationId) : "");
+        resolvedConversationId = matched.conversationId || extractConversationId(matched.href);
+      }
+    }
+
+    resolvedConversationUrl = buildConversationUrl(resolvedConversationId, resolvedConversationUrl);
+    await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
+    await humanPause(120, 240);
+
+    if (await isAuthFailure(page)) {
+      const error = new Error("AUTH_REQUIRED");
+      error.code = "AUTH_REQUIRED";
+      throw error;
+    }
+
+    const inputSelectors = [
+      "textarea[name='message']",
+      "textarea[name='text']",
+      "textarea[name='body']",
+      "textarea[placeholder*='Nachricht']",
+      "textarea[placeholder*='message']",
+      "textarea[aria-label*='Nachricht']",
+      "textarea[aria-label*='message']",
+      "[data-testid*='message-input'] textarea",
+      "[data-testid*='message-input']",
+      "[data-qa*='message-input'] textarea",
+      "[data-qa*='message-input']",
+      "[role='textbox'][contenteditable='true']",
+      "[contenteditable='true'][aria-label*='Nachricht']",
+      "[contenteditable='true'][aria-label*='message']",
+      "[contenteditable='true']",
+      "textarea"
+    ];
+
+    await waitForDynamicContent(page, inputSelectors, 20000);
+    const inputResult = await findMessageInputHandle(page, inputSelectors);
+
+    if (!inputResult?.handle) {
+      const error = new Error("MESSAGE_INPUT_NOT_FOUND");
+      error.code = "MESSAGE_INPUT_NOT_FOUND";
+      throw error;
+    }
+
+    const inputHandle = inputResult.handle;
+    await inputHandle.evaluate((input) => {
+      input.scrollIntoView({ block: "center", inline: "center" });
+      if (input.tagName === "TEXTAREA" || input.tagName === "INPUT") {
+        input.value = "";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (input.isContentEditable) {
+        input.textContent = "";
+      }
+    });
+    await inputHandle.focus();
+    await inputHandle.type(text, { delay: 20 });
+
+    const clicked = await inputHandle.evaluate((input) => {
+      const root = input.closest("form")
+        || input.closest("[data-testid*='composer']")
+        || input.closest("[data-qa*='composer']")
+        || input.closest("[class*='composer']")
+        || input.closest("[class*='Composer']")
+        || input.parentElement;
+      if (!root) return false;
+
+      const candidates = [
+        "button[type='submit']",
+        "button[aria-label*='Senden']",
+        "button[aria-label*='send']",
+        "button[aria-label*='Nachricht']",
+        "button[title*='Senden']",
+        "button[title*='send']",
+        "[data-testid*='send']",
+        "[data-qa*='send']",
+        "[class*='send']",
+        "button"
+      ];
+      for (const selector of candidates) {
+        const buttons = Array.from(root.querySelectorAll(selector));
+        for (const button of buttons) {
+          const svg = button.querySelector("svg[data-title='sendOutline']")
+            || button.querySelector("svg[aria-label*='send']")
+            || button.querySelector("svg[data-icon*='send']");
+          if (svg || /senden|send/i.test(button.textContent || "")) {
+            button.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+
+    if (!clicked) {
+      await page.keyboard.press("Enter");
+    }
+
+    await humanPause(120, 180);
+    const messages = await parseMessagesFromThread(page, "");
+    const normalizedMessages = (messages || []).map((message) => {
+      const parsed = parseTimestamp(message.dateTime || message.timeLabel || "");
+      return {
+        ...message,
+        date: parsed.date,
+        time: parsed.time
+      };
+    });
+    return {
+      messages: normalizedMessages,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl
+    };
+  } finally {
+    await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+};
+
+const fetchAccountConversations = async ({ account, proxy, accountLabel, options = {} }) => {
+  const deviceProfile = getDeviceProfile(account);
+  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  if (!cookies.length) return { conversations: [] };
+  const maxConversations = Number.isFinite(options.maxConversations)
+    ? Math.max(1, Number(options.maxConversations))
+    : null;
+
+  let userId = getUserIdFromCookies(cookies);
+  let accessTokenInfo = null;
+  if (!FORCE_WEB_MESSAGES) {
+    if (!userId) {
+      try {
+        accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+        userId = getUserIdFromAccessToken(accessTokenInfo.token);
+      } catch (error) {
+        console.log(`[messageService] Access token lookup failed for ${accountLabel}: ${error.message}`);
+      }
+    }
+
+    if (userId) {
+      try {
+        if (!accessTokenInfo) {
+          accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+        }
+      const size = maxConversations || 50;
+      const apiData = await fetchConversationListViaApi({
+        userId,
+        accessToken: accessTokenInfo.token,
+        cookies,
+        proxy,
+        deviceProfile,
+        page: 0,
+        size
+      });
+
+      let apiConversations = Array.isArray(apiData?.conversations)
+        ? apiData.conversations
+        : Array.isArray(apiData?.items)
+          ? apiData.items
+          : Array.isArray(apiData?.data)
+            ? apiData.data
+            : Array.isArray(apiData?.results)
+              ? apiData.results
+              : [];
+      const totalFound = Number(apiData?._meta?.numFound || apiData?.total || apiData?.totalElements || apiConversations.length);
+      if (!maxConversations && apiConversations.length < totalFound) {
+        let page = 1;
+        while (apiConversations.length < totalFound && page < 10) {
+          const nextPage = await fetchConversationListViaApi({
+            userId,
+            accessToken: accessTokenInfo.token,
+            cookies,
+            proxy,
+            deviceProfile,
+            page,
+            size
+          });
+          const nextConversations = Array.isArray(nextPage?.conversations)
+            ? nextPage.conversations
+            : Array.isArray(nextPage?.items)
+              ? nextPage.items
+              : Array.isArray(nextPage?.data)
+                ? nextPage.data
+                : Array.isArray(nextPage?.results)
+                  ? nextPage.results
+                  : [];
+          if (!nextConversations.length) break;
+          apiConversations = apiConversations.concat(nextConversations);
+          page += 1;
+        }
+      }
+      const uniqueApi = [];
+      const seenApi = new Set();
+      for (const conversation of apiConversations) {
+        const id = conversation?.id || conversation?.conversationId || "";
+        if (id && seenApi.has(id)) continue;
+        if (id) seenApi.add(id);
+        uniqueApi.push(conversation);
+      }
+
+      const limited = maxConversations ? uniqueApi.slice(0, maxConversations) : uniqueApi;
+      let mapped = limited.map((conversation) => ({
+        href: buildConversationUrl(conversation.id),
+        conversationId: conversation.id,
+        participant: pickParticipantFromApi(conversation, userId),
+        adTitle: conversation.adTitle || "",
+        adImage: pickAdImageFromApi(conversation),
+        lastMessage: conversation.textShortTrimmed || "",
+        timeText: conversation.receivedDate || "",
+        unread: Boolean(conversation.unread),
+        accountId: account.id,
+        accountLabel
+      }));
+
+      mapped = mapped.map((item) => ({
+        ...item,
+        adImage: normalizeImageUrl(item.adImage)
+      }));
+
+      mapped = dedupeConversationList(mapped, account.id);
+
+      if (mapped.some((item) => !isValidImageUrl(item.adImage))) {
+        try {
+          const webList = await fetchConversationListFromWeb({
+            account,
+            proxy,
+            accountLabel,
+            deviceProfile,
+            cookies,
+            maxConversations
+          });
+          const dedupedWeb = dedupeConversationList(webList, account.id);
+          const webById = new Map();
+          const webByFallback = new Map();
+          for (const item of dedupedWeb) {
+            const id = item.conversationId || extractConversationId(item.href || "");
+            if (id && !webById.has(id)) webById.set(id, item);
+            const fallbackKey = `${(item.participant || "").trim().toLowerCase()}|${(item.adTitle || "").trim().toLowerCase()}`;
+            if (fallbackKey !== "|") webByFallback.set(fallbackKey, item);
+          }
+          mapped = mapped.map((item) => {
+            const id = item.conversationId || extractConversationId(item.conversationUrl || item.href || "");
+            const fallbackKey = `${(item.participant || "").trim().toLowerCase()}|${(item.adTitle || "").trim().toLowerCase()}`;
+            const webItem = (id && webById.get(id)) || webByFallback.get(fallbackKey);
+            if (!webItem) return item;
+            const nextImage = isValidImageUrl(item.adImage)
+              ? item.adImage
+              : (isValidImageUrl(webItem.adImage) ? normalizeImageUrl(webItem.adImage) : "");
+            return {
+              ...item,
+              adTitle: item.adTitle || webItem.adTitle || "",
+              adImage: nextImage || item.adImage || "",
+              conversationUrl: item.conversationUrl || webItem.href || item.conversationUrl
+            };
+          });
+        } catch (error) {
+          console.log(`[messageService] Web preview fetch failed for ${accountLabel}: ${error.message}`);
+        }
+      }
+
+      const stillMissing = mapped.filter((item) => !isValidImageUrl(item.adImage));
+      if (stillMissing.length) {
+        try {
+          const missingLimit = maxConversations || 25;
+          const targets = stillMissing.slice(0, missingLimit);
+          const headerPreviews = await fetchConversationHeaderPreviews({
+            account,
+            proxy,
+            accountLabel,
+            deviceProfile,
+            cookies,
+            conversations: targets
+          });
+          const byId = new Map();
+          const byFallback = new Map();
+          for (const preview of headerPreviews) {
+            if (!isValidImageUrl(preview.adImage)) continue;
+            if (preview.conversationId) {
+              byId.set(String(preview.conversationId), preview.adImage);
+            }
+            const fallbackKey = `${normalizeMatch(preview.participant)}|${normalizeMatch(preview.adTitle)}`;
+            if (fallbackKey !== "|") byFallback.set(fallbackKey, preview.adImage);
+          }
+          mapped = mapped.map((item) => {
+            if (isValidImageUrl(item.adImage)) return item;
+            const id = item.conversationId || extractConversationId(item.conversationUrl || item.href || "");
+            const fallbackKey = `${normalizeMatch(item.participant)}|${normalizeMatch(item.adTitle)}`;
+            const image = (id && byId.get(String(id))) || byFallback.get(fallbackKey);
+            if (!image) return item;
+            return { ...item, adImage: image };
+          });
+        } catch (error) {
+          console.log(`[messageService] Header preview fallback failed for ${accountLabel}: ${error.message}`);
+        }
+      }
+
+      console.log(`[messageService] API conversations: ${mapped.length} for ${accountLabel}`);
+      if (!mapped.length) {
+        throw new Error("MESSAGEBOX_API_EMPTY");
+      }
+      return { conversations: mapped };
+      } catch (error) {
+        console.log(`[messageService] API fetch failed for ${accountLabel}: ${error.message}`);
+      }
+    }
+  }
+
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl;
+
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
+  const profileDir = createTempProfileDir();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: launchArgs,
+    userDataDir: profileDir
+  });
+
+  try {
+    const page = await browser.newPage();
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
+
+    await page.setUserAgent(deviceProfile.userAgent);
+    await page.setViewport(deviceProfile.viewport);
+    await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    await page.emulateTimezone(deviceProfile.timezone);
+    await page.evaluateOnNewDocument((platform) => {
+      Object.defineProperty(navigator, "platform", {
+        get: () => platform
+      });
+    }, deviceProfile.platform);
+
+    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await humanPause();
+    await page.setCookie(...cookies);
+    await humanPause();
+    await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+    await humanPause(180, 360);
+
+    if (await isAuthFailure(page)) {
+      const error = new Error("AUTH_REQUIRED");
+      error.code = "AUTH_REQUIRED";
+      throw error;
+    }
+
+    const conversations = (await parseConversationList(page)).map((conversation) => {
+      const href = conversation.href
+        || (conversation.conversationId ? buildConversationUrl(conversation.conversationId) : "");
+      return { ...conversation, href };
+    });
+    const dedupedConversations = dedupeConversationList(conversations, account.id);
+    console.log(`[messageService] Found ${dedupedConversations.length} conversations for ${accountLabel}`);
+    if (DEBUG_MESSAGES && dedupedConversations.length === 0) {
+      await dumpMessageListDebug(page, accountLabel);
+    }
+    const conversationLimit = maxConversations || dedupedConversations.length;
+
+    const parsed = [];
+    for (const conversation of dedupedConversations.slice(0, conversationLimit)) {
+      const href = conversation.href || "";
+      const conversationId = conversation.conversationId || extractConversationId(href);
+      if (!href) continue;
+
+      await page.goto(href, { waitUntil: "domcontentloaded" });
+      await humanPause(120, 240);
+
+      const messages = await parseMessagesFromThread(page, conversation.participant);
+      const meta = await parseConversationMetaFromThread(page);
+      console.log(`[messageService] Thread ${conversationId}: ${messages.length} messages, adTitle="${meta.adTitle || conversation.adTitle}"`);
+      parsed.push({
+        ...conversation,
+        participant: conversation.participant || meta.participant || "",
+        adTitle: conversation.adTitle || meta.adTitle,
+        adImage: conversation.adImage || meta.adImage,
+        conversationId,
+        messages,
+        accountId: account.id,
+        accountLabel
+      });
+    }
+
+    return { conversations: parsed };
+  } finally {
+    await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+};
+
+const fetchMessages = async ({ accounts, proxies, options = {} }) => {
+  const results = [];
+  for (const account of accounts) {
+    if (!account.cookie) continue;
+    const proxy = account.proxyId
+      ? proxies.find((item) => item.id === account.proxyId)
+      : null;
+    const profileName = account.profileName || account.username || "Аккаунт";
+    const profileEmail = account.profileEmail || "";
+    const accountLabel = profileEmail ? `${profileName} (${profileEmail})` : profileName;
+    const data = await fetchAccountConversations({ account, proxy, accountLabel, options });
+    results.push(...data.conversations);
+  }
+  return results;
+};
+
+const fetchThreadMessages = async ({
+  account,
+  proxy,
+  conversationId,
+  conversationUrl,
+  participant,
+  adTitle
+}) => {
+  if (!conversationId && !conversationUrl && !participant && !adTitle) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+
+  const deviceProfile = getDeviceProfile(account);
+  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  if (!cookies.length) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  let userId = getUserIdFromCookies(cookies);
+  let accessTokenInfo = null;
+  if (!FORCE_WEB_MESSAGES) {
+    if (!userId) {
+      try {
+        accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+        userId = getUserIdFromAccessToken(accessTokenInfo.token);
+      } catch (error) {
+        console.log(`[messageService] Access token lookup failed: ${error.message}`);
+      }
+    }
+    if (userId) {
+      try {
+        if (!accessTokenInfo) {
+          accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+        }
+        let resolvedConversationId = conversationId || extractConversationId(conversationUrl);
+
+      if (!resolvedConversationId) {
+        const apiList = await fetchConversationListViaApi({
+          userId,
+          accessToken: accessTokenInfo.token,
+          cookies,
+          proxy,
+          deviceProfile,
+          page: 0,
+          size: 50
+        });
+        const candidates = Array.isArray(apiList?.conversations) ? apiList.conversations : [];
+        const matched = candidates.find((item) => {
+          const participantName = pickParticipantFromApi(item, userId);
+          return matchConversation(
+            { participant: participantName, adTitle: item.adTitle || "" },
+            { participant, adTitle }
+          );
+        });
+        if (matched) {
+          resolvedConversationId = matched.id;
+        }
+      }
+
+      if (!resolvedConversationId) {
+        const error = new Error("CONVERSATION_ID_REQUIRED");
+        error.code = "CONVERSATION_ID_REQUIRED";
+        throw error;
+      }
+
+      const detail = await fetchConversationDetailViaApi({
+        userId,
+        conversationId: resolvedConversationId,
+        accessToken: accessTokenInfo.token,
+        cookies,
+        proxy,
+        deviceProfile
+      });
+
+      const participantName = pickParticipantFromApi(detail, userId);
+      const apiMessages = (detail.messages || [])
+        .map((message, index) => {
+          const text = message.text || message.textShort || message.title || "";
+          if (!text) return null;
+          const direction = message.boundness === "OUTBOUND" ? "outgoing" : "incoming";
+          return {
+            id: message.messageId || `message-${index}`,
+            text,
+            timeLabel: message.receivedDate || "",
+            dateTime: message.receivedDate || "",
+            direction,
+            sender: direction === "outgoing" ? "Вы" : (participantName || "")
+          };
+        })
+        .filter(Boolean);
+
+      const normalizedMessages = apiMessages.map((message) => {
+        const parsed = parseTimestamp(message.dateTime || message.timeLabel || "");
+        return {
+          ...message,
+          date: parsed.date,
+          time: parsed.time
+        };
+      });
+
+      return {
+        messages: normalizedMessages,
+        adTitle: detail.adTitle || "",
+        adImage: detail.adImage || "",
+        participant: participantName || "",
+        conversationId: resolvedConversationId,
+        conversationUrl: buildConversationUrl(resolvedConversationId, conversationUrl)
+      };
+      } catch (error) {
+        console.log(`[messageService] API thread fetch failed: ${error.message}`);
+      }
+    }
+  }
+
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl;
+
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
+  const profileDir = createTempProfileDir();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: launchArgs,
+    userDataDir: profileDir
+  });
+
+  try {
+    const page = await browser.newPage();
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
+
+    await page.setUserAgent(deviceProfile.userAgent);
+    await page.setViewport(deviceProfile.viewport);
+    await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    await page.emulateTimezone(deviceProfile.timezone);
+    await page.evaluateOnNewDocument((platform) => {
+      Object.defineProperty(navigator, "platform", {
+        get: () => platform
+      });
+    }, deviceProfile.platform);
+
+    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await humanPause();
+    await page.setCookie(...cookies);
+    await humanPause();
+    let resolvedConversationId = conversationId;
+    let resolvedConversationUrl = conversationUrl;
+    if (!resolvedConversationId && !resolvedConversationUrl) {
+      await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+      await humanPause(120, 240);
+      const conversations = await parseConversationList(page);
+      const matched = conversations.find((item) => matchConversation(item, { participant, adTitle }));
+      if (matched) {
+        resolvedConversationUrl = matched.href
+          || (matched.conversationId ? buildConversationUrl(matched.conversationId) : "");
+        resolvedConversationId = matched.conversationId || extractConversationId(matched.href);
+      }
+    }
+
+    resolvedConversationUrl = buildConversationUrl(resolvedConversationId, resolvedConversationUrl);
+    await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
+    await humanPause(120, 240);
+
+    if (await isAuthFailure(page)) {
+      const error = new Error("AUTH_REQUIRED");
+      error.code = "AUTH_REQUIRED";
+      throw error;
+    }
+
+    const meta = await parseConversationMetaFromThread(page);
+    const messages = await parseMessagesFromThread(page, meta.participant || "");
+    console.log(`[messageService] fetchThread: ${messages.length} messages, adTitle="${meta.adTitle}", participant="${meta.participant}"`);
+    const normalizedMessages = (messages || []).map((message) => {
+      const parsed = parseTimestamp(message.dateTime || message.timeLabel || "");
+      return {
+        ...message,
+        date: parsed.date,
+        time: parsed.time
+      };
+    });
+
+    return {
+      messages: normalizedMessages,
+      adTitle: meta.adTitle,
+      adImage: meta.adImage,
+      participant: meta.participant,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl
+    };
+  } finally {
+    await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+};
+
+const summarizeConversations = (conversations) => {
+  const summaries = [];
+  const deduped = dedupeConversationList(conversations || []);
+
+  deduped.forEach((conversation, index) => {
+    const href = conversation.href || conversation.conversationUrl || "";
+    const resolvedConversationId = conversation.conversationId || extractConversationId(href);
+
+    const lastMessage = conversation.messages?.[conversation.messages.length - 1];
+    const timeSource = lastMessage?.dateTime || lastMessage?.timeLabel || conversation.timeText;
+    const parsedTime = parseTimestamp(timeSource);
+    const fallbackText = conversation.lastMessage || lastMessage?.text || "";
+
+    summaries.push({
+      id: resolvedConversationId || conversation.conversationId || `${conversation.accountId}-${index}`,
+      conversationId: resolvedConversationId || conversation.conversationId,
+      sender: conversation.participant || lastMessage?.sender || "",
+      message: fallbackText,
+      date: parsedTime.date,
+      time: parsedTime.time,
+      unread: Boolean(conversation.unread),
+      accountId: conversation.accountId,
+      accountName: conversation.accountLabel,
+      conversationUrl: href || (resolvedConversationId ? buildConversationUrl(resolvedConversationId) : ""),
+      adTitle: conversation.adTitle,
+      adImage: normalizeImageUrl(conversation.adImage),
+      messages: (conversation.messages || []).map((message) => {
+        const parsed = parseTimestamp(message.dateTime || message.timeLabel || "");
+        return {
+          ...message,
+          date: parsed.date,
+          time: parsed.time
+        };
+      })
+    });
+  });
+
+  return summaries;
+};
+
+module.exports = {
+  fetchMessages,
+  fetchThreadMessages,
+  summarizeConversations,
+  sendConversationMessage
+};
