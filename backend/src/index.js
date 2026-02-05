@@ -39,7 +39,7 @@ const {
 } = require("./messageService");
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
 const proxies = [];
 const proxiesPath = path.join(__dirname, "..", "data", "proxies.json");
@@ -534,8 +534,28 @@ const adUpload = multer({
 });
 
 // Middleware
+const parseOriginList = (value) => String(value || "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const defaultOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
+const envOrigins = [
+  ...parseOriginList(process.env.KL_CORS_ORIGINS),
+  ...parseOriginList(process.env.CORS_ORIGINS),
+  process.env.RENDER_EXTERNAL_URL
+].filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+const allowAllOrigins = process.env.KL_ALLOW_ALL_ORIGINS === "1";
+
 const corsOptions = {
-  origin: ["http://localhost:3000", "http://127.0.0.1:3000", "https://barvihaluxury.onrender.com"],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowAllOrigins) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
