@@ -1,6 +1,6 @@
 FROM node:18-alpine
 
-ENV PUPPETEER_SKIP_DOWNLOAD=1     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_SKIP_DOWNLOAD=1     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app
 
@@ -12,7 +12,8 @@ RUN npm install --omit=dev
 
 COPY backend/ ./
 
-RUN mkdir -p uploads/cookies uploads/images
+RUN mkdir -p uploads/cookies uploads/images data \
+  && chown -R node:node /app
 
 USER node
 

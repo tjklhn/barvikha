@@ -12,6 +12,9 @@ puppeteer.use(StealthPlugin());
 const CREATE_AD_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
 const DEBUG_PUBLISH = process.env.KL_DEBUG_PUBLISH === "1";
 const CATEGORY_SELECTION_NEW_PAGE = process.env.KL_CATEGORY_SELECTION_NEW_PAGE === "1";
+const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
+const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
+const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 280) => sleep(Math.floor(min + Math.random() * (max - min)));
@@ -4186,7 +4189,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths }) => {
     );
     let anonymizedProxyUrl;
 
-    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
     if (proxyServer) {
       if (needsProxyChain) {
         anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);

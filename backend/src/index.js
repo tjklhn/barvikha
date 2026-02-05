@@ -40,6 +40,9 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
+const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
+const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
 
 const proxies = [];
 const proxiesPath = path.join(__dirname, "..", "data", "proxies.json");
@@ -678,7 +681,7 @@ app.get("/api/accounts/:id/plz", async (req, res) => {
     );
     let anonymizedProxyUrl;
 
-    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
     if (proxyServer) {
       if (needsProxyChain) {
         anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -690,11 +693,16 @@ app.get("/api/accounts/:id/plz", async (req, res) => {
 
     const browser = await puppeteer.launch({
       headless: "new",
-      args: launchArgs
+      args: launchArgs,
+      timeout: PUPPETEER_LAUNCH_TIMEOUT,
+      protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
     });
 
     try {
       const page = await browser.newPage();
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
       if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
         await page.authenticate({
           username: selectedProxy.username || "",
@@ -1237,7 +1245,7 @@ app.get("/api/categories/children", async (req, res) => {
     );
     let anonymizedProxyUrl;
 
-    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
     if (proxyServer) {
       if (needsProxyChain) {
         if (forceDebug) {
@@ -1460,11 +1468,12 @@ app.get("/api/categories/children", async (req, res) => {
       browser = await puppeteer.launch({
         headless: "new",
         args: launchArgs,
-        protocolTimeout: 120000
+        timeout: PUPPETEER_LAUNCH_TIMEOUT,
+        protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
       });
       const page = await browser.newPage();
-      page.setDefaultTimeout(60000);
-      page.setDefaultNavigationTimeout(60000);
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
       if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
         await page.authenticate({
           username: selectedProxy.username || "",
@@ -2751,7 +2760,7 @@ app.get("/api/ads/fields", async (req, res) => {
     );
     let anonymizedProxyUrl;
 
-    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
     if (proxyServer) {
       if (needsProxyChain) {
         anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -2777,7 +2786,9 @@ app.get("/api/ads/fields", async (req, res) => {
       puppeteer.launch({
         headless: "new",
         args: launchArgs,
-        userDataDir: profileDir
+        userDataDir: profileDir,
+        timeout: PUPPETEER_LAUNCH_TIMEOUT,
+        protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
       }),
       25000,
       "launch-timeout"
@@ -2812,7 +2823,7 @@ app.get("/api/ads/fields", async (req, res) => {
           extra: { url: page.url() }
         });
       }
-      page.setDefaultNavigationTimeout(20000);
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
       page.setDefaultTimeout(20000);
       if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
         await page.authenticate({
@@ -3681,19 +3692,23 @@ app.post("/api/proxies/check-all", async (req, res) => {
 });
 
 app.delete("/api/accounts/:id", (req, res) => {
-  const accountId = Number(req.params.id);
-  const ownerContext = getOwnerContext(req);
-  const account = getAccountById(accountId);
-  if (!account || !isOwnerMatch(account, ownerContext)) {
-    res.status(404).json({ success: false, error: "Аккаунт не найден" });
-    return;
+  try {
+    const accountId = Number(req.params.id);
+    const ownerContext = getOwnerContext(req);
+    const account = getAccountById(accountId);
+    if (!account || !isOwnerMatch(account, ownerContext)) {
+      res.status(404).json({ success: false, error: "Аккаунт не найден" });
+      return;
+    }
+    const deleted = deleteAccount(accountId);
+    if (!deleted) {
+      res.status(404).json({ success: false, error: "Аккаунт не найден" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || "Ошибка при удалении аккаунта" });
   }
-  const deleted = deleteAccount(accountId);
-  if (!deleted) {
-    res.status(404).json({ success: false, error: "Аккаунт не найден" });
-    return;
-  }
-  res.json({ success: true });
 });
 
 app.delete("/api/proxies/:id", (req, res) => {

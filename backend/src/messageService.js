@@ -8,6 +8,9 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
 const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
+const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
+const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
+const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
 
 puppeteer.use(StealthPlugin());
 
@@ -1459,7 +1462,7 @@ const fetchConversationListFromWeb = async ({
   );
   let anonymizedProxyUrl;
 
-  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
   if (proxyServer) {
     if (needsProxyChain) {
       anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -1473,11 +1476,15 @@ const fetchConversationListFromWeb = async ({
   const browser = await puppeteer.launch({
     headless: "new",
     args: launchArgs,
-    userDataDir: profileDir
+    userDataDir: profileDir,
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
     if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
       await page.authenticate({
         username: proxy.username || "",
@@ -1542,7 +1549,7 @@ const fetchConversationHeaderPreviews = async ({
   );
   let anonymizedProxyUrl;
 
-  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
   if (proxyServer) {
     if (needsProxyChain) {
       anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -1556,11 +1563,15 @@ const fetchConversationHeaderPreviews = async ({
   const browser = await puppeteer.launch({
     headless: "new",
     args: launchArgs,
-    userDataDir: profileDir
+    userDataDir: profileDir,
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
     if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
       await page.authenticate({
         username: proxy.username || "",
@@ -1759,7 +1770,7 @@ const sendConversationMessage = async ({
   );
   let anonymizedProxyUrl;
 
-  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
   if (proxyServer) {
     if (needsProxyChain) {
       anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -1773,11 +1784,15 @@ const sendConversationMessage = async ({
   const browser = await puppeteer.launch({
     headless: "new",
     args: launchArgs,
-    userDataDir: profileDir
+    userDataDir: profileDir,
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
     if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
       await page.authenticate({
         username: proxy.username || "",
@@ -2123,7 +2138,7 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
   );
   let anonymizedProxyUrl;
 
-  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
   if (proxyServer) {
     if (needsProxyChain) {
       anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -2137,11 +2152,15 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
   const browser = await puppeteer.launch({
     headless: "new",
     args: launchArgs,
-    userDataDir: profileDir
+    userDataDir: profileDir,
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
     if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
       await page.authenticate({
         username: proxy.username || "",
@@ -2359,7 +2378,7 @@ const fetchThreadMessages = async ({
   );
   let anonymizedProxyUrl;
 
-  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"];
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
   if (proxyServer) {
     if (needsProxyChain) {
       anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
@@ -2373,11 +2392,15 @@ const fetchThreadMessages = async ({
   const browser = await puppeteer.launch({
     headless: "new",
     args: launchArgs,
-    userDataDir: profileDir
+    userDataDir: profileDir,
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
     if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
       await page.authenticate({
         username: proxy.username || "",

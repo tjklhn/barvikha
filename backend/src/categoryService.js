@@ -31,6 +31,9 @@ const FALLBACK_CATEGORY_NAMES = [
 ];
 
 const DEBUG_CATEGORIES = process.env.KL_DEBUG_CATEGORIES === "1";
+const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
+const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
+const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
 
 const slugify = (value) =>
   String(value || "")
@@ -690,11 +693,15 @@ const fetchCategoriesFromPage = async () => {
 
   const browser = await puppeteer.launch({
     headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE"]
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"],
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
     await page.setExtraHTTPHeaders({ "Accept-Language": "de-DE,de;q=0.9,en;q=0.8" });
 
     let loaded = false;

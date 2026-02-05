@@ -18,8 +18,18 @@ const ensureStore = () => {
 
 const readStore = () => {
   ensureStore();
-  const raw = fs.readFileSync(dataPath, "utf8");
-  return JSON.parse(raw);
+  try {
+    const raw = fs.readFileSync(dataPath, "utf8");
+    return JSON.parse(raw);
+  } catch (error) {
+    const fallback = { lastId: 0, accounts: [] };
+    try {
+      fs.writeFileSync(dataPath, JSON.stringify(fallback, null, 2));
+    } catch (writeError) {
+      // ignore write errors, fallback will be used in memory
+    }
+    return fallback;
+  }
 };
 
 const writeStore = (store) => {
