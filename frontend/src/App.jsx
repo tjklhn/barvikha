@@ -29,7 +29,11 @@ const PHONE_VIEW_MAX_WIDTH = 900;
 const detectPhoneView = () => {
   if (typeof window === "undefined") return false;
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  return viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH;
+  if (!(viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH)) return false;
+  if (!window.matchMedia) return true;
+  const hasCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const noHover = window.matchMedia("(hover: none)").matches;
+  return hasCoarsePointer || noHover;
 };
 
 function App() {
@@ -462,6 +466,7 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     const fetchExtraFields = async () => {
       if (!showAdModal) return;
@@ -472,15 +477,6 @@ function App() {
         setExtraFieldsError("");
         return;
       }
-      const fetchWithTimeout = async (url) => {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000);
-        try {
-          return await apiFetchJson(url, { signal: controller.signal });
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      };
 
       setLoadingExtraFields(true);
       setExtraFieldsError("");
@@ -500,23 +496,11 @@ function App() {
           params.set("categoryPath", JSON.stringify(newAd.categoryPath));
         }
         const requestUrl = `/api/ads/fields?${params.toString()}`;
-        let data;
-        try {
-          data = await fetchWithTimeout(requestUrl);
-        } catch (firstError) {
-          const message = String(firstError?.message || "");
-          const status = Number(firstError?.status || 0);
-          const shouldRetry = firstError?.name === "AbortError"
-            || status === 502
-            || status === 503
-            || status === 504
-            || /timeout|timed out|gateway time-?out|networkerror/i.test(message);
-          if (!shouldRetry) {
-            throw firstError;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1200));
-          data = await fetchWithTimeout(requestUrl);
-        }
+        const data = await apiFetchJson(requestUrl, {
+          signal: controller.signal,
+          timeoutMs: 0,
+          retry: false
+        });
         if (cancelled) return;
         if (data?.success === false) {
           const errorMessage = data?.error || "Ошибка загрузки параметров категории";
@@ -536,14 +520,13 @@ function App() {
         });
         setExtraFieldValues(nextValues);
       } catch (error) {
-        handleAuthError(error);
         if (cancelled) return;
+        if (error?.name === "AbortError") return;
+        handleAuthError(error);
         setExtraFields([]);
         setExtraFieldValues({});
-        const timeoutMessage = error?.name === "AbortError"
-          ? "Таймаут загрузки параметров категории. Повторите попытку."
-          : (error?.message || "Ошибка загрузки параметров категории");
-        setExtraFieldsError(timeoutMessage);
+        const errorMessage = error?.message || "Ошибка загрузки параметров категории";
+        setExtraFieldsError(errorMessage);
       } finally {
         clearTimeout(loadingGuardId);
         if (cancelled) return;
@@ -553,6 +536,7 @@ function App() {
     fetchExtraFields();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [showAdModal, newAd.accountId, newAd.categoryId, newAd.categoryKey, newAd.categoryUrl, newAd.categoryPath]);
 
@@ -619,7 +603,9 @@ function App() {
 
       const result = await apiFetchJson("/api/ads/create", {
         method: "POST",
-        body: formData
+        body: formData,
+        timeoutMs: 0,
+        retry: false
       });
       console.log("[handleCreateAd] Ответ сервера:", result);
 
@@ -1765,10 +1751,7 @@ function App() {
                         border: "none",
                         boxShadow: "none",
                         color: "#ffffff",
-                        WebkitTextFillColor: "#ffffff",
-                        borderBottom: activeTab === tab.id
-                          ? "1px solid rgba(125, 211, 252, 0.95)"
-                          : "1px solid transparent"
+                        WebkitTextFillColor: "#ffffff"
                       }}
                     >
                       <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
@@ -1799,10 +1782,7 @@ function App() {
                   border: "none",
                   boxShadow: "none",
                   color: "#ffffff",
-                  WebkitTextFillColor: "#ffffff",
-                  borderBottom: activeTab === tab.id
-                    ? "1px solid rgba(125, 211, 252, 0.95)"
-                    : "1px solid transparent"
+                  WebkitTextFillColor: "#ffffff"
                 }}
               >
                 <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>

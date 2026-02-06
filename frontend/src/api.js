@@ -31,9 +31,15 @@ export const setAccessToken = (token) => {
 export const apiFetch = async (path, options = {}) => {
   const {
     timeoutMs = 45000,
+    retry,
     _retried = false,
     ...fetchOptions
   } = options || {};
+
+  const method = String(fetchOptions.method || "GET").toUpperCase();
+  const allowRetry = typeof retry === "boolean" ? retry : (method === "GET" || method === "HEAD");
+  const timeoutValue = Number(timeoutMs);
+  const shouldTimeout = Number.isFinite(timeoutValue) && timeoutValue > 0;
 
   const headers = new Headers(fetchOptions.headers || {});
   const token = getAccessToken();
@@ -57,9 +63,9 @@ export const apiFetch = async (path, options = {}) => {
   };
 
   const url = buildApiUrl(path);
-  const controller = !fetchOptions.signal ? new AbortController() : null;
+  const controller = !fetchOptions.signal && shouldTimeout ? new AbortController() : null;
   const timerId = controller
-    ? setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 45000))
+    ? setTimeout(() => controller.abort(), Math.max(5000, timeoutValue))
     : null;
 
   try {
@@ -70,7 +76,7 @@ export const apiFetch = async (path, options = {}) => {
       signal: fetchOptions.signal || controller?.signal
     });
   } catch (error) {
-    if (!_retried && isRetryableNetworkError(error)) {
+    if (!_retried && allowRetry && isRetryableNetworkError(error)) {
       await sleep(350);
       return apiFetch(path, { ...options, _retried: true });
     }

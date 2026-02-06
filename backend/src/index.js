@@ -69,6 +69,20 @@ const getPuppeteer = () => {
   return puppeteerExtra;
 };
 
+const toDeviceProfile = (rawProfile) => {
+  if (!rawProfile) {
+    return pickDeviceProfile();
+  }
+  if (typeof rawProfile === "string") {
+    try {
+      return JSON.parse(rawProfile);
+    } catch (error) {
+      return pickDeviceProfile();
+    }
+  }
+  return rawProfile;
+};
+
 const sanitizeFilename = (value) => (value || "account")
   .toString()
   .replace(/[^a-z0-9._-]+/gi, "_")
@@ -733,10 +747,18 @@ app.get("/api/accounts/:id/plz", async (req, res) => {
         });
       }
 
-      await page.setUserAgent(deviceProfile.userAgent);
-      await page.setViewport(deviceProfile.viewport);
-      await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
-      await page.emulateTimezone(deviceProfile.timezone);
+      if (deviceProfile?.userAgent) {
+        await page.setUserAgent(deviceProfile.userAgent);
+      }
+      if (deviceProfile?.viewport) {
+        await page.setViewport(deviceProfile.viewport);
+      }
+      if (deviceProfile?.locale) {
+        await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+      }
+      if (deviceProfile?.timezone) {
+        await page.emulateTimezone(deviceProfile.timezone);
+      }
 
       await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded", timeout: 20000 });
       await delay(300 + Math.random() * 500);
@@ -1251,16 +1273,7 @@ app.get("/api/categories/children", async (req, res) => {
     const { pickDeviceProfile } = require("./cookieValidator");
 
     const cookies = parseCookies(account.cookie).map(normalizeCookie);
-    let deviceProfile = pickDeviceProfile();
-    if (account.deviceProfile) {
-      try {
-        deviceProfile = typeof account.deviceProfile === "string"
-          ? JSON.parse(account.deviceProfile)
-          : account.deviceProfile;
-      } catch (error) {
-        deviceProfile = pickDeviceProfile();
-      }
-    }
+    const deviceProfile = toDeviceProfile(account.deviceProfile);
     const proxyServer = buildProxyServer(selectedProxy);
     const proxyUrl = buildProxyUrl(selectedProxy);
     const needsProxyChain = Boolean(
@@ -2775,7 +2788,7 @@ app.get("/api/ads/fields", async (req, res) => {
     const { pickDeviceProfile } = require("./cookieValidator");
 
     const cookies = parseCookies(account.cookie).map(normalizeCookie);
-    const deviceProfile = account.deviceProfile ? (typeof account.deviceProfile === "string" ? JSON.parse(account.deviceProfile) : account.deviceProfile) : pickDeviceProfile();
+    const deviceProfile = toDeviceProfile(account.deviceProfile);
     const proxyServer = buildProxyServer(selectedProxy);
     const proxyUrl = buildProxyUrl(selectedProxy);
     const needsProxyChain = Boolean(

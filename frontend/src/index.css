@@ -565,6 +565,8 @@ label {
 
 .app-nav-inner {
   display: flex;
+  flex-direction: row;
+  align-items: center;
   overflow-x: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.4) transparent;
@@ -575,6 +577,7 @@ label {
 
 .app-nav-list {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
 }
@@ -657,14 +660,14 @@ label {
   position: absolute;
   left: 10px;
   right: 10px;
-  bottom: -6px;
-  height: 2px;
+  bottom: -4px;
+  height: 1px;
   border-radius: 9999px;
   background: transparent;
 }
 
 .nav-button.active::after {
-  background: rgba(59, 130, 246, 0.75);
+  background: rgba(125, 211, 252, 0.95);
 }
 
 .app-nav-inner .nav-button {
