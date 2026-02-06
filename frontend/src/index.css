@@ -104,6 +104,9 @@
 html {
   scroll-behavior: smooth;
   -webkit-tap-highlight-color: transparent;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -117,6 +120,16 @@ body {
   line-height: 1.6;
   min-height: 100vh;
   overflow-y: scroll; /* Prevent scrollbar flickering */
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+}
+
+#root,
+.app-root {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 /* Links */
@@ -1042,6 +1055,30 @@ tr:hover td {
    ============================================ */
 
 @media (max-width: 768px) {
+  html,
+  body,
+  #root,
+  .app-root {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+  }
+
+  .app-header,
+  .app-nav,
+  .app-content,
+  .app-header-inner,
+  .app-nav-inner {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .app-header-inner,
+  .app-nav-inner {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+
   .token-gate-overlay {
     padding: 12px !important;
     align-items: flex-start !important;
@@ -1049,6 +1086,7 @@ tr:hover td {
   }
 
   .token-gate-card {
+    width: 100% !important;
     max-width: 100% !important;
     margin: 16px 0 calc(16px + env(safe-area-inset-bottom, 0px)) !important;
     padding: 18px 14px !important;
@@ -1078,6 +1116,10 @@ tr:hover td {
     flex-direction: column !important;
     align-items: stretch !important;
     gap: 10px !important;
+  }
+
+  .token-gate-form > * {
+    min-width: 0 !important;
   }
 
   .token-gate-input {
@@ -1124,6 +1166,19 @@ tr:hover td {
     width: 100% !important;
     justify-content: flex-start !important;
     border-radius: 12px !important;
+  }
+
+  .app-nav-mobile-panel {
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+  }
+
+  .messages-layout,
+  .messages-list,
+  .messages-chat {
+    overflow-x: hidden !important;
   }
 }
 

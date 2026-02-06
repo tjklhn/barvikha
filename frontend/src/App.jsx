@@ -40,6 +40,9 @@ function App() {
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [openAccountMenuId, setOpenAccountMenuId] = useState(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
+  const [isPhoneView, setIsPhoneView] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth <= 768 : false
+  );
   const profilePanelRef = useRef(null);
   const [checkingAllProxies, setCheckingAllProxies] = useState(false);
   const [adImages, setAdImages] = useState([]);
@@ -166,6 +169,21 @@ function App() {
     if (activeTab !== "accounts") return;
     loadAccountMetrics();
   }, [activeTab]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsPhoneView(window.innerWidth <= 768);
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isPhoneView && isMobileNavOpen) {
+      setIsMobileNavOpen(false);
+    }
+  }, [isPhoneView, isMobileNavOpen]);
 
   useEffect(() => {
     if (!accessToken) {
@@ -436,6 +454,8 @@ function App() {
   }, [showAdModal]);
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchExtraFields = async () => {
       if (!showAdModal) return;
       if (!newAd.accountId || (!newAd.categoryId && !newAd.categoryUrl)) {
@@ -444,6 +464,16 @@ function App() {
         setExtraFieldsError("");
         return;
       }
+      const fetchWithTimeout = async (url) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 65000);
+        try {
+          return await apiFetchJson(url, { signal: controller.signal });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      };
+
       setLoadingExtraFields(true);
       setExtraFieldsError("");
       try {
@@ -454,7 +484,25 @@ function App() {
         if (Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0) {
           params.set("categoryPath", JSON.stringify(newAd.categoryPath));
         }
-        const data = await apiFetchJson(`/api/ads/fields?${params.toString()}`);
+        const requestUrl = `/api/ads/fields?${params.toString()}`;
+        let data;
+        try {
+          data = await fetchWithTimeout(requestUrl);
+        } catch (firstError) {
+          const message = String(firstError?.message || "");
+          const status = Number(firstError?.status || 0);
+          const shouldRetry = firstError?.name === "AbortError"
+            || status === 502
+            || status === 503
+            || status === 504
+            || /timeout|timed out|gateway time-?out|networkerror/i.test(message);
+          if (!shouldRetry) {
+            throw firstError;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          data = await fetchWithTimeout(requestUrl);
+        }
+        if (cancelled) return;
         if (data?.success === false) {
           const errorMessage = data?.error || "Ошибка загрузки параметров категории";
           setExtraFields([]);
@@ -473,15 +521,30 @@ function App() {
         setExtraFieldValues(nextValues);
       } catch (error) {
         handleAuthError(error);
+        if (cancelled) return;
         setExtraFields([]);
         setExtraFieldValues({});
-        setExtraFieldsError(error?.message || "Ошибка загрузки параметров категории");
+        const timeoutMessage = error?.name === "AbortError"
+          ? "Таймаут загрузки параметров категории. Повторите попытку."
+          : (error?.message || "Ошибка загрузки параметров категории");
+        setExtraFieldsError(timeoutMessage);
       } finally {
+        if (cancelled) return;
         setLoadingExtraFields(false);
       }
     };
     fetchExtraFields();
-  }, [showAdModal, newAd.accountId, newAd.categoryId, newAd.categoryKey]);
+    return () => {
+      cancelled = true;
+    };
+  }, [showAdModal, newAd.accountId, newAd.categoryId, newAd.categoryKey, newAd.categoryUrl, newAd.categoryPath]);
+
+  const handleTabSelect = (tabId) => {
+    setActiveTab(tabId);
+    if (isPhoneView) {
+      setIsMobileNavOpen(false);
+    }
+  };
 
   const handleCreateAd = async () => {
     if (publishingAd) return;
@@ -1586,7 +1649,11 @@ function App() {
               Введите действующий токен, чтобы разблокировать функции менеджера.
             </p>
 
-            <div className="token-gate-form" style={{ display: "flex", gap: "10px" }}>
+            <div className="token-gate-form" style={{
+              display: "flex",
+              gap: "10px",
+              flexDirection: isPhoneView ? "column" : "row"
+            }}>
               <input
                 className="token-gate-input"
                 type="password"
@@ -1600,7 +1667,8 @@ function App() {
                   border: "1px solid rgba(148,163,184,0.3)",
                   background: "rgba(15,23,42,0.7)",
                   color: "#e2e8f0",
-                  fontSize: "14px"
+                  fontSize: "14px",
+                  width: isPhoneView ? "100%" : "auto"
                 }}
               />
               <button
@@ -1615,7 +1683,8 @@ function App() {
                   color: "white",
                   fontWeight: "600",
                   fontSize: "14px",
-                  whiteSpace: "nowrap"
+                  whiteSpace: isPhoneView ? "normal" : "nowrap",
+                  width: isPhoneView ? "100%" : "auto"
                 }}
               >
                 Применить токен
@@ -1645,24 +1714,56 @@ function App() {
           padding: "8px 24px",
           gap: "8px"
         }}>
-          <button
-            type="button"
-            className="mobile-nav-toggle"
-            aria-label="Открыть меню разделов"
-            aria-expanded={isMobileNavOpen}
-            onClick={() => setIsMobileNavOpen((prev) => !prev)}
-          >
-            ≡
-            <span>Разделы</span>
-          </button>
-          <div className={`app-nav-list ${isMobileNavOpen ? "open" : ""}`}>
-            {tabs.map(tab => (
+          {isPhoneView ? (
+            <>
+              <button
+                type="button"
+                className="mobile-nav-toggle"
+                aria-label="Открыть меню разделов"
+                aria-expanded={isMobileNavOpen}
+                onClick={() => setIsMobileNavOpen((prev) => !prev)}
+              >
+                ≡
+                <span>Разделы</span>
+              </button>
+              {isMobileNavOpen && (
+                <div className="app-nav-mobile-panel" style={{ display: "flex", flexDirection: "column", gap: "8px", width: "100%" }}>
+                  {tabs.map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => handleTabSelect(tab.id)}
+                      className={`nav-button ${activeTab === tab.id ? "active" : ""}`}
+                      style={{
+                        width: "100%",
+                        justifyContent: "flex-start",
+                        padding: "12px 14px",
+                        borderRadius: "12px",
+                        cursor: "pointer",
+                        fontSize: "14px",
+                        fontWeight: "700",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        background: "transparent",
+                        border: "none",
+                        boxShadow: "none",
+                        color: "#ffffff",
+                        WebkitTextFillColor: "#ffffff"
+                      }}
+                    >
+                      <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="app-nav-list">
+              {tabs.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => {
-                  setActiveTab(tab.id);
-                  setIsMobileNavOpen(false);
-                }}
+                onClick={() => handleTabSelect(tab.id)}
                 className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
                 style={{
                   padding: "12px 20px",
@@ -1685,7 +1786,8 @@ function App() {
                 {tab.label}
               </button>
             ))}
-          </div>
+            </div>
+          )}
         </div>
       </div>
 

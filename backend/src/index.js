@@ -2904,7 +2904,7 @@ app.get("/api/ads/fields", async (req, res) => {
           });
         }
         try {
-          await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "networkidle2", timeout: 40000 });
+          await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "networkidle2", timeout: 22000 });
           step2Error = null;
         } catch (error) {
           step2Error = error;
@@ -3276,7 +3276,7 @@ app.get("/api/ads/fields", async (req, res) => {
 
       let categoryApplied = false;
       try {
-        categoryApplied = await withTimeout(applyCategorySelection(), 60000, "category-selection-timeout");
+        categoryApplied = await withTimeout(applyCategorySelection(), 28000, "category-selection-timeout");
       } catch (error) {
         categoryApplied = false;
       }
@@ -3300,7 +3300,7 @@ app.get("/api/ads/fields", async (req, res) => {
         }
       }
 
-      fields = await collectFields(15000);
+      fields = await collectFields(10000);
       await dumpFieldsDebug(page, {
         accountLabel: account.email || `account-${accountId}`,
         step: "fields-parsed",
