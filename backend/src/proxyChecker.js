@@ -60,12 +60,24 @@ class ProxyChecker {
     return axiosConfig;
   }
 
-  // Проверка пинга (только для Windows)
+  // Проверка пинга с учетом ОС (не блокирует обработчик на Linux)
   async checkPing(host) {
+    const safeHost = String(host || '').trim();
+    if (!safeHost || !/^[a-zA-Z0-9._:-]+$/.test(safeHost)) {
+      return null;
+    }
+
+    const isWindows = process.platform === 'win32';
+    const pingCmd = isWindows
+      ? `ping -n 1 -w 2000 ${safeHost}`
+      : `ping -c 1 -W 2 ${safeHost}`;
+
     try {
-      const { stdout } = await execAsync(`ping -n 1 ${host}`);
-      const match = stdout.match(/time[=<](\d+)ms/);
-      return match ? parseInt(match[1]) : null;
+      const { stdout } = await execAsync(pingCmd, { timeout: 5000 });
+      const match = stdout.match(/time[=<]?\s*([\d.]+)\s*ms/i);
+      if (!match) return null;
+      const value = Number.parseFloat(match[1]);
+      return Number.isFinite(value) ? Math.round(value) : null;
     } catch (error) {
       return null;
     }

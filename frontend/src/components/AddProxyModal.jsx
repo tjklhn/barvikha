@@ -14,6 +14,12 @@ const AddProxyModal = ({ isOpen, onClose, onSuccess }) => {
   });
   const [testResult, setTestResult] = useState(null);
 
+  const formatMs = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return "—";
+    return `${Math.round(parsed)}мс`;
+  };
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({
@@ -39,9 +45,13 @@ const AddProxyModal = ({ isOpen, onClose, onSuccess }) => {
       });
       setTestResult(data);
     } catch (error) {
+      const backendResult = error?.data && typeof error.data === "object" ? error.data : {};
+      const backendError = backendResult.error || error?.message || "Ошибка при тестировании прокси";
       setTestResult({
         success: false,
-        error: "Ошибка при тестировании прокси"
+        ...backendResult,
+        error: backendError,
+        status: error?.status || null
       });
     } finally {
       setLoading(false);
@@ -394,7 +404,7 @@ const AddProxyModal = ({ isOpen, onClose, onSuccess }) => {
                 gap: "12px"
               }}>
                 {[
-                  { label: "Время ответа", value: `${testResult.checkResult?.responseTime}мс`, icon: "⚡" },
+                  { label: "Время ответа", value: formatMs(testResult.checkResult?.responseTime), icon: "⚡" },
                   { label: "IP адрес", value: testResult.checkResult?.ip, icon: "🌐" },
                   { label: "Локация", value: `${testResult.checkResult?.location?.country}${testResult.checkResult?.location?.city ? `, ${testResult.checkResult.location.city}` : ""}`, icon: "📍" },
                   { label: "Провайдер", value: testResult.checkResult?.isp, icon: "🏢" }
@@ -421,6 +431,7 @@ const AddProxyModal = ({ isOpen, onClose, onSuccess }) => {
                 color: "#fca5a5",
                 border: "1px solid rgba(239, 68, 68, 0.2)"
               }}>
+                {testResult.status ? <><strong>HTTP:</strong> {testResult.status}<br /></> : null}
                 <strong>Ошибка:</strong> {testResult.error || testResult.checkResult?.error}
               </div>
             )}
