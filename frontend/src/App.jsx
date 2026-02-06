@@ -39,6 +39,7 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [openAccountMenuId, setOpenAccountMenuId] = useState(null);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const profilePanelRef = useRef(null);
   const [checkingAllProxies, setCheckingAllProxies] = useState(false);
   const [adImages, setAdImages] = useState([]);
@@ -1363,6 +1364,14 @@ function App() {
     </div>
   );
 
+  const tabs = [
+    { id: "dashboard", label: "Дашборд", icon: <DashboardIcon size={18} />, color: "#60a5fa" },
+    { id: "accounts", label: "Аккаунты", icon: <UserIcon size={18} />, color: "#a78bfa" },
+    { id: "proxies", label: "Прокси", icon: <LinkIcon size={18} />, color: "#34d399" },
+    { id: "messages", label: "Сообщения", icon: <MessageIcon size={18} />, color: "#fb923c" },
+    { id: "active-ads", label: "Объявления", icon: <PackageIcon size={18} />, color: "#facc15" }
+  ];
+
   return (
     <div className="app-root" style={{
       minHeight: "100vh",
@@ -1536,7 +1545,7 @@ function App() {
       )}
 
       {tokenStatus.state !== "valid" && (
-        <div style={{
+        <div className="token-gate-overlay" style={{
           position: "fixed",
           inset: 0,
           background: "radial-gradient(circle at top, rgba(15,23,42,0.85), rgba(2,6,23,0.92))",
@@ -1547,7 +1556,7 @@ function App() {
           justifyContent: "center",
           padding: "20px"
         }}>
-          <div style={{
+          <div className="token-gate-card" style={{
             width: "100%",
             maxWidth: "520px",
             background: "linear-gradient(135deg, rgba(17,24,39,0.98) 0%, rgba(8,12,20,0.98) 100%)",
@@ -1558,7 +1567,7 @@ function App() {
             color: "#e2e8f0",
             position: "relative"
           }}>
-            <div style={{
+            <div className="token-gate-icon" style={{
               width: "56px",
               height: "56px",
               borderRadius: "16px",
@@ -1572,13 +1581,14 @@ function App() {
             }}>
               🔒
             </div>
-            <h2 style={{ margin: 0, fontSize: "22px" }}>Требуется токен доступа</h2>
-            <p style={{ margin: "8px 0 18px", color: "#94a3b8", fontSize: "14px" }}>
+            <h2 className="token-gate-title" style={{ margin: 0, fontSize: "22px" }}>Требуется токен доступа</h2>
+            <p className="token-gate-desc" style={{ margin: "8px 0 18px", color: "#94a3b8", fontSize: "14px" }}>
               Введите действующий токен, чтобы разблокировать функции менеджера.
             </p>
 
-            <div style={{ display: "flex", gap: "10px" }}>
+            <div className="token-gate-form" style={{ display: "flex", gap: "10px" }}>
               <input
+                className="token-gate-input"
                 type="password"
                 placeholder="Введите токен"
                 value={accessTokenDraft}
@@ -1594,6 +1604,7 @@ function App() {
                 }}
               />
               <button
+                className="token-gate-submit"
                 onClick={applyAccessToken}
                 style={{
                   padding: "12px 16px",
@@ -1611,7 +1622,7 @@ function App() {
               </button>
             </div>
 
-            <div style={{
+            <div className="token-gate-status" style={{
               marginTop: "12px",
               fontSize: "12px",
               color: tokenStatus.state === "missing" ? "#94a3b8" : "#fca5a5"
@@ -1629,44 +1640,52 @@ function App() {
         borderBottom: "1px solid rgba(148,163,184,0.12)"
       }}>
         <div className="app-nav-inner" style={{
-          display: "flex",
           maxWidth: "1200px",
           margin: "0 auto",
           padding: "8px 24px",
           gap: "8px"
         }}>
-          {[
-            { id: "dashboard", label: "Дашборд", icon: <DashboardIcon size={18} />, color: "#60a5fa" },
-            { id: "accounts", label: "Аккаунты", icon: <UserIcon size={18} />, color: "#a78bfa" },
-            { id: "proxies", label: "Прокси", icon: <LinkIcon size={18} />, color: "#34d399" },
-            { id: "messages", label: "Сообщения", icon: <MessageIcon size={18} />, color: "#fb923c" },
-            { id: "active-ads", label: "Объявления", icon: <PackageIcon size={18} />, color: "#facc15" }
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
-              style={{
-                padding: "12px 20px",
-                borderRadius: "9999px",
-                cursor: "pointer",
-                fontSize: "14px",
-                fontWeight: "700",
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
-                whiteSpace: "nowrap",
-                background: "transparent",
-                border: "none",
-                boxShadow: "none",
-                color: "#ffffff",
-                WebkitTextFillColor: "#ffffff"
-              }}
-            >
-              <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
-              {tab.label}
-            </button>
-          ))}
+          <button
+            type="button"
+            className="mobile-nav-toggle"
+            aria-label="Открыть меню разделов"
+            aria-expanded={isMobileNavOpen}
+            onClick={() => setIsMobileNavOpen((prev) => !prev)}
+          >
+            ≡
+            <span>Разделы</span>
+          </button>
+          <div className={`app-nav-list ${isMobileNavOpen ? "open" : ""}`}>
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setIsMobileNavOpen(false);
+                }}
+                className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
+                style={{
+                  padding: "12px 20px",
+                  borderRadius: "9999px",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontWeight: "700",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  whiteSpace: "nowrap",
+                  background: "transparent",
+                  border: "none",
+                  boxShadow: "none",
+                  color: "#ffffff",
+                  WebkitTextFillColor: "#ffffff"
+                }}
+              >
+                <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 

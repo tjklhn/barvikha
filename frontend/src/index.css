@@ -560,6 +560,27 @@ label {
   gap: 8px;
 }
 
+.app-nav-list {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mobile-nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.75);
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .app-nav-inner::-webkit-scrollbar {
   height: 6px;
 }
@@ -1013,6 +1034,96 @@ tr:hover td {
   .badge {
     padding: 4px 10px;
     font-size: 11px;
+  }
+}
+
+/* ============================================
+   RESPONSIVE DESIGN - PHONE NAV
+   ============================================ */
+
+@media (max-width: 768px) {
+  .token-gate-overlay {
+    padding: 12px !important;
+    align-items: flex-start !important;
+    overflow-y: auto !important;
+  }
+
+  .token-gate-card {
+    max-width: 100% !important;
+    margin: 16px 0 calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+    padding: 18px 14px !important;
+    border-radius: 16px !important;
+  }
+
+  .token-gate-icon {
+    width: 48px !important;
+    height: 48px !important;
+    border-radius: 14px !important;
+    margin-bottom: 12px !important;
+    font-size: 20px !important;
+  }
+
+  .token-gate-title {
+    font-size: 24px !important;
+    line-height: 1.2 !important;
+  }
+
+  .token-gate-desc {
+    font-size: 15px !important;
+    line-height: 1.4 !important;
+    margin-bottom: 14px !important;
+  }
+
+  .token-gate-form {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+
+  .token-gate-input {
+    width: 100% !important;
+  }
+
+  .token-gate-submit {
+    width: 100% !important;
+    padding: 12px 14px !important;
+    justify-content: center !important;
+    text-align: center !important;
+    white-space: normal !important;
+  }
+
+  .token-gate-status {
+    font-size: 12px !important;
+    line-height: 1.3 !important;
+  }
+
+  .app-nav-inner {
+    padding: 8px 16px !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+  }
+
+  .mobile-nav-toggle {
+    display: inline-flex !important;
+    width: 100%;
+  }
+
+  .app-nav-list {
+    display: none !important;
+    flex-direction: column !important;
+    width: 100%;
+    gap: 6px !important;
+  }
+
+  .app-nav-list.open {
+    display: flex !important;
+  }
+
+  .app-nav-list .nav-button {
+    width: 100% !important;
+    justify-content: flex-start !important;
+    border-radius: 12px !important;
   }
 }
 

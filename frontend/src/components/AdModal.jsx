@@ -363,7 +363,7 @@ const AdModal = ({
     const hasKnownChildren =
       filterCategoryChildren(knownChildren, category).length > 0 ||
       filterCategoryChildren(selectedChildren, selectedNode).length > 0;
-    const isLeaf = hasFetchedChildren !== null ? !hasFetchedChildren : false;
+    const isLeaf = hasFetchedChildren !== null ? !hasFetchedChildren : !hasKnownChildren;
 
     setNewAd((prev) => {
       const next = { ...prev };
@@ -878,6 +878,12 @@ const AdModal = ({
           {!loadingExtraFields && extraFieldsError && (
             <div style={{ color: "#f87171", fontSize: "12px" }}>
               Не удалось загрузить параметры категории: {extraFieldsError}
+            </div>
+          )}
+
+          {!loadingExtraFields && !extraFieldsError && (newAd.categoryId || newAd.categoryUrl) && (!extraFields || extraFields.length === 0) && (
+            <div style={{ color: "#94a3b8", fontSize: "12px" }}>
+              Для выбранной категории нет дополнительных параметров.
             </div>
           )}
 

@@ -52,6 +52,7 @@ const categoryFieldsCachePath = path.join(__dirname, "..", "data", "category-fie
 const CATEGORY_CHILDREN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CATEGORY_CHILDREN_EMPTY_TTL_MS = 60 * 60 * 1000;
 const CATEGORY_FIELDS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CATEGORY_FIELDS_EMPTY_TTL_MS = 60 * 60 * 1000;
 const categoryChildrenCache = { items: {} };
 let categoryChildrenCacheSaveTimer = null;
 const categoryFieldsCache = { items: {} };
@@ -451,10 +452,12 @@ const setCachedCategoryFields = (categoryId, fields) => {
   const key = String(categoryId || "");
   if (!key) return;
   const now = Date.now();
+  const list = Array.isArray(fields) ? fields : [];
+  const ttl = list.length ? CATEGORY_FIELDS_CACHE_TTL_MS : CATEGORY_FIELDS_EMPTY_TTL_MS;
   categoryFieldsCache.items[key] = {
     savedAt: now,
-    expiresAt: now + CATEGORY_FIELDS_CACHE_TTL_MS,
-    fields: Array.isArray(fields) ? fields : []
+    expiresAt: now + ttl,
+    fields: list
   };
   scheduleCategoryFieldsCacheSave();
 };
@@ -2752,8 +2755,8 @@ app.get("/api/ads/fields", async (req, res) => {
 
     if (!forceRefresh) {
       const cached = getCachedCategoryFields(categoryId);
-      if (cached && cached.length) {
-        res.json({ fields: cached, cached: true });
+      if (cached !== null) {
+        res.json({ fields: Array.isArray(cached) ? cached : [], cached: true });
         return;
       }
     }
@@ -3305,9 +3308,7 @@ app.get("/api/ads/fields", async (req, res) => {
         extra: { url: page.url(), categoryId, fieldCount: fields.length },
         force: forceDebug
       });
-      if (fields.length) {
-        setCachedCategoryFields(categoryId, fields);
-      }
+      setCachedCategoryFields(categoryId, fields);
       if (!res.headersSent) {
         res.json({ fields });
       }

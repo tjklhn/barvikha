@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { apiFetchJson } from "../api";
 
+const MOBILE_BREAKPOINT = 768;
+
 const MessagesTab = () => {
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
@@ -9,6 +11,9 @@ const MessagesTab = () => {
   const [loading, setLoading] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState(null);
+  const [isMobileView, setIsMobileView] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false
+  );
   const chatScrollRef = useRef(null);
 
   useEffect(() => {
@@ -21,6 +26,15 @@ const MessagesTab = () => {
     if (!container) return;
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [selectedMessage?.id, selectedMessage?.messages]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileView(window.innerWidth <= MOBILE_BREAKPOINT);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const loadMessages = async () => {
     setLoading(true);
@@ -214,6 +228,8 @@ const MessagesTab = () => {
   };
 
   const unreadCount = messages.filter(m => m.unread).length;
+  const showConversationList = !isMobileView || !selectedMessage;
+  const showChatPanel = !isMobileView || Boolean(selectedMessage);
 
   // Spinner SVG for loading states
   const Spinner = ({ size = 20, color = "#7dd3fc" }) => (
@@ -236,7 +252,7 @@ const MessagesTab = () => {
 
       <div className="messages-layout" style={{ display: "flex", gap: "20px", height: "calc(100vh - 220px)", minHeight: "500px" }}>
         {/* Conversation List */}
-        <div className="messages-list" style={{
+        {showConversationList && <div className="messages-list" style={{
           width: "400px",
           minWidth: "340px",
           background: "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.95) 100%)",
@@ -577,10 +593,10 @@ const MessagesTab = () => {
               {messages.length} {messages.length === 1 ? "диалог" : messages.length < 5 ? "диалога" : "диалогов"}
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Chat Panel */}
-        <div className="messages-chat" style={{
+        {showChatPanel && <div className="messages-chat" style={{
           flex: 1,
           background: "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.95) 100%)",
           borderRadius: "20px",
@@ -668,8 +684,9 @@ const MessagesTab = () => {
                     style={{
                       background: "rgba(148,163,184,0.1)",
                       border: "none",
-                      width: "32px",
+                      width: isMobileView ? "auto" : "32px",
                       height: "32px",
+                      padding: isMobileView ? "0 10px" : 0,
                       borderRadius: "8px",
                       cursor: "pointer",
                       color: "#94a3b8",
@@ -677,13 +694,18 @@ const MessagesTab = () => {
                       alignItems: "center",
                       justifyContent: "center",
                       fontSize: "16px",
+                      fontWeight: 600,
                       flexShrink: 0
                     }}
                   >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
+                    {isMobileView ? (
+                      "← Назад"
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    )}
                   </button>
                 </div>
               </div>
@@ -886,7 +908,7 @@ const MessagesTab = () => {
               </div>
             </div>
           )}
-        </div>
+        </div>}
       </div>
     </>
   );
