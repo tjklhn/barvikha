@@ -1,4 +1,25 @@
-const API_BASE = process.env.REACT_APP_API_BASE || "";
+const DEFAULT_API_BASES = [
+  "http://95.81.100.250",
+  ""
+];
+
+const normalizeBase = (value) => String(value || "").trim().replace(/\/+$/, "");
+
+const resolveApiBases = () => {
+  const envBase = String(process.env.REACT_APP_API_BASE || "").trim();
+  if (envBase) {
+    return envBase
+      .split(",")
+      .map((item) => normalizeBase(item))
+      .filter(Boolean);
+  }
+  return DEFAULT_API_BASES
+    .map((item) => normalizeBase(item))
+    .filter((item, index, arr) => arr.indexOf(item) === index);
+};
+
+const API_BASES = resolveApiBases();
+let preferredBaseIndex = 0;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -47,10 +68,10 @@ export const apiFetch = async (path, options = {}) => {
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const buildApiUrl = (rawPath) => {
+  const buildApiUrl = (rawPath, base) => {
     if (rawPath.startsWith("http")) return rawPath;
 
-    const normalizedBase = String(API_BASE || "").trim().replace(/\/+$/, "");
+    const normalizedBase = normalizeBase(base);
     let normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
 
     // Prevent "/api/api/..." when both base and path already include "/api".
@@ -62,28 +83,50 @@ export const apiFetch = async (path, options = {}) => {
     return `${normalizedBase}${normalizedPath}`;
   };
 
-  const url = buildApiUrl(path);
-  const controller = !fetchOptions.signal && shouldTimeout ? new AbortController() : null;
-  const timerId = controller
-    ? setTimeout(() => controller.abort(), Math.max(5000, timeoutValue))
-    : null;
+  const candidates = path.startsWith("http")
+    ? [""]
+    : [
+      ...API_BASES.slice(preferredBaseIndex),
+      ...API_BASES.slice(0, preferredBaseIndex)
+    ];
+  const uniqueCandidates = candidates.filter((item, index, arr) => arr.indexOf(item) === index);
 
-  try {
-    return await fetch(url, {
-      ...fetchOptions,
-      headers,
-      cache: fetchOptions.cache || "no-store",
-      signal: fetchOptions.signal || controller?.signal
-    });
-  } catch (error) {
-    if (!_retried && allowRetry && isRetryableNetworkError(error)) {
-      await sleep(350);
-      return apiFetch(path, { ...options, _retried: true });
+  let lastError = null;
+  for (let index = 0; index < uniqueCandidates.length; index += 1) {
+    const base = uniqueCandidates[index];
+    const url = buildApiUrl(path, base);
+    const controller = !fetchOptions.signal && shouldTimeout ? new AbortController() : null;
+    const timerId = controller
+      ? setTimeout(() => controller.abort(), Math.max(5000, timeoutValue))
+      : null;
+
+    try {
+      const response = await fetch(url, {
+        ...fetchOptions,
+        headers,
+        cache: fetchOptions.cache || "no-store",
+        signal: fetchOptions.signal || controller?.signal
+      });
+      const matchedIndex = API_BASES.indexOf(base);
+      if (matchedIndex >= 0) {
+        preferredBaseIndex = matchedIndex;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      const hasAnotherBase = index < uniqueCandidates.length - 1;
+      if (!hasAnotherBase) break;
+      if (!isRetryableNetworkError(error)) break;
+    } finally {
+      if (timerId) clearTimeout(timerId);
     }
-    throw error;
-  } finally {
-    if (timerId) clearTimeout(timerId);
   }
+
+  if (!_retried && allowRetry && isRetryableNetworkError(lastError)) {
+    await sleep(350);
+    return apiFetch(path, { ...options, _retried: true });
+  }
+  throw lastError || new Error("Failed to fetch");
 };
 
 export const apiFetchJson = async (path, options = {}) => {

@@ -28,12 +28,24 @@ const PHONE_VIEW_MAX_WIDTH = 900;
 
 const detectPhoneView = () => {
   if (typeof window === "undefined") return false;
+  const userAgent = navigator?.userAgent || "";
+  const isMobileUa = /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(userAgent);
+  if (!isMobileUa) return false;
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
   if (!(viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH)) return false;
   if (!window.matchMedia) return true;
   const hasCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
   const noHover = window.matchMedia("(hover: none)").matches;
   return hasCoarsePointer || noHover;
+};
+
+const getDebugFlag = (key) => {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch (error) {
+    return false;
+  }
 };
 
 function App() {
@@ -75,6 +87,8 @@ function App() {
     categoryKey: "",
     categoryPath: []
   });
+  const debugFieldsEnabled = getDebugFlag("klDebugFields");
+  const debugPublishEnabled = getDebugFlag("klDebugPublish");
 
   const formatAccountLabel = (account) => {
     const rawName = String(account.profileName || "").trim();
@@ -495,6 +509,9 @@ function App() {
         if (Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0) {
           params.set("categoryPath", JSON.stringify(newAd.categoryPath));
         }
+        if (debugFieldsEnabled) {
+          params.set("debug", "1");
+        }
         const requestUrl = `/api/ads/fields?${params.toString()}`;
         const data = await apiFetchJson(requestUrl, {
           signal: controller.signal,
@@ -525,7 +542,8 @@ function App() {
         handleAuthError(error);
         setExtraFields([]);
         setExtraFieldValues({});
-        const errorMessage = error?.message || "Ошибка загрузки параметров категории";
+        const debugId = error?.data?.debugId ? ` [debugId: ${error.data.debugId}]` : "";
+        const errorMessage = (error?.message || "Ошибка загрузки параметров категории") + debugId;
         setExtraFieldsError(errorMessage);
       } finally {
         clearTimeout(loadingGuardId);
@@ -597,6 +615,9 @@ function App() {
         });
         formData.append("extraFields", JSON.stringify(payload));
       }
+      if (debugPublishEnabled) {
+        formData.append("debug", "1");
+      }
       adImages.forEach((file) => {
         formData.append("images", file);
       });
@@ -633,7 +654,8 @@ function App() {
     } catch (error) {
       handleAuthError(error);
       console.error("[handleCreateAd] Исключение:", error);
-      alert("Ошибка при создании объявления: " + error.message);
+      const debugId = error?.data?.debugId ? ` [debugId: ${error.data.debugId}]` : "";
+      alert("Ошибка при создании объявления: " + error.message + debugId);
     } finally {
       setPublishingAd(false);
     }
@@ -1717,80 +1739,34 @@ function App() {
           padding: "8px 24px",
           gap: "8px"
         }}>
-          {isPhoneView ? (
-            <>
-              <button
-                type="button"
-                className="mobile-nav-toggle"
-                aria-label="Открыть меню разделов"
-                aria-expanded={isMobileNavOpen}
-                onClick={() => setIsMobileNavOpen((prev) => !prev)}
-              >
-                ≡
-                <span>Разделы</span>
-              </button>
-              {isMobileNavOpen && (
-                <div className="app-nav-mobile-panel" style={{ display: "flex", flexDirection: "column", gap: "8px", width: "100%" }}>
-                  {tabs.map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => handleTabSelect(tab.id)}
-                      className={`nav-button ${activeTab === tab.id ? "active" : ""}`}
-                      style={{
-                        width: "100%",
-                        justifyContent: "flex-start",
-                        padding: "12px 14px",
-                        borderRadius: "12px",
-                        cursor: "pointer",
-                        fontSize: "14px",
-                        fontWeight: "700",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "10px",
-                        background: "transparent",
-                        border: "none",
-                        boxShadow: "none",
-                        color: "#ffffff",
-                        WebkitTextFillColor: "#ffffff"
-                      }}
-                    >
-                      <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
-                      {tab.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="app-nav-list">
-              {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => handleTabSelect(tab.id)}
-                className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
-                style={{
-                  padding: "12px 20px",
-                  borderRadius: "9999px",
-                  cursor: "pointer",
-                  fontSize: "14px",
-                  fontWeight: "700",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  whiteSpace: "nowrap",
-                  background: "transparent",
-                  border: "none",
-                  boxShadow: "none",
-                  color: "#ffffff",
-                  WebkitTextFillColor: "#ffffff"
-                }}
-              >
-                <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
-                {tab.label}
-              </button>
-            ))}
-            </div>
-          )}
+          <div className="app-nav-list">
+            {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => handleTabSelect(tab.id)}
+              className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
+              style={{
+                padding: "12px 20px",
+                borderRadius: "9999px",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: "700",
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                whiteSpace: "nowrap",
+                background: "transparent",
+                border: "none",
+                boxShadow: "none",
+                color: "#ffffff",
+                WebkitTextFillColor: "#ffffff"
+              }}
+            >
+              <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+              {tab.label}
+            </button>
+          ))}
+          </div>
         </div>
       </div>
 

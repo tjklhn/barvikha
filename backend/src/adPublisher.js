@@ -11,6 +11,8 @@ puppeteer.use(StealthPlugin());
 
 const CREATE_AD_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
 const DEBUG_PUBLISH = process.env.KL_DEBUG_PUBLISH === "1";
+let publishDebugOverride = false;
+const isPublishDebugEnabled = () => DEBUG_PUBLISH || publishDebugOverride;
 const CATEGORY_SELECTION_NEW_PAGE = process.env.KL_CATEGORY_SELECTION_NEW_PAGE === "1";
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
@@ -570,7 +572,7 @@ const sanitizeFilename = (value) => (value || "account")
   .slice(0, 60);
 
 const appendPublishTrace = (payload) => {
-  if (!DEBUG_PUBLISH) return;
+  if (!isPublishDebugEnabled()) return;
   try {
     const debugDir = path.join(__dirname, "..", "data", "debug");
     if (!fs.existsSync(debugDir)) {
@@ -587,7 +589,7 @@ const appendPublishTrace = (payload) => {
 };
 
 const dumpPublishDebug = async (page, { accountLabel = "account", step = "unknown", error = "", extra = {} } = {}) => {
-  if (!DEBUG_PUBLISH || !page) return;
+  if (!isPublishDebugEnabled() || !page) return;
   try {
     const debugDir = path.join(__dirname, "..", "data", "debug");
     if (!fs.existsSync(debugDir)) {
@@ -4167,7 +4169,9 @@ const uploadImages = async (page, imagePaths, { accountLabel = "account" } = {})
   };
 };
 
-const publishAd = async ({ account, proxy, ad, imagePaths }) => {
+const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
+  const prevDebugOverride = publishDebugOverride;
+  publishDebugOverride = Boolean(debug);
   const accountLabel = account?.profileEmail
     ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
     : (account?.profileName || account?.username || "Аккаунт");
@@ -5434,7 +5438,11 @@ const publishAd = async ({ account, proxy, ad, imagePaths }) => {
     }
   };
 
-  return await attemptPublish({ useProxy: true });
+  try {
+    return await attemptPublish({ useProxy: true });
+  } finally {
+    publishDebugOverride = prevDebugOverride;
+  }
 };
 
 module.exports = {

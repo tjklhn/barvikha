@@ -644,6 +644,10 @@ label {
   border: none !important;
   border-radius: 9999px !important;
   box-shadow: none !important;
+  background-image: linear-gradient(rgba(125, 211, 252, 0.95), rgba(125, 211, 252, 0.95)) !important;
+  background-repeat: no-repeat !important;
+  background-size: calc(100% - 20px) 1px !important;
+  background-position: 10px calc(100% - 4px) !important;
 }
 
 .nav-button.active:hover {
@@ -656,18 +660,7 @@ label {
 }
 
 .nav-button::after {
-  content: "";
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: -4px;
-  height: 1px;
-  border-radius: 9999px;
-  background: transparent;
-}
-
-.nav-button.active::after {
-  background: rgba(125, 211, 252, 0.95);
+  content: none !important;
 }
 
 .app-nav-inner .nav-button {
@@ -679,6 +672,43 @@ label {
 .nav-button span,
 .nav-button svg {
   filter: none !important;
+}
+
+/* Force horizontal nav on desktop pointer devices, even if phone-view is set. */
+@media (pointer: fine) {
+  .app-root.phone-view .app-nav-inner {
+    flex-direction: row !important;
+    align-items: center !important;
+  }
+
+  .app-root.phone-view .app-nav-list {
+    display: flex !important;
+    flex-direction: row !important;
+    gap: 8px !important;
+  }
+
+  .app-root.phone-view .mobile-nav-toggle,
+  .app-root.phone-view .app-nav-mobile-panel {
+    display: none !important;
+  }
+}
+
+/* Fallback for wide screens regardless of pointer capability. */
+@media (min-width: 901px) {
+  .app-root.phone-view .app-nav-inner {
+    flex-direction: row !important;
+    align-items: center !important;
+  }
+
+  .app-root.phone-view .app-nav-list {
+    display: flex !important;
+    flex-direction: row !important;
+  }
+
+  .app-root.phone-view .mobile-nav-toggle,
+  .app-root.phone-view .app-nav-mobile-panel {
+    display: none !important;
+  }
 }
 
 /* ============================================
@@ -1131,21 +1161,21 @@ tr:hover td {
 
 .app-root.phone-view .app-nav-inner {
   padding: 8px 16px !important;
-  flex-direction: column !important;
-  align-items: stretch !important;
-  gap: 6px !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 8px !important;
+  overflow-x: auto !important;
 }
 
 .app-root.phone-view .mobile-nav-toggle {
-  display: inline-flex !important;
-  width: 100%;
+  display: none !important;
 }
 
 .app-root.phone-view .app-nav-list {
-  display: none !important;
-  flex-direction: column !important;
-  width: 100%;
-  gap: 6px !important;
+  display: flex !important;
+  flex-direction: row !important;
+  width: auto !important;
+  gap: 8px !important;
 }
 
 .app-root.phone-view .app-nav-list.open {
@@ -1153,16 +1183,13 @@ tr:hover td {
 }
 
 .app-root.phone-view .app-nav-list .nav-button {
-  width: 100% !important;
-  justify-content: flex-start !important;
-  border-radius: 12px !important;
+  width: auto !important;
+  justify-content: center !important;
+  border-radius: 9999px !important;
 }
 
 .app-root.phone-view .app-nav-mobile-panel {
-  width: 100% !important;
-  display: flex !important;
-  flex-direction: column !important;
-  gap: 8px !important;
+  display: none !important;
 }
 
 .app-root.phone-view .messages-layout,

@@ -108,6 +108,7 @@ const ensureDebugDir = () => {
 
 const getPublishRequestLogPath = () => path.join(ensureDebugDir(), "publish-requests.log");
 const getServerErrorLogPath = () => path.join(ensureDebugDir(), "server-errors.log");
+const getFieldsRequestLogPath = () => path.join(ensureDebugDir(), "fields-requests.log");
 
 const normalizeTokenValue = (value) => String(value || "").trim();
 const parseEnvTokenList = (value) => String(value || "")
@@ -237,6 +238,18 @@ const appendServerLog = (pathTarget, payload) => {
       ...payload
     };
     fs.appendFileSync(pathTarget, JSON.stringify(entry) + "\n", "utf8");
+  } catch (error) {
+    // ignore logging failures
+  }
+};
+
+const appendFieldsRequestLog = (payload) => {
+  try {
+    const entry = {
+      ts: new Date().toISOString(),
+      ...payload
+    };
+    fs.appendFileSync(getFieldsRequestLogPath(), JSON.stringify(entry) + "\n", "utf8");
   } catch (error) {
     // ignore logging failures
   }
@@ -2696,7 +2709,12 @@ app.get("/api/categories/children", async (req, res) => {
 });
 
 app.get("/api/ads/fields", async (req, res) => {
+  let requestId = "";
+  let debugEnabled = false;
+  let logFields = null;
+  let requestStartedAt = 0;
   try {
+    requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
     const categoryIdParam = req.query.categoryId ? String(req.query.categoryId) : "";
     const categoryUrl = req.query.categoryUrl ? String(req.query.categoryUrl) : "";
@@ -2740,9 +2758,28 @@ app.get("/api/ads/fields", async (req, res) => {
       || (categoryPathIdsFromRequest.length ? categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] : "")
       || extractCategoryIdFromUrl(categoryUrl);
     const forceRefresh = req.query.refresh === "true";
-    const forceDebug = req.query.debug === "true" || req.query.debug === "1";
+    const forceDebug = true;
+    debugEnabled = true;
+    requestStartedAt = Date.now();
+    logFields = (payload) => {
+      if (!debugEnabled) return;
+      appendFieldsRequestLog({
+        requestId,
+        accountId,
+        categoryIdParam,
+        categoryUrl,
+        categoryPathRaw: categoryPathRaw ? String(categoryPathRaw).slice(0, 500) : "",
+        ...payload
+      });
+    };
+    logFields({ event: "start" });
     if (!accountId || !resolvedCategoryId) {
-      res.status(400).json({ success: false, error: "accountId и categoryId/categoryUrl обязательны" });
+      logFields({ event: "error", error: "missing-params" });
+      res.status(400).json({
+        success: false,
+        error: "accountId и categoryId/categoryUrl обязательны",
+        debugId: debugEnabled ? requestId : undefined
+      });
       return;
     }
     const categoryId = resolvedCategoryId;
@@ -2766,13 +2803,23 @@ app.get("/api/ads/fields", async (req, res) => {
         extra: { accountId, categoryId },
         force: forceDebug
       });
-      res.status(504).json({ success: false, error: "Таймаут при загрузке параметров категории." });
+      logFields({ event: "timeout", durationMs: Date.now() - requestStartedAt });
+      res.status(504).json({
+        success: false,
+        error: "Таймаут при загрузке параметров категории.",
+        debugId: debugEnabled ? requestId : undefined
+      });
     });
 
     if (!forceRefresh) {
       const cached = getCachedCategoryFields(categoryId);
       if (cached !== null) {
-        res.json({ fields: Array.isArray(cached) ? cached : [], cached: true });
+        logFields({ event: "cache-hit", count: Array.isArray(cached) ? cached.length : 0 });
+        res.json({
+          fields: Array.isArray(cached) ? cached : [],
+          cached: true,
+          debugId: debugEnabled ? requestId : undefined
+        });
         return;
       }
     }
@@ -2780,7 +2827,10 @@ app.get("/api/ads/fields", async (req, res) => {
     const account = getAccountForRequest(accountId, req, res);
     if (!account) return;
     const selectedProxy = requireAccountProxy(account, res, "загрузки параметров категории", getOwnerContext(req));
-    if (!selectedProxy) return;
+    if (!selectedProxy) {
+      logFields({ event: "error", error: "proxy-required" });
+      return;
+    }
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
@@ -3025,7 +3075,11 @@ app.get("/api/ads/fields", async (req, res) => {
         });
         setCachedCategoryFields(categoryId, fields);
         if (!res.headersSent) {
-          res.json({ fields });
+          logFields({ event: "success-fast-path", count: fields.length, durationMs: Date.now() - requestStartedAt });
+          res.json({
+            fields,
+            debugId: debugEnabled ? requestId : undefined
+          });
         }
         return;
       }
@@ -3326,7 +3380,11 @@ app.get("/api/ads/fields", async (req, res) => {
       });
       setCachedCategoryFields(categoryId, fields);
       if (!res.headersSent) {
-        res.json({ fields });
+        logFields({ event: "success", count: fields.length, durationMs: Date.now() - requestStartedAt });
+        res.json({
+          fields,
+          debugId: debugEnabled ? requestId : undefined
+        });
       }
     } finally {
       await browser.close();
@@ -3339,7 +3397,14 @@ app.get("/api/ads/fields", async (req, res) => {
     }
   } catch (error) {
     if (!res.headersSent) {
-      res.status(500).json({ success: false, error: error.message });
+      if (typeof logFields === "function") {
+        logFields({ event: "error", error: error?.message || String(error) });
+      }
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        debugId: debugEnabled ? requestId : undefined
+      });
     }
   }
 });
@@ -3478,11 +3543,13 @@ app.post("/api/ads/create", adUpload.array("images", 20), async (req, res) => {
   };
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const forceDebug = true;
   appendServerLog(getPublishRequestLogPath(), {
     event: "start",
     requestId,
     ip: req.ip,
-    files: uploadedFiles.length
+    files: uploadedFiles.length,
+    debug: Boolean(forceDebug)
   });
   req.on("aborted", () => {
     appendServerLog(getPublishRequestLogPath(), {
@@ -3537,18 +3604,27 @@ app.post("/api/ads/create", adUpload.array("images", 20), async (req, res) => {
       categoryId,
       categoryUrl,
       categoryPath: categoryPath ? String(categoryPath).slice(0, 120) : "",
-      images: uploadedFiles.length
+      images: uploadedFiles.length,
+      debug: Boolean(forceDebug)
     });
 
     if (!accountId) {
-      res.status(400).json({ success: false, error: "Выберите аккаунт" });
+      res.status(400).json({
+        success: false,
+        error: "Выберите аккаунт",
+        debugId: forceDebug ? requestId : undefined
+      });
       appendServerLog(getPublishRequestLogPath(), { event: "error", requestId, error: "missing-account" });
       cleanupFiles();
       return;
     }
 
     if (!title || !description || !price) {
-      res.status(400).json({ success: false, error: "Заполните обязательные поля объявления" });
+      res.status(400).json({
+        success: false,
+        error: "Заполните обязательные поля объявления",
+        debugId: forceDebug ? requestId : undefined
+      });
       appendServerLog(getPublishRequestLogPath(), { event: "error", requestId, error: "missing-required" });
       cleanupFiles();
       return;
@@ -3594,7 +3670,8 @@ app.post("/api/ads/create", adUpload.array("images", 20), async (req, res) => {
           }
         })() : undefined
       },
-      imagePaths: uploadedFiles.map((file) => file.path)
+      imagePaths: uploadedFiles.map((file) => file.path),
+      debug: Boolean(forceDebug)
     });
     appendServerLog(getPublishRequestLogPath(), { event: "publish-result", requestId, success: result?.success, error: result?.error || "" });
 
@@ -3611,11 +3688,18 @@ app.post("/api/ads/create", adUpload.array("images", 20), async (req, res) => {
     }
 
     cleanupFiles();
-    res.json(result);
+    res.json({
+      ...result,
+      debugId: forceDebug ? requestId : undefined
+    });
     appendServerLog(getPublishRequestLogPath(), { event: "response-sent", requestId, success: result?.success });
   } catch (error) {
     cleanupFiles();
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      debugId: forceDebug ? requestId : undefined
+    });
     appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
   }
 });
