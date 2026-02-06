@@ -1658,7 +1658,9 @@ function App() {
                 whiteSpace: "nowrap",
                 background: "transparent",
                 border: "none",
-                boxShadow: "none"
+                boxShadow: "none",
+                color: "#ffffff",
+                WebkitTextFillColor: "#ffffff"
               }}
             >
               <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>

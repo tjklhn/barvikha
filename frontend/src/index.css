@@ -580,7 +580,8 @@ label {
   padding: 14px 24px;
   font-weight: 700;
   font-size: 14px;
-  color: var(--neutral-300);
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
   background: transparent !important;
   border: none !important;
   border-radius: 9999px;
@@ -591,7 +592,8 @@ label {
 }
 
 .nav-button:hover {
-  color: var(--neutral-100);
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
   background: transparent !important;
   border-color: transparent !important;
   transform: none;
@@ -599,7 +601,8 @@ label {
 }
 
 .nav-button.active {
-  color: #a78bfa !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
   background: transparent !important;
   border: none !important;
   border-radius: 9999px !important;
@@ -634,6 +637,11 @@ label {
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
+}
+
+.nav-button span,
+.nav-button svg {
+  filter: none !important;
 }
 
 /* ============================================
