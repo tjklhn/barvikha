@@ -52,7 +52,7 @@ const categoryFieldsCachePath = path.join(__dirname, "..", "data", "category-fie
 const CATEGORY_CHILDREN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CATEGORY_CHILDREN_EMPTY_TTL_MS = 60 * 60 * 1000;
 const CATEGORY_FIELDS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const CATEGORY_FIELDS_EMPTY_TTL_MS = 60 * 60 * 1000;
+const CATEGORY_FIELDS_EMPTY_TTL_MS = 5 * 60 * 1000;
 const categoryChildrenCache = { items: {} };
 let categoryChildrenCacheSaveTimer = null;
 const categoryFieldsCache = { items: {} };
@@ -139,10 +139,24 @@ const parseTokenExpiryMs = (value) => {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const asNumber = Number(value);
-  if (!Number.isNaN(asNumber) && String(value).trim() !== "") return asNumber;
+  if (!Number.isNaN(asNumber) && String(value).trim() !== "") {
+    // Guard against out-of-range timestamps that crash Date#toISOString.
+    if (!Number.isFinite(asNumber) || Math.abs(asNumber) > 8640000000000000) {
+      return null;
+    }
+    return asNumber;
+  }
   const asDate = new Date(value);
   if (!Number.isNaN(asDate.getTime())) return asDate.getTime();
   return null;
+};
+
+const toIsoStringOrNull = (value) => {
+  const expiryMs = parseTokenExpiryMs(value);
+  if (expiryMs === null) return null;
+  const parsed = new Date(expiryMs);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
 };
 
 const loadSubscriptionTokens = () => {
@@ -674,16 +688,25 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/auth/validate", (req, res) => {
-  const token = extractAccessToken(req);
-  const status = getSubscriptionTokenStatus(token);
-  res.json({
-    valid: status.valid,
-    error: status.valid ? "" : status.reason,
-    expiresAt: status.expiresAt ? new Date(status.expiresAt).toISOString() : null,
-    label: status.label || "",
-    role: status.role || "user",
-    ownerId: status.ownerId || ""
-  });
+  try {
+    const token = extractAccessToken(req);
+    const status = getSubscriptionTokenStatus(token);
+    res.json({
+      valid: status.valid,
+      error: status.valid ? "" : status.reason,
+      expiresAt: toIsoStringOrNull(status.expiresAt),
+      label: status.label || "",
+      role: status.role || "user",
+      ownerId: status.ownerId || ""
+    });
+  } catch (error) {
+    appendServerLog(getServerErrorLogPath(), {
+      type: "auth-validate-error",
+      message: error?.message || String(error),
+      stack: error?.stack || ""
+    });
+    res.status(500).json({ valid: false, error: "Ошибка проверки токена" });
+  }
 });
 
 app.get("/api/accounts", (req, res) => {
@@ -2811,16 +2834,22 @@ app.get("/api/ads/fields", async (req, res) => {
       });
     });
 
+    const allowCachedEmpty = req.query.allowCachedEmpty === "1";
     if (!forceRefresh) {
       const cached = getCachedCategoryFields(categoryId);
       if (cached !== null) {
-        logFields({ event: "cache-hit", count: Array.isArray(cached) ? cached.length : 0 });
-        res.json({
-          fields: Array.isArray(cached) ? cached : [],
-          cached: true,
-          debugId: debugEnabled ? requestId : undefined
-        });
-        return;
+        const cachedFields = Array.isArray(cached) ? cached : [];
+        if (!cachedFields.length && !allowCachedEmpty) {
+          logFields({ event: "cache-empty-bypass" });
+        } else {
+          logFields({ event: "cache-hit", count: cachedFields.length });
+          res.json({
+            fields: cachedFields,
+            cached: true,
+            debugId: debugEnabled ? requestId : undefined
+          });
+          return;
+        }
       }
     }
 
@@ -3032,15 +3061,47 @@ app.get("/api/ads/fields", async (req, res) => {
       const waitForExtraSelect = async (timeoutMs) => {
         try {
           await page.waitForFunction(() => {
-            const selects = Array.from(document.querySelectorAll("select"));
-            return selects.some((select) => {
-              const name = select.getAttribute("name") || "";
-              const id = select.getAttribute("id") || "";
-              if (/attributeMap/i.test(name) || /attributeMap/i.test(id)) return true;
-              const label = select.closest(".formgroup-input")?.querySelector("label");
-              const labelText = (label?.textContent || "").toLowerCase();
-              return labelText.includes("art");
+            const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const collectRoots = (root, bucket) => {
+              if (!root || bucket.includes(root)) return;
+              bucket.push(root);
+              const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
+              elements.forEach((el) => {
+                if (el && el.shadowRoot) collectRoots(el.shadowRoot, bucket);
+              });
+            };
+            const roots = [];
+            collectRoots(document, roots);
+            const queryAllDeep = (selector) => {
+              const result = [];
+              roots.forEach((root) => {
+                try {
+                  result.push(...Array.from(root.querySelectorAll(selector)));
+                } catch (error) {
+                  // ignore selector error
+                }
+              });
+              return result;
+            };
+
+            const selects = queryAllDeep("select");
+            const hasAttributeSelect = selects.some((select) => {
+              const name = normalize(select.getAttribute("name") || "");
+              const id = normalize(select.getAttribute("id") || "");
+              if (name.includes("attributemap") || id.includes("attributemap")) return true;
+              const wrapper = select.closest(".formgroup-input, .form-group, .l-row, div, section");
+              const label = wrapper ? wrapper.querySelector("label") : null;
+              const labelText = normalize(label?.textContent || select.getAttribute("aria-label") || "");
+              return labelText.includes("art") || labelText.includes("zustand");
             });
+            if (hasAttributeSelect) return true;
+
+            const maybeCombobox = queryAllDeep("[role='combobox'], [aria-haspopup='listbox'], button, div")
+              .some((node) => {
+                const text = normalize(node.textContent || node.getAttribute("aria-label") || "");
+                return text.includes("bitte wählen") || text.includes("bitte waehlen");
+              });
+            return maybeCombobox;
           }, { timeout: timeoutMs });
         } catch (error) {
           // ignore wait timeout

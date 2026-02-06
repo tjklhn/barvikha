@@ -582,6 +582,19 @@ label {
   gap: 8px;
 }
 
+/* Keep top navigation horizontal on desktop layouts. */
+.app-nav .app-nav-list {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  flex-wrap: nowrap !important;
+}
+
+.app-nav .app-nav-list .nav-button {
+  width: auto !important;
+  justify-content: center !important;
+}
+
 .mobile-nav-toggle {
   display: none;
   align-items: center;
@@ -643,7 +656,7 @@ label {
   background: transparent !important;
   border: none !important;
   border-radius: 9999px !important;
-  box-shadow: none !important;
+  box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.95) !important;
   background-image: linear-gradient(rgba(125, 211, 252, 0.95), rgba(125, 211, 252, 0.95)) !important;
   background-repeat: no-repeat !important;
   background-size: calc(100% - 20px) 1px !important;

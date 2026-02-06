@@ -26,7 +26,8 @@
       "deviceProfile": "{\"id\":\"de-mac-chrome\",\"userAgent\":\"Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\",\"viewport\":{\"width\":1440,\"height\":900},\"locale\":\"de-DE,de;q=0.9,en;q=0.8\",\"timezone\":\"Europe/Berlin\",\"platform\":\"MacIntel\",\"geolocation\":{\"latitude\":52.520008,\"longitude\":13.404954,\"accuracy\":50}}",
       "lastCheck": "2026-02-05T20:55:48.089Z",
       "error": null,
-      "ownerId": "224009eefb76f769"
+      "ownerId": "224009eefb76f769",
+      "postalCode": "51645"
     }
   ]
 }

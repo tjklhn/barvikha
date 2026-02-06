@@ -9,38 +9,38 @@
     "password": "JYpmnl2ZXjaA80Ov",
     "ownerId": "224009eefb76f769",
     "status": "active",
-    "lastChecked": "2026-02-05T20:58:18.228Z",
+    "lastChecked": "2026-02-06T21:43:44.375Z",
     "checkResult": {
       "success": true,
-      "ip": "46.114.153.206",
+      "ip": "80.187.96.133",
       "location": {
         "country": "DE",
-        "city": "Berlin",
-        "region": "NW",
+        "city": "Stuttgart",
+        "region": "HE",
         "timezone": "Europe/Berlin"
       },
-      "isp": "AS6805 Telefonica Germany GmbH & Co.OHG",
-      "responseTime": 7310,
+      "isp": "AS3320 Deutsche Telekom AG",
+      "responseTime": 4018,
       "ping": null,
       "serviceUsed": "https://ipinfo.io/json",
-      "timestamp": "2026-02-05T20:58:18.228Z",
+      "timestamp": "2026-02-06T21:43:44.375Z",
       "proxyType": "socks5",
       "rawData": {
-        "ip": "46.114.153.206",
-        "hostname": "dynamic-046-114-153-206.46.114.pool.telefonica.de",
-        "city": "Berlin",
-        "region": "State of Berlin",
+        "ip": "80.187.96.133",
+        "hostname": "tmo-096-133.customers.d1-online.com",
+        "city": "Stuttgart",
+        "region": "Baden-Wurttemberg",
         "country": "DE",
-        "loc": "52.5244,13.4105",
-        "org": "AS6805 Telefonica Germany GmbH & Co.OHG",
-        "postal": "10119",
+        "loc": "48.7823,9.1770",
+        "org": "AS3320 Deutsche Telekom AG",
+        "postal": "70173",
         "timezone": "Europe/Berlin",
         "readme": "https://ipinfo.io/missingauth"
       },
       "connectionCheck": {
         "ok": true,
         "tcpConnected": true,
-        "connectTime": 2,
+        "connectTime": 1,
         "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
       }
     }

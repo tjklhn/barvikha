@@ -502,22 +502,30 @@ function App() {
         setExtraFieldsError("Таймаут загрузки параметров категории. Попробуйте обновить категорию.");
       }, 60000);
       try {
-        const params = new URLSearchParams();
-        params.set("accountId", newAd.accountId);
-        if (newAd.categoryId) params.set("categoryId", newAd.categoryId);
-        if (!newAd.categoryId && newAd.categoryUrl) params.set("categoryUrl", newAd.categoryUrl);
-        if (Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0) {
-          params.set("categoryPath", JSON.stringify(newAd.categoryPath));
-        }
-        if (debugFieldsEnabled) {
-          params.set("debug", "1");
-        }
-        const requestUrl = `/api/ads/fields?${params.toString()}`;
-        const data = await apiFetchJson(requestUrl, {
+        const buildFieldsRequestUrl = (forceRefresh = false) => {
+          const params = new URLSearchParams();
+          params.set("accountId", newAd.accountId);
+          if (newAd.categoryId) params.set("categoryId", newAd.categoryId);
+          if (!newAd.categoryId && newAd.categoryUrl) params.set("categoryUrl", newAd.categoryUrl);
+          if (Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0) {
+            params.set("categoryPath", JSON.stringify(newAd.categoryPath));
+          }
+          if (forceRefresh) {
+            params.set("refresh", "true");
+          }
+          if (debugFieldsEnabled) {
+            params.set("debug", "1");
+          }
+          return `/api/ads/fields?${params.toString()}`;
+        };
+
+        const requestOptions = {
           signal: controller.signal,
           timeoutMs: 0,
           retry: false
-        });
+        };
+
+        let data = await apiFetchJson(buildFieldsRequestUrl(false), requestOptions);
         if (cancelled) return;
         if (data?.success === false) {
           const errorMessage = data?.error || "Ошибка загрузки параметров категории";
@@ -526,7 +534,31 @@ function App() {
           setExtraFieldsError(errorMessage);
           return;
         }
-        const fields = Array.isArray(data?.fields) ? data.fields : [];
+        let fields = Array.isArray(data?.fields) ? data.fields : [];
+
+        if (fields.length === 0) {
+          try {
+            const refreshed = await apiFetchJson(buildFieldsRequestUrl(true), requestOptions);
+            if (!cancelled && refreshed?.success !== false) {
+              data = refreshed;
+              fields = Array.isArray(refreshed?.fields) ? refreshed.fields : [];
+            }
+          } catch (refreshError) {
+            // Keep the initial result if refresh fallback fails.
+          }
+        }
+
+        if (data?.debugId) {
+          console.log("[fields] response", {
+            debugId: data.debugId,
+            accountId: newAd.accountId,
+            categoryId: newAd.categoryId || "",
+            categoryUrl: newAd.categoryUrl || "",
+            cached: Boolean(data.cached),
+            fieldCount: fields.length
+          });
+        }
+
         setExtraFields(fields);
         setExtraFieldsError("");
         const nextValues = {};
@@ -1739,7 +1771,17 @@ function App() {
           padding: "8px 24px",
           gap: "8px"
         }}>
-          <div className="app-nav-list">
+          <div
+            className="app-nav-list"
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              flexWrap: "nowrap",
+              gap: "8px",
+              width: "max-content"
+            }}
+          >
             {tabs.map(tab => (
             <button
               key={tab.id}
@@ -1757,7 +1799,9 @@ function App() {
                 whiteSpace: "nowrap",
                 background: "transparent",
                 border: "none",
-                boxShadow: "none",
+                boxShadow: activeTab === tab.id
+                  ? "inset 0 -1px 0 rgba(125, 211, 252, 0.95)"
+                  : "none",
                 color: "#ffffff",
                 WebkitTextFillColor: "#ffffff"
               }}

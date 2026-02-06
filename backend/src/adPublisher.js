@@ -2933,6 +2933,14 @@ const selectOptionByLabel = async (context, labelText, value) => {
 const parseExtraSelectFields = async (context) =>
   context.evaluate(() => {
     const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+    const escapeSelector = (value) => {
+      const raw = String(value || "");
+      if (!raw) return "";
+      if (window.CSS && typeof window.CSS.escape === "function") {
+        return window.CSS.escape(raw);
+      }
+      return raw.replace(/([\\\"'\\[\\]#.:>+~()])/g, "\\$1");
+    };
     const isVisible = (node) => {
       if (!node) return false;
       const style = window.getComputedStyle(node);
@@ -2940,16 +2948,70 @@ const parseExtraSelectFields = async (context) =>
       const rect = node.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     };
+    const collectRoots = (root, bucket) => {
+      if (!root || bucket.includes(root)) return;
+      bucket.push(root);
+      const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
+      elements.forEach((el) => {
+        if (el && el.shadowRoot) {
+          collectRoots(el.shadowRoot, bucket);
+        }
+      });
+    };
+    const roots = [];
+    collectRoots(document, roots);
+    const queryAllDeep = (selector) => {
+      const result = [];
+      roots.forEach((root) => {
+        try {
+          result.push(...Array.from(root.querySelectorAll(selector)));
+        } catch (error) {
+          // ignore bad selector for this root
+        }
+      });
+      return result;
+    };
     const pickLabel = (select) => {
       const aria = select.getAttribute("aria-label");
       if (aria) return normalize(aria);
+
+      const labelledBy = select.getAttribute("aria-labelledby");
+      if (labelledBy) {
+        const text = labelledBy
+          .split(/\s+/)
+          .map((id) => {
+            const safeId = escapeSelector(id);
+            if (!safeId) return "";
+            const nodes = queryAllDeep(`#${safeId}`);
+            return nodes.length ? normalize(nodes[0].textContent) : "";
+          })
+          .filter(Boolean)
+          .join(" ");
+        if (text) return text;
+      }
+
       if (select.id) {
-        const label = document.querySelector(`label[for="${select.id}"]`);
-        if (label) return normalize(label.textContent);
+        const safeId = escapeSelector(select.id);
+        if (safeId) {
+          const labels = queryAllDeep(`label[for="${safeId}"]`);
+          if (labels.length) return normalize(labels[0].textContent);
+        }
       }
       const parentLabel = select.closest("label");
       if (parentLabel) return normalize(parentLabel.textContent);
-      return normalize(select.getAttribute("name") || select.getAttribute("id") || "");
+      const wrapper = select.closest(
+        ".formgroup-input, .form-group, .l-row, [data-testid*='attribute'], div, section, li"
+      );
+      if (wrapper) {
+        const labelNode = wrapper.querySelector("label");
+        if (labelNode) return normalize(labelNode.textContent);
+      }
+      return normalize(
+        select.getAttribute("name")
+        || select.getAttribute("id")
+        || select.getAttribute("data-testid")
+        || ""
+      );
     };
     const ignoreLabels = [
       "Preis",
@@ -2964,18 +3026,26 @@ const parseExtraSelectFields = async (context) =>
       "Direkt kaufen"
     ];
     const fields = [];
-    const selects = Array.from(document.querySelectorAll("select"));
+    const seen = new Set();
+    const selects = queryAllDeep("select");
     selects.forEach((select) => {
-      const nameAttr = select.getAttribute("name") || select.getAttribute("id") || "";
+      const nameAttr = normalize(
+        select.getAttribute("name")
+        || select.getAttribute("id")
+        || select.getAttribute("data-testid")
+        || ""
+      );
       const isAttributeSelect = /attributeMap/i.test(nameAttr);
       if (!isVisible(select) && !isAttributeSelect) return;
-      let label = pickLabel(select);
+      const label = pickLabel(select);
       if (!label) return;
       const labelLower = label.toLowerCase();
-      if (!isAttributeSelect && (ignoreLabels.some((item) => labelLower.includes(item.toLowerCase())) || /preis|price/i.test(nameAttr))) {
+      if (
+        !isAttributeSelect &&
+        (ignoreLabels.some((item) => labelLower.includes(item.toLowerCase())) || /preis|price/i.test(nameAttr))
+      ) {
         return;
       }
-      const name = nameAttr;
       const options = Array.from(select.options || [])
         .map((opt) => ({
           value: opt.value,
@@ -2983,8 +3053,12 @@ const parseExtraSelectFields = async (context) =>
         }))
         .filter((opt) => opt.label.length > 0);
       if (options.length <= 1) return;
+      const fieldName = nameAttr || label;
+      const dedupeKey = `${fieldName}::${label}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
       fields.push({
-        name,
+        name: fieldName,
         label,
         required: select.required || select.getAttribute("aria-required") === "true",
         options

@@ -1,0 +1,12 @@
+{
+  "step": "category-selection-timeout",
+  "error": "category-selection-timeout",
+  "extra": {
+    "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+    "selectionUrl": "https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=153%2F224",
+    "categoryPathIds": [
+      "153",
+      "224"
+    ]
+  }
+}
