@@ -24,6 +24,14 @@ import {
   PackageIcon
 } from "./components/Icons";
 
+const PHONE_VIEW_MAX_WIDTH = 900;
+
+const detectPhoneView = () => {
+  if (typeof window === "undefined") return false;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  return viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH;
+};
+
 function App() {
   const [accounts, setAccounts] = useState([]);
   const [proxies, setProxies] = useState([]);
@@ -40,9 +48,7 @@ function App() {
   const [showProfilePanel, setShowProfilePanel] = useState(false);
   const [openAccountMenuId, setOpenAccountMenuId] = useState(null);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
-  const [isPhoneView, setIsPhoneView] = useState(() =>
-    typeof window !== "undefined" ? window.innerWidth <= 768 : false
-  );
+  const [isPhoneView, setIsPhoneView] = useState(() => detectPhoneView());
   const profilePanelRef = useRef(null);
   const [checkingAllProxies, setCheckingAllProxies] = useState(false);
   const [adImages, setAdImages] = useState([]);
@@ -172,7 +178,7 @@ function App() {
 
   useEffect(() => {
     const handleResize = () => {
-      setIsPhoneView(window.innerWidth <= 768);
+      setIsPhoneView(detectPhoneView());
     };
     handleResize();
     window.addEventListener("resize", handleResize);
@@ -227,7 +233,8 @@ function App() {
       const response = await apiFetchJson("/api/auth/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: tokenValue })
+        body: JSON.stringify({ token: tokenValue }),
+        timeoutMs: 90000
       });
       if (response.valid) {
         setTokenStatus({
@@ -459,6 +466,7 @@ function App() {
     const fetchExtraFields = async () => {
       if (!showAdModal) return;
       if (!newAd.accountId || (!newAd.categoryId && !newAd.categoryUrl)) {
+        setLoadingExtraFields(false);
         setExtraFields([]);
         setExtraFieldValues({});
         setExtraFieldsError("");
@@ -466,7 +474,7 @@ function App() {
       }
       const fetchWithTimeout = async (url) => {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 65000);
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
         try {
           return await apiFetchJson(url, { signal: controller.signal });
         } finally {
@@ -476,6 +484,13 @@ function App() {
 
       setLoadingExtraFields(true);
       setExtraFieldsError("");
+      const loadingGuardId = setTimeout(() => {
+        if (cancelled) return;
+        setLoadingExtraFields(false);
+        setExtraFields([]);
+        setExtraFieldValues({});
+        setExtraFieldsError("Таймаут загрузки параметров категории. Попробуйте обновить категорию.");
+      }, 60000);
       try {
         const params = new URLSearchParams();
         params.set("accountId", newAd.accountId);
@@ -512,6 +527,7 @@ function App() {
         }
         const fields = Array.isArray(data?.fields) ? data.fields : [];
         setExtraFields(fields);
+        setExtraFieldsError("");
         const nextValues = {};
         fields.forEach((field) => {
           const key = field.name || field.label;
@@ -529,6 +545,7 @@ function App() {
           : (error?.message || "Ошибка загрузки параметров категории");
         setExtraFieldsError(timeoutMessage);
       } finally {
+        clearTimeout(loadingGuardId);
         if (cancelled) return;
         setLoadingExtraFields(false);
       }
@@ -1436,7 +1453,7 @@ function App() {
   ];
 
   return (
-    <div className="app-root" style={{
+    <div className={`app-root${isPhoneView ? " phone-view" : ""}`} style={{
       minHeight: "100vh",
       background: "radial-gradient(circle at top, #111827 0%, #0b1220 45%, #070b14 100%)",
       fontFamily: "Inter, 'Segoe UI', sans-serif",
@@ -1748,7 +1765,10 @@ function App() {
                         border: "none",
                         boxShadow: "none",
                         color: "#ffffff",
-                        WebkitTextFillColor: "#ffffff"
+                        WebkitTextFillColor: "#ffffff",
+                        borderBottom: activeTab === tab.id
+                          ? "1px solid rgba(125, 211, 252, 0.95)"
+                          : "1px solid transparent"
                       }}
                     >
                       <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
@@ -1779,7 +1799,10 @@ function App() {
                   border: "none",
                   boxShadow: "none",
                   color: "#ffffff",
-                  WebkitTextFillColor: "#ffffff"
+                  WebkitTextFillColor: "#ffffff",
+                  borderBottom: activeTab === tab.id
+                    ? "1px solid rgba(125, 211, 252, 0.95)"
+                    : "1px solid transparent"
                 }}
               >
                 <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>

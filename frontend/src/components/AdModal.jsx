@@ -55,6 +55,10 @@ const AdModal = ({
     color: "#e2e8f0",
     fontSize: "14px"
   };
+  const selectedUnderlineStyle = {
+    borderBottom: "1px solid rgba(125, 211, 252, 0.95)",
+    paddingBottom: "1px"
+  };
 
   const formatAccountLabel = (account) => {
     const name = account.profileName || account.username || "Аккаунт";
@@ -858,7 +862,9 @@ const AdModal = ({
                   breadcrumb.map((cat, index) => (
                     <React.Fragment key={cat.id || cat.url}>
                       {index > 0 && <ChevronRightIcon size={12} />}
-                      <span>{getCategoryLabel(cat)}</span>
+                      <span style={index === breadcrumb.length - 1 ? selectedUnderlineStyle : undefined}>
+                        {getCategoryLabel(cat)}
+                      </span>
                     </React.Fragment>
                   ))
                 ) : (

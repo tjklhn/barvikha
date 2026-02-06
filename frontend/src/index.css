@@ -902,81 +902,47 @@ tr:hover td {
    ============================================ */
 
 @media (max-width: 900px) {
-  :root {
-    --radius-xl: 16px;
-    --radius-2xl: 20px;
-  }
-
-  body {
-    font-size: 14px;
-  }
-
-  .app-header {
-    padding: 0 16px !important;
-  }
-
-  .app-header-inner {
-    flex-direction: column !important;
-    align-items: flex-start !important;
-    height: auto !important;
-    gap: 12px !important;
-    padding: 12px 0 !important;
-  }
-
-  .app-nav-inner {
-    padding: 0 16px !important;
-    gap: 6px !important;
-    flex-wrap: nowrap !important;
-  }
-
-  .app-nav-inner button,
-  .nav-button {
-    padding: 12px 16px !important;
-    font-size: 14px !important;
-    white-space: nowrap !important;
-  }
-
-  .app-content {
+  .app-root.phone-view .app-content {
     padding: 0 16px !important;
     margin: 16px auto 0 !important;
     padding-bottom: 32px !important;
   }
 
-  .dashboard-stats {
+  .app-root.phone-view .dashboard-stats {
     flex-direction: column !important;
   }
 
-  .dashboard-stats > div {
+  .app-root.phone-view .dashboard-stats > div {
     min-width: 100% !important;
   }
 
-  .quick-actions {
+  .app-root.phone-view .quick-actions {
     grid-template-columns: 1fr !important;
   }
 
-  .section-header {
+  .app-root.phone-view .section-header {
     flex-direction: column !important;
     align-items: flex-start !important;
     gap: 12px !important;
   }
 
-  .section-header > button {
+  .app-root.phone-view .section-header > button {
     width: 100% !important;
     justify-content: center !important;
   }
 
-  .section-header-actions {
+  .app-root.phone-view .section-header-actions {
     width: 100% !important;
     flex-direction: column !important;
     gap: 8px !important;
   }
 
-  .section-header-actions button {
+  .app-root.phone-view .section-header-actions button {
     width: 100% !important;
     justify-content: center !important;
   }
 
-  .profile-panel {
+  .app-root.phone-view .profile-panel {
     position: fixed !important;
     width: auto !important;
     left: 16px !important;
@@ -984,67 +950,68 @@ tr:hover td {
     top: 76px !important;
   }
 
-  .modal-card {
+  .app-root.phone-view .modal-card {
     width: 94vw !important;
     max-width: 94vw !important;
     padding: 20px !important;
     margin: 0 !important;
   }
 
-  .modal-card-wide {
+  .app-root.phone-view .modal-card-wide {
     width: 94vw !important;
     max-width: 94vw !important;
   }
 
-  .modal-card-tall {
+  .app-root.phone-view .modal-card-tall {
     max-height: 90vh !important;
   }
 
-  .messages-layout {
+  .app-root.phone-view .messages-layout {
     flex-direction: column !important;
     height: auto !important;
     min-height: unset !important;
   }
 
-  .messages-list,
-  .messages-chat {
+  .app-root.phone-view .messages-list,
+  .app-root.phone-view .messages-chat {
     width: 100% !important;
     min-width: 0 !important;
   }
 
-  .messages-list {
+  .app-root.phone-view .messages-list {
     max-height: 55vh !important;
     border-radius: var(--radius-lg) !important;
   }
 
-  .messages-chat {
+  .app-root.phone-view .messages-chat {
     border-radius: var(--radius-lg) !important;
   }
 
   /* Mobile cards */
-  .card,
-  .stats-card {
+  .app-root.phone-view .card,
+  .app-root.phone-view .stats-card {
     border-radius: var(--radius-lg);
   }
 
-  .card-body {
+  .app-root.phone-view .card-body {
     padding: 16px;
   }
 
   /* Mobile table */
-  .table-scroll {
+  .app-root.phone-view .table-scroll {
     margin: 0 -16px;
     padding: 0 16px;
     border-radius: 0;
   }
 
-  th, td {
+  .app-root.phone-view th,
+  .app-root.phone-view td {
     padding: 12px 16px;
     font-size: 13px;
   }
 
   /* Mobile badges */
-  .badge {
+  .app-root.phone-view .badge {
     padding: 4px 10px;
     font-size: 11px;
   }
@@ -1054,132 +1021,151 @@ tr:hover td {
    RESPONSIVE DESIGN - PHONE NAV
    ============================================ */
 
-@media (max-width: 768px) {
-  html,
-  body,
-  #root,
-  .app-root {
-    width: 100% !important;
-    max-width: 100% !important;
-    overflow-x: hidden !important;
-  }
+/* JS-driven phone layout fallback.
+   Applied when viewport APIs report desktop-like width on mobile browsers. */
+.app-root.phone-view {
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
 
-  .app-header,
-  .app-nav,
-  .app-content,
-  .app-header-inner,
-  .app-nav-inner {
-    width: 100% !important;
-    max-width: 100% !important;
-  }
+.app-root.phone-view .app-header,
+.app-root.phone-view .app-nav,
+.app-root.phone-view .app-content,
+.app-root.phone-view .app-header-inner,
+.app-root.phone-view .app-nav-inner {
+  width: 100% !important;
+  max-width: 100% !important;
+}
 
-  .app-header-inner,
-  .app-nav-inner {
-    margin-left: 0 !important;
-    margin-right: 0 !important;
-  }
+.app-root.phone-view .app-header-inner,
+.app-root.phone-view .app-nav-inner {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
 
-  .token-gate-overlay {
-    padding: 12px !important;
-    align-items: flex-start !important;
-    overflow-y: auto !important;
-  }
+.app-root.phone-view .app-content {
+  padding: 0 12px !important;
+  margin: 12px auto 0 !important;
+  padding-bottom: 24px !important;
+}
 
-  .token-gate-card {
-    width: 100% !important;
-    max-width: 100% !important;
-    margin: 16px 0 calc(16px + env(safe-area-inset-bottom, 0px)) !important;
-    padding: 18px 14px !important;
-    border-radius: 16px !important;
-  }
+.app-root.phone-view .token-gate-overlay {
+  padding: 12px !important;
+  align-items: flex-start !important;
+  overflow-y: auto !important;
+}
 
-  .token-gate-icon {
-    width: 48px !important;
-    height: 48px !important;
-    border-radius: 14px !important;
-    margin-bottom: 12px !important;
-    font-size: 20px !important;
-  }
+.app-root.phone-view .token-gate-card {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin: 16px 0 calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+  padding: 18px 14px !important;
+  border-radius: 16px !important;
+}
 
-  .token-gate-title {
-    font-size: 24px !important;
-    line-height: 1.2 !important;
-  }
+.app-root.phone-view .token-gate-form {
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 10px !important;
+}
 
-  .token-gate-desc {
-    font-size: 15px !important;
-    line-height: 1.4 !important;
-    margin-bottom: 14px !important;
-  }
+.app-root.phone-view .token-gate-input,
+.app-root.phone-view .token-gate-submit {
+  width: 100% !important;
+  min-width: 0 !important;
+}
 
-  .token-gate-form {
-    flex-direction: column !important;
-    align-items: stretch !important;
-    gap: 10px !important;
-  }
+.app-root.phone-view .messages-layout {
+  flex-direction: column !important;
+  height: auto !important;
+  min-height: unset !important;
+}
 
-  .token-gate-form > * {
-    min-width: 0 !important;
-  }
+.app-root.phone-view .messages-list,
+.app-root.phone-view .messages-chat {
+  width: 100% !important;
+  min-width: 0 !important;
+  overflow-x: hidden !important;
+}
 
-  .token-gate-input {
-    width: 100% !important;
-  }
+.app-root.phone-view .messages-list {
+  max-height: 55vh !important;
+}
 
-  .token-gate-submit {
-    width: 100% !important;
-    padding: 12px 14px !important;
-    justify-content: center !important;
-    text-align: center !important;
-    white-space: normal !important;
-  }
+.app-nav .nav-button {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
 
-  .token-gate-status {
-    font-size: 12px !important;
-    line-height: 1.3 !important;
-  }
+.app-root.phone-view .token-gate-icon {
+  width: 48px !important;
+  height: 48px !important;
+  border-radius: 14px !important;
+  margin-bottom: 12px !important;
+  font-size: 20px !important;
+}
 
-  .app-nav-inner {
-    padding: 8px 16px !important;
-    flex-direction: column !important;
-    align-items: stretch !important;
-    gap: 6px !important;
-  }
+.app-root.phone-view .token-gate-title {
+  font-size: 24px !important;
+  line-height: 1.2 !important;
+}
 
-  .mobile-nav-toggle {
-    display: inline-flex !important;
-    width: 100%;
-  }
+.app-root.phone-view .token-gate-desc {
+  font-size: 15px !important;
+  line-height: 1.4 !important;
+  margin-bottom: 14px !important;
+}
 
-  .app-nav-list {
-    display: none !important;
-    flex-direction: column !important;
-    width: 100%;
-    gap: 6px !important;
-  }
+.app-root.phone-view .token-gate-form > * {
+  min-width: 0 !important;
+}
 
-  .app-nav-list.open {
-    display: flex !important;
-  }
+.app-root.phone-view .token-gate-status {
+  font-size: 12px !important;
+  line-height: 1.3 !important;
+}
 
-  .app-nav-list .nav-button {
-    width: 100% !important;
-    justify-content: flex-start !important;
-    border-radius: 12px !important;
-  }
+.app-root.phone-view .app-nav-inner {
+  padding: 8px 16px !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 6px !important;
+}
 
-  .app-nav-mobile-panel {
-    width: 100% !important;
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 8px !important;
-  }
+.app-root.phone-view .mobile-nav-toggle {
+  display: inline-flex !important;
+  width: 100%;
+}
 
-  .messages-layout,
-  .messages-list,
-  .messages-chat {
-    overflow-x: hidden !important;
-  }
+.app-root.phone-view .app-nav-list {
+  display: none !important;
+  flex-direction: column !important;
+  width: 100%;
+  gap: 6px !important;
+}
+
+.app-root.phone-view .app-nav-list.open {
+  display: flex !important;
+}
+
+.app-root.phone-view .app-nav-list .nav-button {
+  width: 100% !important;
+  justify-content: flex-start !important;
+  border-radius: 12px !important;
+}
+
+.app-root.phone-view .app-nav-mobile-panel {
+  width: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.app-root.phone-view .messages-layout,
+.app-root.phone-view .messages-list,
+.app-root.phone-view .messages-chat {
+  overflow-x: hidden !important;
 }
 
 /* ============================================
@@ -1187,44 +1173,45 @@ tr:hover td {
    ============================================ */
 
 @media (max-width: 600px) {
-  h1 {
+  .app-root.phone-view h1 {
     font-size: 18px !important;
   }
 
-  h2 {
+  .app-root.phone-view h2 {
     font-size: 16px !important;
   }
 
-  .app-nav-inner button,
-  .nav-button {
+  .app-root.phone-view .app-nav-inner button,
+  .app-root.phone-view .nav-button {
     padding: 10px 14px !important;
     font-size: 13px !important;
   }
 
-  .messages-list {
+  .app-root.phone-view .messages-list {
     max-height: 45vh !important;
   }
 
-  button {
+  .app-root.phone-view button {
     padding: 10px 16px;
     font-size: 13px;
   }
 
-  .card-body {
+  .app-root.phone-view .card-body {
     padding: 14px;
   }
 
-  th, td {
+  .app-root.phone-view th,
+  .app-root.phone-view td {
     padding: 10px 12px;
     font-size: 12px;
   }
 
-  .badge {
+  .app-root.phone-view .badge {
     padding: 3px 8px;
     font-size: 10px;
   }
 
-  .stats-card {
+  .app-root.phone-view .stats-card {
     padding: 16px;
   }
 }
@@ -1234,26 +1221,26 @@ tr:hover td {
    ============================================ */
 
 @media (max-width: 400px) {
-  .app-header-inner {
+  .app-root.phone-view .app-header-inner {
     padding: 8px 0 !important;
   }
 
-  .app-nav-inner button,
-  .nav-button {
+  .app-root.phone-view .app-nav-inner button,
+  .app-root.phone-view .nav-button {
     padding: 8px 12px !important;
     font-size: 12px !important;
     gap: 4px !important;
   }
 
-  .app-content {
+  .app-root.phone-view .app-content {
     padding: 0 12px !important;
   }
 
-  .modal-card {
+  .app-root.phone-view .modal-card {
     padding: 16px !important;
   }
 
-  button {
+  .app-root.phone-view button {
     padding: 8px 14px;
     font-size: 12px;
   }

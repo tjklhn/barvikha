@@ -1,7 +1,24 @@
 import React, { useState, useEffect, useRef } from "react";
 import { apiFetchJson } from "../api";
 
-const MOBILE_BREAKPOINT = 768;
+const detectMobileView = () => {
+  if (typeof window === "undefined") return false;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const screenWidth = typeof window.screen?.width === "number" ? window.screen.width : viewportWidth;
+  const effectiveWidth = Math.min(viewportWidth || screenWidth, screenWidth || viewportWidth);
+  const mobileUa = /Android|webOS|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(
+    (typeof navigator !== "undefined" && navigator.userAgent) || ""
+  );
+  const hasCoarsePointer = typeof window.matchMedia === "function"
+    ? window.matchMedia("(pointer: coarse)").matches
+    : false;
+  const noHover = typeof window.matchMedia === "function"
+    ? window.matchMedia("(hover: none)").matches
+    : false;
+  const touchPoints = typeof navigator !== "undefined" ? Number(navigator.maxTouchPoints || 0) : 0;
+  const touchLikeDevice = hasCoarsePointer || noHover || touchPoints > 1;
+  return effectiveWidth <= 768 || (touchLikeDevice && effectiveWidth <= 1024) || (mobileUa && effectiveWidth <= 1180);
+};
 
 const MessagesTab = () => {
   const [messages, setMessages] = useState([]);
@@ -11,9 +28,7 @@ const MessagesTab = () => {
   const [loading, setLoading] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState(null);
-  const [isMobileView, setIsMobileView] = useState(() =>
-    typeof window !== "undefined" ? window.innerWidth <= MOBILE_BREAKPOINT : false
-  );
+  const [isMobileView, setIsMobileView] = useState(() => detectMobileView());
   const chatScrollRef = useRef(null);
 
   useEffect(() => {
@@ -29,7 +44,7 @@ const MessagesTab = () => {
 
   useEffect(() => {
     const handleResize = () => {
-      setIsMobileView(window.innerWidth <= MOBILE_BREAKPOINT);
+      setIsMobileView(detectMobileView());
     };
 
     window.addEventListener("resize", handleResize);

@@ -593,17 +593,20 @@ const envOrigins = [
 ].filter(Boolean);
 
 const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
-const allowAllOrigins = process.env.KL_ALLOW_ALL_ORIGINS === "1";
+const allowAllOrigins = String(process.env.KL_ALLOW_ALL_ORIGINS || "").trim() === "1";
+const allowAnyOriginByDefault = !allowAllOrigins
+  && envOrigins.length === 0
+  && String(process.env.KL_ALLOW_ALL_ORIGINS || "").trim() !== "0";
 
 const corsOptions = {
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
-    if (allowAllOrigins) return callback(null, true);
+    if (allowAllOrigins || allowAnyOriginByDefault) return callback(null, true);
     if (allowedOrigins.includes(origin)) return callback(null, true);
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Access-Token"],
   credentials: true
 };
 
