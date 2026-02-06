@@ -1,4 +1,4 @@
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:5000";
+const API_BASE = process.env.REACT_APP_API_BASE || "";
 
 export const getAccessToken = () => localStorage.getItem("accessToken") || "";
 
@@ -17,18 +17,49 @@ export const apiFetch = async (path, options = {}) => {
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+
+  const buildApiUrl = (rawPath) => {
+    if (rawPath.startsWith("http")) return rawPath;
+
+    const normalizedBase = String(API_BASE || "").trim().replace(/\/+$/, "");
+    let normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+
+    // Prevent "/api/api/..." when both base and path already include "/api".
+    const baseEndsWithApi = normalizedBase.endsWith("/api");
+    if (baseEndsWithApi && normalizedPath.startsWith("/api/")) {
+      normalizedPath = normalizedPath.slice(4);
+    }
+
+    return `${normalizedBase}${normalizedPath}`;
+  };
+
+  const url = buildApiUrl(path);
   return fetch(url, { ...options, headers });
 };
 
 export const apiFetchJson = async (path, options = {}) => {
   const response = await apiFetch(path, options);
-  const data = await response.json().catch(() => ({}));
+  const contentType = response.headers.get("content-type") || "";
+  let data = {};
+  let text = "";
+
+  if (contentType.includes("application/json")) {
+    data = await response.json().catch(() => ({}));
+  } else {
+    text = await response.text().catch(() => "");
+  }
+
   if (!response.ok) {
-    const error = new Error(data?.error || `HTTP ${response.status}`);
+    const textMessage = text
+      ? text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240)
+      : "";
+    const error = new Error(data?.error || data?.message || textMessage || `HTTP ${response.status}`);
     error.status = response.status;
     error.data = data;
+    if (text) {
+      error.raw = text;
+    }
     throw error;
   }
-  return data;
+  return contentType.includes("application/json") ? data : {};
 };

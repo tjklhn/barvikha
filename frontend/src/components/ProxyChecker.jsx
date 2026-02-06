@@ -81,9 +81,12 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
         onCheckComplete(data);
       }
     } catch (error) {
+      const backendResult = error?.data && typeof error.data === "object" ? error.data : {};
+      const backendError = backendResult.error || error?.message || "Ошибка при проверке прокси";
       setResult({
         success: false,
-        error: "Ошибка при проверке прокси"
+        ...backendResult,
+        error: backendError
       });
     } finally {
       setLoading(false);
@@ -103,6 +106,12 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
       case "checking": return "Проверяется";
       default: return "Не проверен";
     }
+  };
+
+  const formatMs = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) return "—";
+    return `${Math.round(parsed)}мс`;
   };
 
   return (
@@ -323,9 +332,9 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
                 color: "#94a3b8",
                 border: "1px solid rgba(148, 163, 184, 0.15)"
               }}>
-                Ответ: <strong style={{ color: "#e2e8f0" }}>{result.responseTime}мс</strong>
+                Ответ: <strong style={{ color: "#e2e8f0" }}>{formatMs(result.responseTime)}</strong>
               </span>
-              {result.ping && (
+              {(result.ping !== undefined && result.ping !== null) && (
                 <span style={{
                   padding: "6px 12px",
                   background: "rgba(15, 23, 42, 0.6)",
@@ -334,7 +343,7 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
                   color: "#94a3b8",
                   border: "1px solid rgba(148, 163, 184, 0.15)"
                 }}>
-                  Пинг: <strong style={{ color: "#e2e8f0" }}>{result.ping}мс</strong>
+                  Пинг: <strong style={{ color: "#e2e8f0" }}>{formatMs(result.ping)}</strong>
                 </span>
               )}
             </div>
@@ -449,8 +458,8 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
                   )}
                 </div>
                 <div style={{ fontSize: "12px", color: "#64748b" }}>
-                  {item.timestamp} • {item.responseTime}мс
-                  {item.ping && ` • ${item.ping}мс`}
+                  {item.timestamp} • {formatMs(item.responseTime)}
+                  {(item.ping !== undefined && item.ping !== null) ? ` • ${formatMs(item.ping)}` : ""}
                 </div>
               </div>
             ))}

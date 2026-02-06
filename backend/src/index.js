@@ -477,8 +477,25 @@ const isOwnerMatch = (item, ownerContext = {}) => {
   return item?.ownerId && String(item.ownerId) === String(ownerContext.ownerId);
 };
 
+const normalizeEntityId = (value) => String(value ?? "").trim();
+
+const isSameEntityId = (left, right) => {
+  const leftId = normalizeEntityId(left);
+  const rightId = normalizeEntityId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+};
+
+const findProxyById = (proxyId) => proxies.find((item) => isSameEntityId(item?.id, proxyId));
+
+const findProxyIndexById = (proxyId) => proxies.findIndex((item) => isSameEntityId(item?.id, proxyId));
+
+const hasProxyWithId = (proxyList, proxyId) => {
+  const list = Array.isArray(proxyList) ? proxyList : [];
+  return list.some((item) => isSameEntityId(item?.id, proxyId));
+};
+
 const getProxyLabel = (proxyId, ownerContext = {}) => {
-  const proxy = proxies.find((item) => item.id === proxyId);
+  const proxy = findProxyById(proxyId);
   if (!proxy) return "Нет";
   if (!isOwnerMatch(proxy, ownerContext)) return "Нет";
   return `${proxy.name} (${proxy.host}:${proxy.port})`;
@@ -493,7 +510,7 @@ const requireAccountProxy = (account, res, contextLabel = "операция", ow
     });
     return null;
   }
-  const proxy = proxies.find((item) => item.id === account.proxyId);
+  const proxy = findProxyById(account.proxyId);
   if (!proxy) {
     res.status(400).json({
       success: false,
@@ -776,7 +793,7 @@ app.post("/api/accounts/:id/refresh", async (req, res) => {
       return;
     }
 
-    const selectedProxy = proxies.find((item) => item.id === account.proxyId) || null;
+    const selectedProxy = findProxyById(account.proxyId) || null;
     if (!selectedProxy) {
       res.status(400).json({ success: false, error: "Прокси для аккаунта не найден." });
       return;
@@ -840,7 +857,7 @@ app.get("/api/ads/active", async (req, res) => {
       if (!account.proxyId) {
         return false;
       }
-      return Boolean(scopedProxies.find((proxy) => proxy.id === account.proxyId));
+      return hasProxyWithId(scopedProxies, account.proxyId);
     });
     const ads = await fetchActiveAds({ accounts, proxies: scopedProxies, ownerContext });
     res.json({ ads });
@@ -986,7 +1003,7 @@ app.get("/api/messages", async (req, res) => {
       const scopedProxies = filterByOwner(proxies, ownerContext);
       accounts = accounts.filter((account) => {
         if (!account.proxyId) return false;
-        return Boolean(scopedProxies.find((proxy) => proxy.id === account.proxyId));
+        return hasProxyWithId(scopedProxies, account.proxyId);
       });
       if (!accounts.length) {
         res.json([]);
@@ -1179,7 +1196,7 @@ app.get("/api/categories/children", async (req, res) => {
     }
 
     const scopedProxies = filterByOwner(proxies, ownerContext);
-    if (!account.proxyId || !scopedProxies.find((item) => item.id === account.proxyId)) {
+    if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
       if (process.env.KL_DEBUG_CATEGORIES === "1") {
         console.log("[categories/children] proxy missing, skip puppeteer fallback");
       }
@@ -1219,7 +1236,7 @@ app.get("/api/categories/children", async (req, res) => {
     };
 
     const selectedProxy = account.proxyId
-      ? scopedProxies.find((item) => item.id === account.proxyId)
+      ? scopedProxies.find((item) => isSameEntityId(item?.id, account.proxyId))
       : null;
 
     const puppeteer = getPuppeteer();
@@ -3360,9 +3377,11 @@ app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) =
     }
 
     const rawCookieText = req.file.buffer.toString("utf8");
-    const proxyId = req.body?.proxyId ? Number(req.body.proxyId) : null;
+    const proxyId = req.body?.proxyId !== undefined && req.body?.proxyId !== null
+      ? String(req.body.proxyId).trim()
+      : "";
     const deviceProfile = pickDeviceProfile();
-    const selectedProxy = proxyId ? proxies.find((item) => item.id === proxyId) : null;
+    const selectedProxy = proxyId ? findProxyById(proxyId) : null;
 
     if (!proxyId) {
       res.status(400).json({ success: false, error: "Для добавления аккаунта нужен прокси." });
@@ -3397,7 +3416,7 @@ app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) =
       profileEmail: validation.profileEmail || "",
       status: "active",
       added: new Date().toISOString().slice(0, 10),
-      proxyId,
+      proxyId: selectedProxy.id,
       cookie: rawCookieText,
       deviceProfile: JSON.stringify(validation.deviceProfile),
       lastCheck: new Date().toISOString(),
@@ -3417,8 +3436,8 @@ app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) =
         profileEmail: newAccount.profileEmail,
         status: newAccount.status,
         added: newAccount.added,
-        proxyId,
-        proxy: getProxyLabel(proxyId, ownerContext),
+        proxyId: selectedProxy.id,
+        proxy: getProxyLabel(selectedProxy.id, ownerContext),
         lastCheck: newAccount.lastCheck
       }
     });
@@ -3635,8 +3654,8 @@ app.post("/api/proxies", async (req, res) => {
 });
 
 app.post("/api/proxies/:id/check", async (req, res) => {
-  const proxyId = Number(req.params.id);
-  const proxy = proxies.find((item) => item.id === proxyId);
+  const proxyId = String(req.params.id || "").trim();
+  const proxy = findProxyById(proxyId);
 
   if (!proxy) {
     res.status(404).json({ success: false, error: "Прокси не найден" });
@@ -3676,7 +3695,7 @@ app.post("/api/proxies/check-all", async (req, res) => {
     const results = await proxyChecker.checkMultipleProxies(scopedProxies);
 
     results.forEach((result) => {
-      const proxy = proxies.find((item) => item.id === result.proxyId);
+      const proxy = findProxyById(result.proxyId);
       if (proxy) {
         proxy.status = result.success ? "active" : "failed";
         proxy.lastChecked = new Date().toISOString();
@@ -3712,8 +3731,8 @@ app.delete("/api/accounts/:id", (req, res) => {
 });
 
 app.delete("/api/proxies/:id", (req, res) => {
-  const proxyId = Number(req.params.id);
-  const index = proxies.findIndex((proxy) => proxy.id === proxyId);
+  const proxyId = String(req.params.id || "").trim();
+  const index = findProxyIndexById(proxyId);
 
   if (index === -1) {
     res.status(404).json({ success: false, error: "Прокси не найден" });

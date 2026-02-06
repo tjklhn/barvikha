@@ -399,7 +399,7 @@ function App() {
       }
     } catch (error) {
       handleAuthError(error);
-      alert("Ошибка при проверке прокси");
+      alert(error?.data?.error || error?.message || "Ошибка при проверке прокси");
     } finally {
       setCheckingAllProxies(false);
     }
