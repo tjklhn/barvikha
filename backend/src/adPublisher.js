@@ -1480,7 +1480,8 @@ const acceptGdprConsent = async (page, { timeout = 15000 } = {}) => {
   return clicked;
 };
 
-const clickSubmitButtonInContext = async (context) => {
+const clickSubmitButtonInContext = async (context, options = {}) => {
+  const { allowFallback = true } = options;
   const primaryTexts = ["Anzeige aufgeben", "Anzeige veröffentlichen", "Veröffentlichen", "Jetzt veröffentlichen"];
   const fallbackTexts = [
     "Weiter",
@@ -1584,7 +1585,7 @@ const clickSubmitButtonInContext = async (context) => {
     }
   }
 
-  if (await clickWithTexts(fallbackTexts)) {
+  if (allowFallback && await clickWithTexts(fallbackTexts)) {
     return true;
   }
 
@@ -1634,7 +1635,7 @@ const clickSubmitButtonInContext = async (context) => {
         }
       }
       return false;
-    }, [...primaryTexts, ...fallbackTexts]);
+    }, allowFallback ? [...primaryTexts, ...fallbackTexts] : [...primaryTexts]);
     if (clicked) return true;
   } catch (error) {
     // ignore deep click errors
@@ -1643,7 +1644,7 @@ const clickSubmitButtonInContext = async (context) => {
   return false;
 };
 
-const clickSubmitButton = async (page, contexts = []) => {
+const clickSubmitButton = async (page, contexts = [], options = {}) => {
   const queue = [];
   const pushUnique = (ctx) => {
     if (!ctx || queue.includes(ctx)) return;
@@ -1654,11 +1655,59 @@ const clickSubmitButton = async (page, contexts = []) => {
   page.frames().forEach(pushUnique);
 
   for (const context of queue) {
-    if (await clickSubmitButtonInContext(context)) {
+    if (await clickSubmitButtonInContext(context, options)) {
       return true;
     }
   }
   return false;
+};
+
+const forceSubmitFormInContext = async (context) => {
+  try {
+    return await context.evaluate(() => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const forms = Array.from(document.querySelectorAll("form"));
+      if (!forms.length) {
+        return { submitted: false, reason: "form-not-found" };
+      }
+      const candidates = forms.filter((form) => {
+        const action = String(form.getAttribute("action") || "").toLowerCase();
+        const id = String(form.id || "").toLowerCase();
+        return action.includes("anzeige") || id.includes("postad") || id.includes("anzeige");
+      });
+      const target = candidates.find((form) =>
+        Boolean(form.querySelector('button[type="submit"], input[type="submit"]'))
+      ) || candidates[0] || forms[0];
+      if (!target) {
+        return { submitted: false, reason: "target-form-not-found" };
+      }
+
+      const submitter = target.querySelector(
+        'button[type="submit"]:not([disabled]), input[type="submit"]:not([disabled])'
+      );
+      if (submitter) {
+        submitter.click();
+        return {
+          submitted: true,
+          via: "submitter-click",
+          submitterText: normalize(submitter.innerText || submitter.value || submitter.getAttribute("aria-label"))
+        };
+      }
+
+      if (typeof target.requestSubmit === "function") {
+        target.requestSubmit();
+        return { submitted: true, via: "requestSubmit" };
+      }
+
+      target.submit();
+      return { submitted: true, via: "submit" };
+    });
+  } catch (error) {
+    return {
+      submitted: false,
+      reason: error?.message || "force-submit-error"
+    };
+  }
 };
 
 const getSubmitCandidatesInContext = async (context) => {
@@ -5603,7 +5652,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         console.log(`[publishAd] Direkt kaufen final check failed: ${error.message}`);
       }
 
-      const submitClicked = await clickSubmitButton(page, [formContext]);
+      const submitClicked = await clickSubmitButton(page, [formContext], { allowFallback: false });
 
       if (!submitClicked) {
         const submitCandidatesAfterMiss = await collectSubmitCandidatesDebug(page, [formContext]);
@@ -5639,7 +5688,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         }
         await humanPause(200, 400);
         const retryContext = (await getAdFormContext(page)) || formContext;
-        await clickSubmitButton(page, [retryContext]);
+        await clickSubmitButton(page, [retryContext], { allowFallback: false });
         publishState = await waitForPublishState(page, defaultTimeout);
         appendPublishTrace({ step: "publish-state-after-gdpr", publishState });
       }
@@ -5680,9 +5729,9 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
             previewSubmitCandidates
           }
         });
-        const clickedPreview = await clickSubmitButton(page, [previewContext || page]);
+        const clickedPreview = await clickSubmitButton(page, [previewContext || page], { allowFallback: false });
         if (!clickedPreview) {
-          await clickSubmitButton(page, [page]);
+          await clickSubmitButton(page, [page], { allowFallback: true });
         }
         publishState = await waitForPublishState(page, 120000);
         appendPublishTrace({ step: "publish-state-after-preview", publishState });
@@ -5712,6 +5761,23 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           appendPublishTrace({ step: "publish-state-from-frames", publishState });
         }
       }
+      if (publishState === "form") {
+        const forceSubmitContextResult = await forceSubmitFormInContext(formContext);
+        let forceSubmitPageResult = null;
+        if (formContext !== page) {
+          forceSubmitPageResult = await forceSubmitFormInContext(page);
+        }
+        appendPublishTrace({
+          step: "publish-force-submit",
+          formContext: forceSubmitContextResult,
+          pageContext: forceSubmitPageResult
+        });
+        if (forceSubmitContextResult?.submitted || forceSubmitPageResult?.submitted) {
+          await humanPause(220, 420);
+          publishState = await waitForPublishState(page, defaultTimeout);
+          appendPublishTrace({ step: "publish-state-after-force-submit", publishState });
+        }
+      }
 
       // Если остаемся на форме (p-anzeige-abschicken), повторно выставляем buyNowSelected и пробуем сабмит
       if (publishState === "form" && page.url().includes("p-anzeige-abschicken")) {
@@ -5723,7 +5789,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
             await forceDirectBuyNoAcrossContexts(page, formContext);
             await ensureBuyNowSelectedFalse(page);
             await acceptTermsIfPresent(page);
-            await clickSubmitButton(page, [formContext, page]);
+            await clickSubmitButton(page, [formContext, page], { allowFallback: false });
             publishState = await waitForPublishState(page, defaultTimeout);
             appendPublishTrace({ step: "publish-state-after-abschicken-retry", publishState });
           } catch (error) {
