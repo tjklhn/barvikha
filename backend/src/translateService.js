@@ -1,6 +1,8 @@
 const crypto = require("crypto");
 const axios = require("axios");
-const ProxyAgent = require("proxy-agent");
+const { HttpProxyAgent } = require("http-proxy-agent");
+const { HttpsProxyAgent } = require("https-proxy-agent");
+const { SocksProxyAgent } = require("socks-proxy-agent");
 const { buildProxyUrl } = require("./cookieUtils");
 
 const DEFAULT_AZURE_ENDPOINT = "https://api.cognitive.microsofttranslator.com";
@@ -84,27 +86,26 @@ const buildAxiosConfig = ({ proxy, headers = {}, timeout = 12000, validateStatus
   }
 
   if (proxyUrl) {
-    let agent = null;
-    if (typeof ProxyAgent === "function") {
-      try {
-        agent = new ProxyAgent(proxyUrl);
-      } catch (error) {
-        agent = ProxyAgent(proxyUrl);
+    // IMPORTANT: proxy-agent can silently fall back to a direct connection for some proxy schemes
+    // (e.g. SOCKS variants). We want strict behavior: if proxy is provided, all traffic MUST go
+    // through it, otherwise fail early.
+    try {
+      const proxyType = String(proxy?.type || "").toLowerCase();
+      if (proxyType.startsWith("socks")) {
+        const agent = new SocksProxyAgent(proxyUrl);
+        config.httpAgent = agent;
+        config.httpsAgent = agent;
+      } else {
+        config.httpAgent = new HttpProxyAgent(proxyUrl);
+        config.httpsAgent = new HttpsProxyAgent(proxyUrl);
       }
-    } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
-      agent = new ProxyAgent.ProxyAgent(proxyUrl);
-    }
-
-    // Do not silently fall back to direct connection when proxy was provided.
-    if (!agent) {
+      config.proxy = false;
+    } catch (cause) {
       const error = new Error("Failed to initialize proxy agent");
       error.code = "PROXY_INIT_FAILED";
+      error.cause = cause;
       throw error;
     }
-
-    config.httpAgent = agent;
-    config.httpsAgent = agent;
-    config.proxy = false;
   }
   return config;
 };
