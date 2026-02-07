@@ -5734,13 +5734,26 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
         const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
         const inferred = await inferPublishSuccess(page);
+        const explicitSuccessSignals = {
+          hasSuccessText: Boolean(inferred.hasSuccessText),
+          hasShadowSuccessText: Boolean(inferred.hasShadowSuccessText),
+          hasAdLink: Boolean(inferred.hasAdLink),
+          progressDetected: Boolean(progressDetected)
+        };
+        appendPublishTrace({
+          step: "publish-success-signals",
+          publishState,
+          errors: errors.length,
+          isPreview: Boolean(inferred.isPreview),
+          ...explicitSuccessSignals
+        });
         const canTreatAsSuccess = !errors.length &&
           !inferred.isPreview &&
-          (!inferred.hasSubmit ||
-            inferred.hasSuccessText ||
-            inferred.hasShadowSuccessText ||
-            inferred.hasAdLink ||
-            progressDetected);
+          (publishState === "success" ||
+            explicitSuccessSignals.hasSuccessText ||
+            explicitSuccessSignals.hasShadowSuccessText ||
+            explicitSuccessSignals.hasAdLink ||
+            explicitSuccessSignals.progressDetected);
         if (canTreatAsSuccess) {
           return {
             success: true,
