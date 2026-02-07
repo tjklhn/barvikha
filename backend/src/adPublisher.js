@@ -2163,6 +2163,154 @@ const collectFormErrors = async (page) => {
   }
 };
 
+const repairInvalidRequiredFieldsInContext = async (context) => {
+  try {
+    return await context.evaluate(() => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const collectRoots = (root, bucket) => {
+        if (!root || bucket.includes(root)) return;
+        bucket.push(root);
+        const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
+        elements.forEach((el) => {
+          if (el && el.shadowRoot) collectRoots(el.shadowRoot, bucket);
+        });
+      };
+      const roots = [];
+      collectRoots(document, roots);
+
+      const controls = [];
+      roots.forEach((root) => {
+        try {
+          controls.push(...Array.from(root.querySelectorAll("input, select, textarea")));
+        } catch (error) {
+          // ignore root query errors
+        }
+      });
+
+      const repaired = [];
+      const repairedRadioNames = new Set();
+
+      const markResult = (node, fixed) => {
+        repaired.push({
+          fixed: Boolean(fixed),
+          tag: String(node.tagName || "").toLowerCase(),
+          type: String(node.getAttribute("type") || "").toLowerCase(),
+          name: String(node.getAttribute("name") || ""),
+          id: String(node.id || ""),
+          required: Boolean(node.required || node.getAttribute("aria-required") === "true"),
+          validationMessage: normalize(node.validationMessage || "")
+        });
+      };
+
+      for (const node of controls) {
+        if (!node || node.disabled || !isVisible(node)) continue;
+        const tag = String(node.tagName || "").toLowerCase();
+        const type = String(node.getAttribute("type") || "").toLowerCase();
+        if (type === "hidden" || type === "button") continue;
+
+        const isInvalid = typeof node.checkValidity === "function" ? !node.checkValidity() : false;
+        if (!isInvalid) continue;
+
+        let fixed = false;
+
+        if (tag === "select") {
+          const option = Array.from(node.options || []).find((opt) => opt && !opt.disabled && String(opt.value || "").trim() !== "");
+          if (option) {
+            node.value = option.value;
+            node.dispatchEvent(new Event("input", { bubbles: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true }));
+            fixed = true;
+          }
+        } else if (type === "checkbox" && node.required && !node.checked) {
+          node.click();
+          fixed = true;
+        } else if (type === "radio" && node.required) {
+          const radioName = String(node.getAttribute("name") || "");
+          if (radioName && !repairedRadioNames.has(radioName)) {
+            const radios = controls.filter((item) =>
+              item &&
+              String(item.tagName || "").toLowerCase() === "input" &&
+              String(item.getAttribute("type") || "").toLowerCase() === "radio" &&
+              String(item.getAttribute("name") || "") === radioName &&
+              !item.disabled &&
+              isVisible(item)
+            );
+            const target = radios.find((item) => !item.checked) || radios[0];
+            if (target) {
+              target.click();
+              fixed = true;
+            }
+            repairedRadioNames.add(radioName);
+          }
+        }
+
+        markResult(node, fixed);
+      }
+
+      return {
+        totalInvalid: repaired.length,
+        fixedCount: repaired.filter((item) => item.fixed).length,
+        items: repaired.slice(0, 30)
+      };
+    });
+  } catch (error) {
+    return {
+      totalInvalid: 0,
+      fixedCount: 0,
+      items: [],
+      error: error?.message || String(error)
+    };
+  }
+};
+
+const repairInvalidRequiredFieldsAcrossContexts = async (page, primaryContext) => {
+  const contexts = [];
+  const pushUnique = (ctx) => {
+    if (!ctx || contexts.includes(ctx)) return;
+    contexts.push(ctx);
+  };
+  pushUnique(primaryContext);
+  pushUnique(page);
+  try {
+    page.frames().forEach(pushUnique);
+  } catch (error) {
+    // ignore frame access errors
+  }
+
+  const results = [];
+  for (const context of contexts) {
+    try {
+      const result = await repairInvalidRequiredFieldsInContext(context);
+      let contextUrl = "";
+      try {
+        contextUrl = typeof context.url === "function" ? context.url() : "";
+      } catch (error) {
+        contextUrl = "";
+      }
+      results.push({
+        contextType: context === page ? "page" : "frame",
+        contextUrl,
+        ...result
+      });
+    } catch (error) {
+      // ignore per-context repair errors
+    }
+  }
+
+  return {
+    totalInvalid: results.reduce((sum, item) => sum + Number(item?.totalInvalid || 0), 0),
+    fixedCount: results.reduce((sum, item) => sum + Number(item?.fixedCount || 0), 0),
+    contexts: results
+  };
+};
+
 const getAdFormContext = async (page, timeout = 20000) => {
   const candidateSelectors = [
     'input[name="title"]',
@@ -5778,6 +5926,20 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           appendPublishTrace({ step: "publish-state-after-force-submit", publishState });
         }
       }
+      if (publishState === "form") {
+        const invalidRepair = await repairInvalidRequiredFieldsAcrossContexts(page, formContext);
+        appendPublishTrace({
+          step: "publish-invalid-repair",
+          totalInvalid: invalidRepair.totalInvalid,
+          fixedCount: invalidRepair.fixedCount
+        });
+        if (invalidRepair.fixedCount > 0) {
+          await humanPause(180, 320);
+          await clickSubmitButton(page, [formContext, page], { allowFallback: false });
+          publishState = await waitForPublishState(page, defaultTimeout);
+          appendPublishTrace({ step: "publish-state-after-invalid-repair", publishState });
+        }
+      }
 
       // Если остаемся на форме (p-anzeige-abschicken), повторно выставляем buyNowSelected и пробуем сабмит
       if (publishState === "form" && page.url().includes("p-anzeige-abschicken")) {
@@ -5831,7 +5993,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           (publishState === "success" ||
             explicitSuccessSignals.hasSuccessText ||
             explicitSuccessSignals.hasShadowSuccessText ||
-            explicitSuccessSignals.hasAdLink ||
+            (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
             explicitSuccessSignals.progressedAwayFromForm);
         if (canTreatAsSuccess) {
           return {
