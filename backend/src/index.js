@@ -60,6 +60,9 @@ let categoryFieldsCacheSaveTimer = null;
 const DEBUG_FIELDS = process.env.KL_DEBUG_FIELDS === "1";
 let puppeteerStealthReady = false;
 const subscriptionTokens = { items: [] };
+const activePublishByAccount = new Map();
+const recentSuccessfulPublishes = new Map();
+const RECENT_PUBLISH_TTL_MS = 30 * 60 * 1000;
 
 const getPuppeteer = () => {
   if (!puppeteerStealthReady) {
@@ -87,6 +90,56 @@ const sanitizeFilename = (value) => (value || "account")
   .toString()
   .replace(/[^a-z0-9._-]+/gi, "_")
   .slice(0, 60);
+
+const safeJsonStringify = (value) => {
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return String(value ?? "");
+  }
+};
+
+const buildPublishRequestFingerprint = ({
+  accountId,
+  title,
+  description,
+  price,
+  currency,
+  postalCode,
+  categoryId,
+  categoryUrl,
+  categoryPath,
+  extraFields,
+  uploadedFiles
+}) => {
+  const payload = {
+    accountId: String(accountId || "").trim(),
+    title: String(title || "").trim(),
+    description: String(description || "").trim(),
+    price: String(price || "").trim(),
+    currency: String(currency || "").trim(),
+    postalCode: String(postalCode || "").trim(),
+    categoryId: String(categoryId || "").trim(),
+    categoryUrl: String(categoryUrl || "").trim(),
+    categoryPath: safeJsonStringify(categoryPath || null),
+    extraFields: safeJsonStringify(extraFields || null),
+    files: (uploadedFiles || []).map((file) => ({
+      originalname: String(file?.originalname || ""),
+      size: Number(file?.size || 0),
+      mimetype: String(file?.mimetype || "")
+    }))
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+};
+
+const cleanupRecentSuccessfulPublishes = () => {
+  const now = Date.now();
+  for (const [fingerprint, item] of recentSuccessfulPublishes.entries()) {
+    if (!item || !item.finishedAt || (now - item.finishedAt) > RECENT_PUBLISH_TTL_MS) {
+      recentSuccessfulPublishes.delete(fingerprint);
+    }
+  }
+};
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -3804,6 +3857,15 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const forceDebug = true;
+  let activePublishKey = null;
+  const releasePublishLock = () => {
+    if (!activePublishKey) return;
+    const lock = activePublishByAccount.get(activePublishKey);
+    if (lock?.requestId === requestId) {
+      activePublishByAccount.delete(activePublishKey);
+    }
+    activePublishKey = null;
+  };
   appendServerLog(getPublishRequestLogPath(), {
     event: "start",
     requestId,
@@ -3904,6 +3966,81 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       return;
     }
 
+    const parsedCategoryPath = categoryPath ? (() => {
+      try {
+        return JSON.parse(categoryPath);
+      } catch (error) {
+        return categoryPath;
+      }
+    })() : undefined;
+
+    const parsedExtraFields = extraFields ? (() => {
+      try {
+        return JSON.parse(extraFields);
+      } catch (error) {
+        return extraFields;
+      }
+    })() : undefined;
+
+    cleanupRecentSuccessfulPublishes();
+    const fingerprint = buildPublishRequestFingerprint({
+      accountId: account.id,
+      title,
+      description,
+      price,
+      currency,
+      postalCode,
+      categoryId,
+      categoryUrl,
+      categoryPath: parsedCategoryPath,
+      extraFields: parsedExtraFields,
+      uploadedFiles
+    });
+
+    const recentSuccess = recentSuccessfulPublishes.get(fingerprint);
+    if (recentSuccess) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "deduplicated-success",
+        requestId,
+        previousRequestId: recentSuccess.requestId,
+        accountId: account.id
+      });
+      cleanupFiles();
+      res.json({
+        success: true,
+        deduplicated: true,
+        message: "Идентичный запрос уже был успешно выполнен. Повторная публикация пропущена.",
+        debugId: forceDebug ? requestId : undefined
+      });
+      return;
+    }
+
+    activePublishKey = String(account.id);
+    const activePublish = activePublishByAccount.get(activePublishKey);
+    if (activePublish) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "rejected-active-publish",
+        requestId,
+        activeRequestId: activePublish.requestId,
+        accountId: account.id
+      });
+      cleanupFiles();
+      res.status(409).json({
+        success: false,
+        inProgress: true,
+        error: "Для этого аккаунта уже выполняется публикация. Дождитесь завершения текущей попытки.",
+        activeRequestId: activePublish.requestId,
+        debugId: forceDebug ? requestId : undefined
+      });
+      return;
+    }
+
+    activePublishByAccount.set(activePublishKey, {
+      requestId,
+      startedAt: Date.now(),
+      fingerprint
+    });
+
     const result = await publishAd({
       account,
       proxy: selectedProxy,
@@ -3915,27 +4052,22 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
         postalCode,
         categoryId,
         categoryUrl,
-        categoryPath: categoryPath ? (() => {
-          try {
-            return JSON.parse(categoryPath);
-          } catch (error) {
-            return categoryPath;
-          }
-        })() : undefined,
-        extraFields: extraFields ? (() => {
-          try {
-            return JSON.parse(extraFields);
-          } catch (error) {
-            return extraFields;
-          }
-        })() : undefined
+        categoryPath: parsedCategoryPath,
+        extraFields: parsedExtraFields
       },
       imagePaths: uploadedFiles.map((file) => file.path),
       debug: Boolean(forceDebug)
+    }).finally(() => {
+      releasePublishLock();
     });
     appendServerLog(getPublishRequestLogPath(), { event: "publish-result", requestId, success: result?.success, error: result?.error || "" });
 
     if (result.success) {
+      recentSuccessfulPublishes.set(fingerprint, {
+        requestId,
+        accountId: account.id,
+        finishedAt: Date.now()
+      });
       upsertAd({
         accountId: account.id,
         title,
@@ -3954,6 +4086,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
     });
     appendServerLog(getPublishRequestLogPath(), { event: "response-sent", requestId, success: result?.success });
   } catch (error) {
+    releasePublishLock();
     cleanupFiles();
     res.status(500).json({
       success: false,
