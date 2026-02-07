@@ -2491,6 +2491,15 @@ const repairServerSideRequiredErrorsInContext = async (context, preferredValues 
         node.dispatchEvent(new Event("input", { bubbles: true }));
         node.dispatchEvent(new Event("change", { bubbles: true }));
       };
+      const isAttributeCandidate = (node) => {
+        if (!node) return false;
+        const name = normalize(node.getAttribute?.("name") || "");
+        const id = normalize(node.getAttribute?.("id") || node.id || "");
+        const className = normalize(node.getAttribute?.("class") || "");
+        return name.includes("attributemap") ||
+          id.includes("attributemap") ||
+          className.includes("attribute");
+      };
 
       const parseFieldKey = (errorNode) => {
         const ids = [
@@ -2563,6 +2572,64 @@ const repairServerSideRequiredErrorsInContext = async (context, preferredValues 
         dispatchChanges(selectNode);
         return chosen;
       };
+      const applyFixToControl = (control, options = {}) => {
+        const { allowHidden = false } = options;
+        if (!control || control.disabled) {
+          return { fixed: false, tag: "", type: "", value: "", reason: "control-unavailable" };
+        }
+        if (!allowHidden && !isVisible(control)) {
+          return { fixed: false, tag: "", type: "", value: "", reason: "control-hidden" };
+        }
+
+        const tag = String(control.tagName || "").toLowerCase();
+        const type = String(control.getAttribute("type") || "").toLowerCase();
+        let fixed = false;
+        let value = "";
+
+        if (tag === "select") {
+          const chosen = pickSelectValue(control);
+          fixed = Boolean(chosen?.value);
+          value = chosen?.value || "";
+        } else if (type === "radio") {
+          const radioName = String(control.getAttribute("name") || "");
+          if (radioName) {
+            const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
+              .filter((node) =>
+                !node.disabled &&
+                String(node.getAttribute("name") || "") === radioName &&
+                (allowHidden || isVisible(node))
+              );
+            const target = radios.find((node) => !node.checked) || radios[0];
+            if (target) {
+              target.checked = true;
+              dispatchChanges(target);
+              fixed = true;
+              value = String(target.value || "");
+            }
+          }
+        } else if (type === "checkbox") {
+          if (!control.checked) {
+            control.checked = true;
+          }
+          dispatchChanges(control);
+          fixed = Boolean(control.checked);
+          value = control.checked ? "true" : "false";
+        } else if (tag === "input" || tag === "textarea") {
+          const current = String(control.value || "").trim();
+          if (!current) {
+            const fallback = preferredTokens.find((token) => token.length > 1 && !/^\d+$/.test(token)) || "1";
+            control.value = fallback;
+            dispatchChanges(control);
+            value = fallback;
+            fixed = true;
+          } else {
+            fixed = true;
+            value = current;
+          }
+        }
+
+        return { fixed, tag, type, value };
+      };
 
       const allErrorNodes = Array.from(
         document.querySelectorAll(".formerror, [id*='errors'], [id*='error']")
@@ -2599,46 +2666,8 @@ const repairServerSideRequiredErrorsInContext = async (context, preferredValues 
           continue;
         }
 
-        const tag = String(control.tagName || "").toLowerCase();
-        const type = String(control.getAttribute("type") || "").toLowerCase();
-        let fixed = false;
-        let value = "";
-
-        if (tag === "select") {
-          const chosen = pickSelectValue(control);
-          fixed = Boolean(chosen?.value);
-          value = chosen?.value || "";
-        } else if (type === "radio") {
-          const radioName = String(control.getAttribute("name") || "");
-          const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
-            .filter((node) => !node.disabled && String(node.getAttribute("name") || "") === radioName && isVisible(node));
-          const target = radios.find((node) => !node.checked) || radios[0];
-          if (target) {
-            target.click();
-            dispatchChanges(target);
-            fixed = true;
-            value = String(target.value || "");
-          }
-        } else if (type === "checkbox") {
-          if (!control.checked) {
-            control.click();
-          }
-          dispatchChanges(control);
-          fixed = Boolean(control.checked);
-          value = control.checked ? "true" : "false";
-        } else if (tag === "input" || tag === "textarea") {
-          const current = String(control.value || "").trim();
-          if (!current) {
-            const fallback = preferredTokens.find((token) => token.length > 1 && !/^\d+$/.test(token)) || "1";
-            control.value = fallback;
-            dispatchChanges(control);
-            value = fallback;
-            fixed = true;
-          } else {
-            fixed = true;
-            value = current;
-          }
-        }
+        const fixedResult = applyFixToControl(control);
+        const { fixed, tag, type, value } = fixedResult;
 
         repairs.push({
           key,
@@ -2652,8 +2681,61 @@ const repairServerSideRequiredErrorsInContext = async (context, preferredValues 
         });
       }
 
+      const bodyText = normalize(document.body?.innerText || "");
+      const hasGenericRequiredError = bodyText.includes("bitte gib einen wert ein")
+        || bodyText.includes("bitte waehlen")
+        || bodyText.includes("bitte wählen")
+        || bodyText.includes("pflichtfeld")
+        || bodyText.includes("required");
+      const needsGenericFallback = hasGenericRequiredError &&
+        (requiredErrorNodes.length === 0 || repairs.every((item) => !item.fixed));
+      if (needsGenericFallback) {
+        const fallbackControls = Array.from(document.querySelectorAll("select,input,textarea"))
+          .filter((node) => isAttributeCandidate(node))
+          .filter((node) => {
+            if (!node || node.disabled) return false;
+            const tag = String(node.tagName || "").toLowerCase();
+            const type = String(node.getAttribute("type") || "").toLowerCase();
+            if (tag === "select") {
+              return String(node.value || "").trim() === "";
+            }
+            if (type === "radio") {
+              const radioName = String(node.getAttribute("name") || "");
+              if (!radioName) return false;
+              const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
+                .filter((radio) => !radio.disabled && String(radio.getAttribute("name") || "") === radioName);
+              return radios.length > 0 && !radios.some((radio) => radio.checked);
+            }
+            if (type === "checkbox") {
+              return !node.checked;
+            }
+            return String(node.value || "").trim() === "";
+          });
+        const handledRadioNames = new Set();
+        for (const control of fallbackControls) {
+          const type = String(control.getAttribute("type") || "").toLowerCase();
+          const radioName = String(control.getAttribute("name") || "");
+          if (type === "radio" && radioName) {
+            if (handledRadioNames.has(radioName)) continue;
+            handledRadioNames.add(radioName);
+          }
+          const fixedResult = applyFixToControl(control, { allowHidden: true });
+          if (!fixedResult.fixed) continue;
+          repairs.push({
+            key: "",
+            fixed: true,
+            tag: fixedResult.tag,
+            type: fixedResult.type,
+            value: String(fixedResult.value || "").slice(0, 120),
+            id: String(control.id || ""),
+            name: String(control.getAttribute("name") || ""),
+            errorText: "generic-required-fallback"
+          });
+        }
+      }
+
       return {
-        totalErrors: requiredErrorNodes.length,
+        totalErrors: Math.max(requiredErrorNodes.length, hasGenericRequiredError ? 1 : 0),
         fixedCount: repairs.filter((item) => item.fixed).length,
         items: repairs.slice(0, 40)
       };
@@ -2866,8 +2948,8 @@ const autoSelectAttributeMapFields = async (context) =>
     const filled = [];
     const selects = Array.from(document.querySelectorAll("select"));
     selects.forEach((select) => {
-      if (!isVisible(select)) return;
       if (!isAttributeSelect(select)) return;
+      if (select.disabled) return;
       if (select.value) return;
       const label = getLabel(select);
       if (label && ignoreLabels.some((item) => label.toLowerCase().includes(item.toLowerCase()))) return;
