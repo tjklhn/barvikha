@@ -14,7 +14,7 @@ const DEBUG_PUBLISH = process.env.KL_DEBUG_PUBLISH === "1";
 let publishDebugOverride = false;
 const isPublishDebugEnabled = () => DEBUG_PUBLISH || publishDebugOverride;
 const CATEGORY_SELECTION_NEW_PAGE = process.env.KL_CATEGORY_SELECTION_NEW_PAGE === "1";
-const PUBLISH_FLOW_VERSION = "2026-02-07-v4";
+const PUBLISH_FLOW_VERSION = "2026-02-07-v5";
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
@@ -186,6 +186,44 @@ const getCategorySelectionUrl = (categoryId, categoryUrl) => {
     return `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(resolvedId)}`;
   }
   return "";
+};
+
+const collectPreferredFieldValues = ({ ad, categoryPathIds = [] } = {}) => {
+  const values = [];
+  const seen = new Set();
+  const push = (value) => {
+    const token = String(value || "").trim().toLowerCase();
+    if (!token || seen.has(token)) return;
+    seen.add(token);
+    values.push(token);
+  };
+
+  (Array.isArray(categoryPathIds) ? categoryPathIds : []).forEach(push);
+  normalizeCategoryPathInput(ad?.categoryPath).forEach(push);
+
+  const categoryUrl = String(ad?.categoryUrl || "");
+  categoryUrl
+    .split(/[/?&#=._:-]+/)
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean)
+    .forEach(push);
+
+  const extraFields = ad?.extraFields;
+  if (Array.isArray(extraFields)) {
+    extraFields.forEach((entry) => {
+      if (!entry) return;
+      push(entry.name);
+      push(entry.value);
+      push(entry.label);
+    });
+  } else if (extraFields && typeof extraFields === "object") {
+    Object.entries(extraFields).forEach(([key, value]) => {
+      push(key);
+      push(value);
+    });
+  }
+
+  return values;
 };
 
 const selectCategoryPathOnSelectionPage = async (page, pathIds = []) => {
@@ -2432,6 +2470,240 @@ const repairInvalidRequiredFieldsAcrossContexts = async (page, primaryContext) =
 
   return {
     totalInvalid: results.reduce((sum, item) => sum + Number(item?.totalInvalid || 0), 0),
+    fixedCount: results.reduce((sum, item) => sum + Number(item?.fixedCount || 0), 0),
+    contexts: results
+  };
+};
+
+const repairServerSideRequiredErrorsInContext = async (context, preferredValues = []) => {
+  try {
+    return await context.evaluate((preferred) => {
+      const normalize = (value) => (value || "").toString().replace(/\s+/g, " ").trim().toLowerCase();
+      const preferredTokens = Array.isArray(preferred) ? preferred.map(normalize).filter(Boolean) : [];
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const dispatchChanges = (node) => {
+        node.dispatchEvent(new Event("input", { bubbles: true }));
+        node.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const parseFieldKey = (errorNode) => {
+        const ids = [
+          String(errorNode?.id || ""),
+          String(errorNode?.parentElement?.id || ""),
+          String(errorNode?.closest?.("[id]")?.id || ""),
+          String(errorNode?.closest?.("[id*='attributeMap']")?.id || "")
+        ].filter(Boolean);
+        for (const rawId of ids) {
+          let match = rawId.match(/attributeMap\[([^\]]+)\]/);
+          if (match && match[1]) return match[1];
+          match = rawId.match(/^attributeMap(.+)\.errors$/i);
+          if (match && match[1]) return match[1];
+          match = rawId.match(/attributeMap([A-Za-z0-9_.-]+)(?:\.errors|-error)?$/i);
+          if (match && match[1]) return match[1];
+        }
+
+        const formGroup = errorNode?.closest?.(".formgroup");
+        if (formGroup) {
+          const label = formGroup.querySelector("label[for]");
+          const labelFor = String(label?.getAttribute("for") || "");
+          if (labelFor) return labelFor;
+        }
+        return "";
+      };
+
+      const findControlByKey = (key, errorNode) => {
+        if (key) {
+          const byId = document.getElementById(key);
+          if (byId) return byId;
+
+          const targetName = `attributeMap[${key}]`;
+          const byName = Array.from(document.querySelectorAll("select,input,textarea"))
+            .find((node) => String(node.getAttribute("name") || "") === targetName);
+          if (byName) return byName;
+        }
+
+        const formGroup = errorNode?.closest?.(".formgroup");
+        if (formGroup) {
+          const inGroup = formGroup.querySelector("select,input,textarea");
+          if (inGroup) return inGroup;
+        }
+        return null;
+      };
+
+      const pickSelectValue = (selectNode) => {
+        const options = Array.from(selectNode.options || [])
+          .map((option) => ({
+            value: String(option?.value || ""),
+            text: String(option?.textContent || ""),
+            disabled: Boolean(option?.disabled)
+          }));
+
+        let chosen = options.find((option) => {
+          const valueNorm = normalize(option.value);
+          const textNorm = normalize(option.text);
+          if (!valueNorm || option.disabled) return false;
+          return preferredTokens.some((token) =>
+            token === valueNorm ||
+            textNorm.includes(token) ||
+            token.includes(valueNorm)
+          );
+        });
+
+        if (!chosen) {
+          chosen = options.find((option) => !option.disabled && normalize(option.value));
+        }
+        if (!chosen || !chosen.value) return null;
+        selectNode.value = chosen.value;
+        dispatchChanges(selectNode);
+        return chosen;
+      };
+
+      const allErrorNodes = Array.from(
+        document.querySelectorAll(".formerror, [id*='errors'], [id*='error']")
+      );
+      const uniqueErrors = [];
+      const seenNodes = new Set();
+      for (const node of allErrorNodes) {
+        if (!node || seenNodes.has(node)) continue;
+        seenNodes.add(node);
+        uniqueErrors.push(node);
+      }
+
+      const requiredErrorNodes = uniqueErrors.filter((node) => {
+        if (!isVisible(node)) return false;
+        const text = normalize(node.textContent || "");
+        return text.includes("bitte gib einen wert ein")
+          || text.includes("bitte waehlen")
+          || text.includes("bitte wählen")
+          || text.includes("pflichtfeld")
+          || text.includes("required");
+      });
+
+      const repairs = [];
+      for (const errorNode of requiredErrorNodes) {
+        const key = parseFieldKey(errorNode);
+        const control = findControlByKey(key, errorNode);
+        if (!control) {
+          repairs.push({
+            key,
+            fixed: false,
+            reason: "control-not-found",
+            errorText: String(errorNode.textContent || "").trim().slice(0, 200)
+          });
+          continue;
+        }
+
+        const tag = String(control.tagName || "").toLowerCase();
+        const type = String(control.getAttribute("type") || "").toLowerCase();
+        let fixed = false;
+        let value = "";
+
+        if (tag === "select") {
+          const chosen = pickSelectValue(control);
+          fixed = Boolean(chosen?.value);
+          value = chosen?.value || "";
+        } else if (type === "radio") {
+          const radioName = String(control.getAttribute("name") || "");
+          const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
+            .filter((node) => !node.disabled && String(node.getAttribute("name") || "") === radioName && isVisible(node));
+          const target = radios.find((node) => !node.checked) || radios[0];
+          if (target) {
+            target.click();
+            dispatchChanges(target);
+            fixed = true;
+            value = String(target.value || "");
+          }
+        } else if (type === "checkbox") {
+          if (!control.checked) {
+            control.click();
+          }
+          dispatchChanges(control);
+          fixed = Boolean(control.checked);
+          value = control.checked ? "true" : "false";
+        } else if (tag === "input" || tag === "textarea") {
+          const current = String(control.value || "").trim();
+          if (!current) {
+            const fallback = preferredTokens.find((token) => token.length > 1 && !/^\d+$/.test(token)) || "1";
+            control.value = fallback;
+            dispatchChanges(control);
+            value = fallback;
+            fixed = true;
+          } else {
+            fixed = true;
+            value = current;
+          }
+        }
+
+        repairs.push({
+          key,
+          fixed,
+          tag,
+          type,
+          value: String(value || "").slice(0, 120),
+          id: String(control.id || ""),
+          name: String(control.getAttribute("name") || ""),
+          errorText: String(errorNode.textContent || "").trim().slice(0, 200)
+        });
+      }
+
+      return {
+        totalErrors: requiredErrorNodes.length,
+        fixedCount: repairs.filter((item) => item.fixed).length,
+        items: repairs.slice(0, 40)
+      };
+    }, preferredValues);
+  } catch (error) {
+    return {
+      totalErrors: 0,
+      fixedCount: 0,
+      items: [],
+      error: error?.message || String(error)
+    };
+  }
+};
+
+const repairServerSideRequiredErrorsAcrossContexts = async (page, primaryContext, preferredValues = []) => {
+  const contexts = [];
+  const pushUnique = (ctx) => {
+    if (!ctx || contexts.includes(ctx)) return;
+    contexts.push(ctx);
+  };
+  pushUnique(primaryContext);
+  pushUnique(page);
+  try {
+    page.frames().forEach(pushUnique);
+  } catch (error) {
+    // ignore frame access errors
+  }
+
+  const results = [];
+  for (const context of contexts) {
+    try {
+      const result = await repairServerSideRequiredErrorsInContext(context, preferredValues);
+      let contextUrl = "";
+      try {
+        contextUrl = typeof context.url === "function" ? context.url() : "";
+      } catch (error) {
+        contextUrl = "";
+      }
+      results.push({
+        contextType: context === page ? "page" : "frame",
+        contextUrl,
+        ...result
+      });
+    } catch (error) {
+      // ignore per-context errors
+    }
+  }
+
+  return {
+    totalErrors: results.reduce((sum, item) => sum + Number(item?.totalErrors || 0), 0),
     fixedCount: results.reduce((sum, item) => sum + Number(item?.fixedCount || 0), 0),
     contexts: results
   };
@@ -4918,6 +5190,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       const categoryPathIdsNumeric = categoryPathNumeric.length
         ? categoryPathNumeric
         : categoryPathIds.filter((item) => /^\d+$/.test(String(item)));
+      const preferredFieldValues = collectPreferredFieldValues({ ad, categoryPathIds });
       let selectionUrl = getCategorySelectionUrl(resolvedCategoryId, ad.categoryUrl);
       if (!selectionUrl && categoryPathIdsNumeric.length) {
         selectionUrl = `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(categoryPathIdsNumeric.join("/"))}`;
@@ -6133,6 +6406,56 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           }
         } else {
           appendPublishTrace({ step: "publish-form-abschicken-no-retry" });
+        }
+
+        if (publishState === "form") {
+          const serverErrorRepair = await repairServerSideRequiredErrorsAcrossContexts(
+            page,
+            formContext,
+            preferredFieldValues
+          );
+          appendPublishTrace({
+            step: "publish-server-error-repair",
+            totalErrors: serverErrorRepair.totalErrors,
+            fixedCount: serverErrorRepair.fixedCount
+          });
+          if (serverErrorRepair.fixedCount > 0) {
+            await dumpPublishDebug(page, {
+              accountLabel,
+              step: "publish-server-error-repair",
+              error: "",
+              extra: {
+                url: page.url(),
+                errorsBefore: errors,
+                serverErrorRepair
+              }
+            });
+            await humanPause(200, 360);
+            await clickSubmitButton(page, [formContext, page], { allowFallback: false });
+            publishState = await waitForPublishState(page, defaultTimeout);
+            appendPublishTrace({ step: "publish-state-after-server-error-repair", publishState });
+
+            if (publishState === "form") {
+              const hardSubmitAfterRepairContext = await hardSubmitFormInContext(formContext);
+              let hardSubmitAfterRepairPage = null;
+              if (formContext !== page) {
+                hardSubmitAfterRepairPage = await hardSubmitFormInContext(page);
+              }
+              appendPublishTrace({
+                step: "publish-hard-submit-after-server-error-repair",
+                formContext: hardSubmitAfterRepairContext,
+                pageContext: hardSubmitAfterRepairPage
+              });
+              if (hardSubmitAfterRepairContext?.submitted || hardSubmitAfterRepairPage?.submitted) {
+                await humanPause(240, 480);
+                publishState = await waitForPublishState(page, defaultTimeout);
+                appendPublishTrace({
+                  step: "publish-state-after-hard-submit-server-error-repair",
+                  publishState
+                });
+              }
+            }
+          }
         }
       }
 
