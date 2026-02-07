@@ -21,6 +21,42 @@ const detectMobileView = () => {
   return effectiveWidth <= 768 || (touchLikeDevice && effectiveWidth <= 1024) || (mobileUa && effectiveWidth <= 1180);
 };
 
+const normalizePreviewImageUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^data:/i.test(raw)) return "";
+  if (/^(https?:)?\/\//i.test(raw)) return raw.startsWith("//") ? `https:${raw}` : raw;
+  if (/^img\.kleinanzeigen\.de/i.test(raw)) return `https://${raw}`;
+  if (/^\/api\/v1\/prod-ads\/images\//i.test(raw)) return `https://img.kleinanzeigen.de${raw}`;
+  try {
+    return new URL(raw, "https://www.kleinanzeigen.de").href;
+  } catch {
+    return "";
+  }
+};
+
+const getMessagePreviewImage = (message) => {
+  if (!message || typeof message !== "object") return "";
+  const candidates = [
+    message.adImage,
+    message.adImageUrl,
+    message.adImageURL,
+    message.imageUrl,
+    message.image,
+    message.thumbnailUrl,
+    message.thumbnail,
+    message.previewImage,
+    message.ad?.image,
+    message.ad?.imageUrl,
+    message.ad?.thumbnailUrl
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizePreviewImageUrl(candidate);
+    if (normalized) return normalized;
+  }
+  return "";
+};
+
 const MessagesTab = () => {
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
@@ -472,7 +508,9 @@ const MessagesTab = () => {
                 <div style={{ fontSize: "13px" }}>Нажмите "Обновить" для загрузки</div>
               </div>
             ) : (
-              messages.map(message => (
+              messages.map((message) => {
+                const previewImage = getMessagePreviewImage(message);
+                return (
                 <div
                   key={message.id}
                   className="msg-conv-item"
@@ -506,7 +544,7 @@ const MessagesTab = () => {
                   <div style={{
                     width: "52px",
                     height: "52px",
-                    borderRadius: "12px",
+                    borderRadius: "50%",
                     overflow: "hidden",
                     background: "rgba(15,23,42,0.6)",
                     border: "1px solid rgba(148,163,184,0.15)",
@@ -515,30 +553,35 @@ const MessagesTab = () => {
                     justifyContent: "center",
                     flexShrink: 0
                   }}>
-                    {message.adImage ? (
+                    {previewImage ? (
                       <img
-                        src={message.adImage}
+                        src={previewImage}
                         alt=""
                         style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        onError={(e) => { e.target.style.display = "none"; }}
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          e.currentTarget.style.display = "none";
+                          const fallbackNode = e.currentTarget.nextElementSibling;
+                          if (fallbackNode) fallbackNode.style.display = "flex";
+                        }}
                       />
-                    ) : (
-                      <div style={{
-                        width: "100%",
-                        height: "100%",
-                        background: message.unread
-                          ? "linear-gradient(135deg, #22c55e, #16a34a)"
-                          : "linear-gradient(135deg, #3b82f6, #2563eb)",
-                        color: "white",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: "20px",
-                        fontWeight: 700
-                      }}>
-                        {(message.sender || "?").charAt(0).toUpperCase()}
-                      </div>
-                    )}
+                    ) : null}
+                    <div style={{
+                      width: "100%",
+                      height: "100%",
+                      background: message.unread
+                        ? "linear-gradient(135deg, #22c55e, #16a34a)"
+                        : "linear-gradient(135deg, #3b82f6, #2563eb)",
+                      color: "white",
+                      display: previewImage ? "none" : "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "20px",
+                      fontWeight: 700
+                    }}>
+                      {(message.sender || "?").charAt(0).toUpperCase()}
+                    </div>
                   </div>
 
                   {/* Content */}
@@ -625,7 +668,8 @@ const MessagesTab = () => {
                     </div>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
 
