@@ -28,9 +28,6 @@ const PHONE_VIEW_MAX_WIDTH = 900;
 
 const detectPhoneView = () => {
   if (typeof window === "undefined") return false;
-  const userAgent = navigator?.userAgent || "";
-  const isMobileUa = /Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(userAgent);
-  if (!isMobileUa) return false;
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
   if (!(viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH)) return false;
   if (!window.matchMedia) return true;
