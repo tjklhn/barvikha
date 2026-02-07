@@ -1,3 +1,0 @@
-{"ts":"2026-02-06T22:50:27.553Z","event":"start","requestId":"1770418227552-hn72fz","ip":"::1","files":1,"debug":true}
-{"ts":"2026-02-06T22:50:27.553Z","event":"payload","requestId":"1770418227552-hn72fz","accountId":"19","titleLength":11,"descriptionLength":135,"price":"3","postalCode":"51645","categoryId":"224","categoryUrl":"https://www.kleinanzeigen.de/s-beauty-gesundheit/c224","categoryPath":"[\"153\",\"224\"]","images":1,"debug":true}
-{"ts":"2026-02-06T23:17:01.921Z","event":"close","requestId":"1770418227552-hn72fz","headersSent":false,"statusCode":200,"writableEnded":false}
