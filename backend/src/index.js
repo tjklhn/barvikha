@@ -1419,6 +1419,14 @@ app.post("/api/translate", async (req, res) => {
       return;
     }
 
+    if (!hasAccountId) {
+      res.status(400).json({
+        success: false,
+        error: "Для перевода сообщений нужен accountId (перевод выполняется через прокси аккаунта)."
+      });
+      return;
+    }
+
     let proxy = null;
     if (hasAccountId) {
       if (!Number.isFinite(accountId)) {
