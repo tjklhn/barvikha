@@ -10,6 +10,7 @@ const crypto = require("crypto");
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
+const { buildProxyUrl } = require("./cookieUtils");
 const {
   publishAd,
   parseExtraSelectFields,
@@ -621,6 +622,14 @@ const requireAccountProxy = (account, res, contextLabel = "операция", ow
     res.status(403).json({
       success: false,
       error: "Недостаточно прав для использования прокси."
+    });
+    return null;
+  }
+  // Hard fail early if proxy is misconfigured. We must not fall back to server IP.
+  if (!buildProxyUrl(proxy)) {
+    res.status(400).json({
+      success: false,
+      error: `Прокси аккаунта настроен некорректно (host/port). ${contextLabel} остановлена.`
     });
     return null;
   }
@@ -1445,6 +1454,13 @@ app.post("/api/translate", async (req, res) => {
   } catch (error) {
     if (error?.code === "NOT_CONFIGURED") {
       res.status(500).json({ success: false, error: "Переводчик не настроен на сервере." });
+      return;
+    }
+    if (error?.code === "PROXY_REQUIRED" || error?.code === "PROXY_INIT_FAILED") {
+      res.status(400).json({
+        success: false,
+        error: "Для перевода требуется рабочий прокси аккаунта (без прокси перевод не выполняется)."
+      });
       return;
     }
     if (error?.code === "BAD_REQUEST") {

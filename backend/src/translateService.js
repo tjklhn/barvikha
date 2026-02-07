@@ -69,13 +69,20 @@ const createCacheKey = ({ text, to, from }) =>
 
 const translationsCache = new Map();
 
-const buildAxiosConfig = ({ proxy, headers = {}, timeout = 12000, validateStatus } = {}) => {
+const buildAxiosConfig = ({ proxy, headers = {}, timeout = 12000, validateStatus, requireProxy = false } = {}) => {
   const config = {
     headers,
     timeout,
     validateStatus: validateStatus || ((status) => status >= 200 && status < 500)
   };
   const proxyUrl = buildProxyUrl(proxy);
+
+  if (requireProxy && !proxyUrl) {
+    const error = new Error("Proxy is required for this request");
+    error.code = "PROXY_REQUIRED";
+    throw error;
+  }
+
   if (proxyUrl) {
     let agent = null;
     if (typeof ProxyAgent === "function") {
@@ -87,11 +94,17 @@ const buildAxiosConfig = ({ proxy, headers = {}, timeout = 12000, validateStatus
     } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
       agent = new ProxyAgent.ProxyAgent(proxyUrl);
     }
-    if (agent) {
-      config.httpAgent = agent;
-      config.httpsAgent = agent;
-      config.proxy = false;
+
+    // Do not silently fall back to direct connection when proxy was provided.
+    if (!agent) {
+      const error = new Error("Failed to initialize proxy agent");
+      error.code = "PROXY_INIT_FAILED";
+      throw error;
     }
+
+    config.httpAgent = agent;
+    config.httpsAgent = agent;
+    config.proxy = false;
   }
   return config;
 };
@@ -133,6 +146,7 @@ const translateViaAzure = async ({ text, to, from, proxy }) => {
     [{ text }],
     buildAxiosConfig({
       proxy,
+      requireProxy: Boolean(proxy),
       timeout: 12000,
       headers: {
         "Content-Type": "application/json",
@@ -192,6 +206,7 @@ const translateViaDeepL = async ({ text, to, from, proxy }) => {
     params.toString(),
     buildAxiosConfig({
       proxy,
+      requireProxy: Boolean(proxy),
       timeout: 12000,
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",

@@ -53,7 +53,10 @@ const buildProxyUrl = (proxy) => {
     return null;
   }
 
-  const protocol = (proxy.type || "http").toLowerCase();
+  let protocol = (proxy.type || "http").toLowerCase();
+  // Prefer remote DNS resolution for SOCKS5 to avoid leaking DNS via server.
+  // This also helps ensure outbound traffic is routed fully through the proxy.
+  if (protocol === "socks5") protocol = "socks5h";
   const auth = proxy.username && proxy.password
     ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password)}@`
     : "";
