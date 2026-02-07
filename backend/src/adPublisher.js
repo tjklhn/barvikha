@@ -1833,16 +1833,22 @@ const waitForPublishProgress = async (page, startUrl, timeout = 30000) => {
     await page.waitForFunction(
       (initialUrl) => {
         const url = window.location.href;
-        if (url !== initialUrl) {
+        const isFormUrl = /anzeige-aufgeben|anzeige-abschicken/i.test(url);
+        if (url !== initialUrl && !isFormUrl) {
           return true;
         }
         const submitButtons = Array.from(
           document.querySelectorAll('button[type="submit"], input[type="submit"], button')
         ).filter((button) => {
           const text = button.innerText || button.value || "";
-          return text.includes("Anzeige aufgeben");
+          const normalized = String(text || "").toLowerCase();
+          if (!normalized.includes("anzeige aufgeben")) return false;
+          const style = window.getComputedStyle(button);
+          if (style.display === "none" || style.visibility === "hidden") return false;
+          const rect = button.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
         });
-        if (!submitButtons.length) return true;
+        if (!submitButtons.length) return false;
         return submitButtons.some((button) => {
           if (button.disabled) return true;
           if (button.getAttribute("aria-disabled") === "true") return true;
@@ -5734,11 +5740,18 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
         const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
         const inferred = await inferPublishSuccess(page);
+        const progressedAwayFromForm = Boolean(
+          progressDetected &&
+          inferred.url &&
+          inferred.url !== initialUrl &&
+          !inferred.isKnownForm
+        );
         const explicitSuccessSignals = {
           hasSuccessText: Boolean(inferred.hasSuccessText),
           hasShadowSuccessText: Boolean(inferred.hasShadowSuccessText),
           hasAdLink: Boolean(inferred.hasAdLink),
-          progressDetected: Boolean(progressDetected)
+          progressDetected: Boolean(progressDetected),
+          progressedAwayFromForm
         };
         appendPublishTrace({
           step: "publish-success-signals",
@@ -5753,7 +5766,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
             explicitSuccessSignals.hasSuccessText ||
             explicitSuccessSignals.hasShadowSuccessText ||
             explicitSuccessSignals.hasAdLink ||
-            explicitSuccessSignals.progressDetected);
+            explicitSuccessSignals.progressedAwayFromForm);
         if (canTreatAsSuccess) {
           return {
             success: true,
