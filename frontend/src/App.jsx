@@ -715,14 +715,20 @@ function App() {
         Дашборд
       </h2>
       {stats && (
-        <div className="dashboard-stats" style={{ display: "flex", gap: "20px", marginTop: "20px", flexWrap: "wrap" }}>
+        <div className="dashboard-stats" style={{
+          display: "flex",
+          gap: "20px",
+          marginTop: "20px",
+          flexWrap: "wrap",
+          flexDirection: isPhoneView ? "column" : "row"
+        }}>
           <div className="stats-card accent" style={{
             padding: "24px",
             background: "linear-gradient(145deg, rgba(59,130,246,0.2) 0%, rgba(15,23,42,0.95) 100%)",
             borderRadius: "20px",
             border: "1px solid rgba(59,130,246,0.3)",
             flex: 1,
-            minWidth: "200px",
+            minWidth: isPhoneView ? "0" : "200px",
             color: textPrimary,
             boxShadow: "0 20px 40px rgba(0,0,0,0.3), 0 0 20px rgba(59,130,246,0.1)",
             position: "relative",
@@ -773,7 +779,7 @@ function App() {
             borderRadius: "20px",
             border: "1px solid rgba(16,185,129,0.3)",
             flex: 1,
-            minWidth: "200px",
+            minWidth: isPhoneView ? "0" : "200px",
             color: textPrimary,
             boxShadow: "0 20px 40px rgba(0,0,0,0.3), 0 0 20px rgba(16,185,129,0.1)",
             position: "relative",
@@ -821,7 +827,7 @@ function App() {
             borderRadius: "20px",
             border: "1px solid rgba(249,115,22,0.3)",
             flex: 1,
-            minWidth: "200px",
+            minWidth: isPhoneView ? "0" : "200px",
             color: textPrimary,
             boxShadow: "0 20px 40px rgba(0,0,0,0.3), 0 0 20px rgba(249,115,22,0.1)",
             position: "relative",
@@ -874,7 +880,7 @@ function App() {
         <h3 style={{ color: textTitle, fontWeight: "700" }}>Быстрые действия</h3>
         <div className="quick-actions" style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gridTemplateColumns: isPhoneView ? "1fr" : "repeat(auto-fit, minmax(220px, 1fr))",
           gap: "18px",
           marginTop: "20px"
         }}>
@@ -1064,7 +1070,14 @@ function App() {
 
   const AccountsTab = () => (
     <div>
-      <div className="section-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+      <div className="section-header" style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: isPhoneView ? "stretch" : "center",
+        flexDirection: isPhoneView ? "column" : "row",
+        gap: isPhoneView ? "10px" : "0",
+        marginBottom: "20px"
+      }}>
         <h2 style={{ margin: 0, color: textTitle, display: "flex", alignItems: "center", gap: "10px", fontWeight: "700" }}>
           <UserIcon size={28} />
           Аккаунты
@@ -1079,7 +1092,10 @@ function App() {
             cursor: "pointer",
             display: "flex",
             alignItems: "center",
-            gap: "8px"
+            gap: "8px",
+            width: isPhoneView ? "100%" : "auto",
+            minWidth: 0,
+            justifyContent: "center"
           }}
         >
           <PlusIcon size={18} />
@@ -1089,7 +1105,7 @@ function App() {
 
       <div style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))",
+        gridTemplateColumns: isPhoneView ? "1fr" : "repeat(auto-fill, minmax(340px, 1fr))",
         gap: "20px"
       }}>
         {accounts.map(account => {
@@ -1383,12 +1399,24 @@ function App() {
 
   const ProxiesTab = () => (
     <div>
-      <div className="section-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+      <div className="section-header" style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: isPhoneView ? "stretch" : "center",
+        flexDirection: isPhoneView ? "column" : "row",
+        gap: isPhoneView ? "10px" : "0",
+        marginBottom: "20px"
+      }}>
         <h2 style={{ margin: 0, color: textTitle, display: "flex", alignItems: "center", gap: "10px", fontWeight: "700" }}>
           <LinkIcon size={28} />
           Прокси серверы
         </h2>
-        <div className="section-header-actions" style={{ display: "flex", gap: "12px" }}>
+        <div className="section-header-actions" style={{
+          display: "flex",
+          gap: "12px",
+          flexDirection: isPhoneView ? "column" : "row",
+          width: isPhoneView ? "100%" : "auto"
+        }}>
           <button 
             className="primary-button"
             onClick={checkAllProxies}
@@ -1398,7 +1426,8 @@ function App() {
               color: "white",
               border: "none",
               cursor: checkingAllProxies ? "not-allowed" : "pointer",
-              minWidth: "180px",
+              width: isPhoneView ? "100%" : "auto",
+              minWidth: isPhoneView ? "0" : "180px",
               display: "flex",
               alignItems: "center",
               gap: "8px",
@@ -1419,7 +1448,8 @@ function App() {
               display: "flex",
               alignItems: "center",
               gap: "8px",
-              minWidth: "180px",
+              minWidth: isPhoneView ? "0" : "180px",
+              width: isPhoneView ? "100%" : "auto",
               justifyContent: "center"
             }}
           >
@@ -1434,22 +1464,28 @@ function App() {
         padding: "20px",
         marginBottom: "20px"
       }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: isPhoneView ? "flex-start" : "center",
+          flexDirection: isPhoneView ? "column" : "row",
+          gap: isPhoneView ? "12px" : "0"
+        }}>
           <h3 style={{ margin: 0, color: textTitle, fontWeight: "700" }}>Статистика прокси</h3>
-          <div style={{ display: "flex", gap: "15px" }}>
-            <div style={{ textAlign: "center" }}>
+          <div style={{ display: "flex", gap: "15px", flexWrap: isPhoneView ? "wrap" : "nowrap", justifyContent: isPhoneView ? "space-between" : "flex-start" }}>
+            <div style={{ textAlign: "center", minWidth: isPhoneView ? "86px" : "0" }}>
               <div style={{ fontSize: "24px", fontWeight: "bold", color: "#52c41a" }}>
                 {proxies.filter(p => p.status === "active").length}
               </div>
               <div style={{ fontSize: "12px", color: textMuted }}>Работают</div>
             </div>
-            <div style={{ textAlign: "center" }}>
+            <div style={{ textAlign: "center", minWidth: isPhoneView ? "86px" : "0" }}>
               <div style={{ fontSize: "24px", fontWeight: "bold", color: "#ff4d4f" }}>
                 {proxies.filter(p => p.status === "failed").length}
               </div>
               <div style={{ fontSize: "12px", color: textMuted }}>Не работают</div>
             </div>
-            <div style={{ textAlign: "center" }}>
+            <div style={{ textAlign: "center", minWidth: isPhoneView ? "86px" : "0" }}>
               <div style={{ fontSize: "24px", fontWeight: "bold", color: "#faad14" }}>
                 {proxies.filter(p => p.status === "unknown" || p.status === "checking").length}
               </div>
@@ -1466,6 +1502,7 @@ function App() {
               proxy={proxy}
               onCheckComplete={(result) => handleProxyCheckComplete(proxy.id, result)}
               onDelete={() => handleDeleteProxy(proxy.id)}
+              isPhoneView={isPhoneView}
             />
           </div>
         ))}
@@ -1491,7 +1528,7 @@ function App() {
       {/* Header */}
       <div className="app-header" style={{
         background: "linear-gradient(180deg, rgba(15,23,42,0.95) 0%, rgba(15,23,42,0.85) 100%)",
-        padding: "0 24px",
+        padding: isPhoneView ? "0 12px" : "0 24px",
         boxShadow: "0 10px 40px rgba(0,0,0,0.4), 0 0 40px rgba(0,0,0,0.2)",
         backdropFilter: "blur(12px)",
         borderBottom: "1px solid rgba(148,163,184,0.15)",
@@ -1504,16 +1541,20 @@ function App() {
           alignItems: "center",
           maxWidth: "1200px",
           margin: "0 auto",
-          height: "70px"
+          height: isPhoneView ? "64px" : "70px",
+          gap: isPhoneView ? "10px" : "16px"
         }}>
           <h1 style={{
             margin: 0,
             color: "#f8fafc",
-            fontSize: "22px",
+            fontSize: isPhoneView ? "16px" : "22px",
             fontWeight: "700",
             background: "linear-gradient(135deg, #f8fafc 0%, #94a3b8 100%)",
             WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent"
+            WebkitTextFillColor: "transparent",
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis"
           }}>Kleinanzeigen Manager</h1>
           {tokenStatus.state === "valid" && (
           <div style={{ position: "relative" }} ref={profilePanelRef}>
@@ -1757,7 +1798,7 @@ function App() {
         <div className="app-nav-inner" style={{
           maxWidth: "1200px",
           margin: "0 auto",
-          padding: "8px 24px",
+          padding: isPhoneView ? "8px 12px" : "8px 24px",
           gap: "8px"
         }}>
           {isPhoneView && (
@@ -1767,6 +1808,24 @@ function App() {
               onClick={() => setIsMobileNavOpen((prev) => !prev)}
               aria-expanded={isMobileNavOpen}
               aria-label={isMobileNavOpen ? "Скрыть разделы" : "Показать разделы"}
+              style={{
+                width: "100%",
+                maxWidth: "200px",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "10px",
+                padding: "10px 14px",
+                borderRadius: "12px",
+                border: isMobileNavOpen
+                  ? "1px solid rgba(125, 211, 252, 0.45)"
+                  : "1px solid rgba(148, 163, 184, 0.3)",
+                background: "linear-gradient(145deg, rgba(15,23,42,0.85), rgba(2,6,23,0.85))",
+                color: "#e2e8f0",
+                fontWeight: "700",
+                fontSize: "13px",
+                boxShadow: isMobileNavOpen ? "0 0 20px rgba(59, 130, 246, 0.2)" : "none"
+              }}
             >
               <span className="mobile-nav-burger" aria-hidden="true">
                 <span />
@@ -1822,13 +1881,49 @@ function App() {
         </div>
 
         {isPhoneView && (
-          <div className={`app-nav-mobile-panel ${isMobileNavOpen ? "open" : ""}`}>
-            <div className="app-nav-mobile-inner">
+          <div
+            className={`app-nav-mobile-panel ${isMobileNavOpen ? "open" : ""}`}
+            style={{
+              display: isMobileNavOpen ? "block" : "none",
+              borderTop: "1px solid rgba(148, 163, 184, 0.12)",
+              background: "linear-gradient(180deg, rgba(15,23,42,0.94), rgba(2,6,23,0.9))"
+            }}
+          >
+            <div
+              className="app-nav-mobile-inner"
+              style={{
+                maxWidth: "1200px",
+                margin: "0 auto",
+                padding: "10px 12px 12px",
+                display: "grid",
+                gridTemplateColumns: "1fr",
+                gap: "8px"
+              }}
+            >
               {tabs.map((tab) => (
                 <button
                   key={`mobile-${tab.id}`}
                   onClick={() => handleTabSelect(tab.id)}
-                  className={`nav-button ${activeTab === tab.id ? "active" : ""}`}
+                  className={`mobile-nav-item ${activeTab === tab.id ? "active" : ""}`}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "flex-start",
+                    gap: "10px",
+                    padding: "11px 12px",
+                    borderRadius: "12px",
+                    border: activeTab === tab.id
+                      ? "1px solid rgba(125, 211, 252, 0.45)"
+                      : "1px solid rgba(148, 163, 184, 0.2)",
+                    background: activeTab === tab.id
+                      ? "linear-gradient(135deg, rgba(30,64,175,0.2), rgba(15,23,42,0.9))"
+                      : "rgba(15, 23, 42, 0.55)",
+                    color: "#e2e8f0",
+                    fontSize: "14px",
+                    fontWeight: "700",
+                    boxShadow: "none"
+                  }}
                 >
                   <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
                   {tab.label}
@@ -1842,9 +1937,9 @@ function App() {
       {/* Content */}
       <div className="app-content" style={{
         maxWidth: "1200px",
-        margin: "24px auto 0",
-        padding: "0 24px",
-        paddingBottom: "48px"
+        margin: isPhoneView ? "12px auto 0" : "24px auto 0",
+        padding: isPhoneView ? "0 12px" : "0 24px",
+        paddingBottom: isPhoneView ? "28px" : "48px"
       }}>
         {activeTab === "dashboard" && <DashboardTab />}
         {activeTab === "accounts" && <AccountsTab />}

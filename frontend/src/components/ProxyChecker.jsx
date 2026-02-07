@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { apiFetchJson } from "../api";
 import { RefreshIcon, TrashIcon, CheckIcon, XIcon, LinkIcon } from "./Icons";
 
-const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
+const ProxyChecker = ({ proxy, onCheckComplete, onDelete, isPhoneView = false }) => {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [history, setHistory] = useState([]);
@@ -115,11 +115,11 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
   };
 
   return (
-    <div style={{
+    <div className="proxy-checker-card" style={{
       width: "100%",
       background: "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.95) 100%)",
-      borderRadius: "20px",
-      padding: "24px",
+      borderRadius: isPhoneView ? "16px" : "20px",
+      padding: isPhoneView ? "14px" : "24px",
       marginBottom: "20px",
       border: "1px solid rgba(148,163,184,0.15)",
       boxShadow: "0 20px 50px rgba(0,0,0,0.3), 0 0 30px rgba(0,0,0,0.15)",
@@ -139,18 +139,19 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
       <div style={{
         display: "flex",
         justifyContent: "space-between",
-        alignItems: "flex-start",
+        alignItems: isPhoneView ? "stretch" : "flex-start",
+        flexDirection: isPhoneView ? "column" : "row",
         marginBottom: "20px",
         gap: "20px",
         flexWrap: "wrap"
       }}>
-        <div style={{ flex: 1, minWidth: "200px" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h3 style={{
             margin: 0,
             display: "flex",
             alignItems: "center",
             gap: "12px",
-            fontSize: "18px",
+            fontSize: isPhoneView ? "16px" : "18px",
             fontWeight: "700",
             flexWrap: "wrap"
           }}>
@@ -173,13 +174,14 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
             </span>
           </h3>
           <p style={{
-            margin: "12px 0 0 52px",
+            margin: isPhoneView ? "10px 0 0 0" : "12px 0 0 52px",
             color: "#94a3b8",
             fontSize: "14px",
             display: "flex",
             alignItems: "center",
             gap: "8px",
-            flexWrap: "wrap"
+            flexWrap: "wrap",
+            overflowWrap: "anywhere"
           }}>
             <span style={{
               padding: "4px 10px",
@@ -201,7 +203,7 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
           </p>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px", alignItems: "stretch" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", alignItems: "stretch", width: isPhoneView ? "100%" : "auto" }}>
           <button
             className="primary-button"
             onClick={checkProxy}
@@ -214,7 +216,8 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
               display: "flex",
               alignItems: "center",
               gap: "10px",
-              minWidth: "180px",
+              minWidth: isPhoneView ? "0" : "180px",
+              width: isPhoneView ? "100%" : "auto",
               justifyContent: "center",
               fontSize: "14px",
               fontWeight: "600"
@@ -247,12 +250,13 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
                 padding: "12px 24px",
                 color: "white",
                 border: "none",
-                borderRadius: "12px",
-                cursor: "pointer",
-                minWidth: "180px",
-                display: "flex",
-                alignItems: "center",
-                gap: "10px",
+              borderRadius: "12px",
+              cursor: "pointer",
+              minWidth: isPhoneView ? "0" : "180px",
+              width: isPhoneView ? "100%" : "auto",
+              display: "flex",
+              alignItems: "center",
+              gap: "10px",
                 justifyContent: "center",
                 fontSize: "14px",
                 fontWeight: "600"
@@ -275,7 +279,14 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
           borderRadius: "16px",
           border: `1px solid ${result.success ? "rgba(16, 185, 129, 0.25)" : "rgba(239, 68, 68, 0.25)"}`
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "12px" }}>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: isPhoneView ? "flex-start" : "center",
+            flexWrap: "wrap",
+            flexDirection: isPhoneView ? "column" : "row",
+            gap: "12px"
+          }}>
             <h4 style={{
               margin: 0,
               color: result.success ? "#34d399" : "#f87171",
@@ -353,7 +364,7 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
             <div style={{ marginTop: "16px" }}>
               <div style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gridTemplateColumns: isPhoneView ? "1fr" : "repeat(auto-fit, minmax(180px, 1fr))",
                 gap: "12px"
               }}>
                 {[
@@ -425,14 +436,16 @@ const ProxyChecker = ({ proxy, onCheckComplete, onDelete }) => {
               <div key={index} style={{
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: isPhoneView ? "flex-start" : "center",
+                flexDirection: isPhoneView ? "column" : "row",
                 padding: "12px 16px",
                 background: index === 0
                   ? "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(30, 41, 59, 0.4) 100%)"
                   : "rgba(15, 23, 42, 0.5)",
                 borderRadius: "12px",
                 borderLeft: `4px solid ${item.success ? "#10b981" : "#ef4444"}`,
-                transition: "all 0.2s ease"
+                transition: "all 0.2s ease",
+                gap: isPhoneView ? "8px" : "0"
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                   <span style={{
