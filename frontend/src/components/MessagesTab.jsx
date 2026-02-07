@@ -117,9 +117,20 @@ const MessagesTab = () => {
   const [isMobileView, setIsMobileView] = useState(() => detectMobileView());
   const chatScrollRef = useRef(null);
   const previewHydrationInFlight = useRef(new Set());
+  const messagesRefreshInFlight = useRef(false);
 
   useEffect(() => {
     loadMessages();
+  }, []);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      // Avoid background polling when the tab is hidden (mobile data / lower load).
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      loadMessages({ silent: true });
+    }, 3 * 60 * 1000);
+
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -188,9 +199,15 @@ const MessagesTab = () => {
     }
   };
 
-  const loadMessages = async () => {
-    setLoading(true);
-    setError(null);
+  const loadMessages = async (opts = {}) => {
+    const silent = Boolean(opts && typeof opts === "object" && opts.silent);
+    if (messagesRefreshInFlight.current) return;
+    messagesRefreshInFlight.current = true;
+
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const data = await apiFetchJson("/api/messages");
       const list = Array.isArray(data) ? data : [];
@@ -209,9 +226,10 @@ const MessagesTab = () => {
       hydrateMissingPreviewImages(deduped);
     } catch (err) {
       console.error("Ошибка загрузки сообщений:", err);
-      setError(err.message || "Не удалось загрузить сообщения");
+      if (!silent) setError(err.message || "Не удалось загрузить сообщения");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+      messagesRefreshInFlight.current = false;
     }
   };
 
