@@ -1405,9 +1405,6 @@ app.post("/api/translate", async (req, res) => {
     const text = req.body?.text ? String(req.body.text) : "";
     const to = req.body?.to ? String(req.body.to) : "ru";
     const from = req.body?.from ? String(req.body.from) : "";
-    const accountIdRaw = req.body?.accountId;
-    const hasAccountId = accountIdRaw !== undefined && accountIdRaw !== null && String(accountIdRaw).trim();
-    const accountId = hasAccountId ? Number(accountIdRaw) : null;
 
     const trimmed = text.trim();
     if (!trimmed) {
@@ -1419,20 +1416,7 @@ app.post("/api/translate", async (req, res) => {
       return;
     }
 
-    let proxy = null;
-    if (hasAccountId) {
-      if (!Number.isFinite(accountId)) {
-        res.status(400).json({ success: false, error: "Некорректный accountId." });
-        return;
-      }
-      const account = getAccountForRequest(accountId, req, res);
-      if (!account) return;
-      const ownerContext = getOwnerContext(req);
-      proxy = requireAccountProxy(account, res, "перевода сообщений", ownerContext);
-      if (!proxy) return;
-    }
-
-    const result = await translateText({ text: trimmed, to, from, proxy });
+    const result = await translateText({ text: trimmed, to, from });
     res.json({ success: true, ...result });
   } catch (error) {
     if (error?.code === "NOT_CONFIGURED") {
