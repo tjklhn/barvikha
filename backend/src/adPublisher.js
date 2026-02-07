@@ -14,6 +14,7 @@ const DEBUG_PUBLISH = process.env.KL_DEBUG_PUBLISH === "1";
 let publishDebugOverride = false;
 const isPublishDebugEnabled = () => DEBUG_PUBLISH || publishDebugOverride;
 const CATEGORY_SELECTION_NEW_PAGE = process.env.KL_CATEGORY_SELECTION_NEW_PAGE === "1";
+const PUBLISH_FLOW_VERSION = "2026-02-07-v3";
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
@@ -4574,6 +4575,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         });
       }
       appendPublishTrace({ step: "after-publish-input", resolvedCategoryId, categoryPathIdsLength: categoryPathIds.length });
+      appendPublishTrace({ step: "publish-flow-version", version: PUBLISH_FLOW_VERSION });
       if (resolvedCategoryId) {
         categorySet = await setCategoryIdInForm(formContext, resolvedCategoryId, categoryPathIdsNumeric);
         if (!categorySet && formContext !== page) {
@@ -4826,7 +4828,19 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         'select[id*="category"]'
       ], resolvedCategoryId);
 
-      if ((selectionUrl || categoryPathIds.length) && !categoryUrlApplied && !categorySelectionDone) {
+      const shouldRunCategorySelection = Boolean(
+        (selectionUrl || categoryPathIds.length) &&
+        !categoryUrlApplied &&
+        !categorySelectionDone &&
+        !categorySet
+      );
+      if (!shouldRunCategorySelection && (selectionUrl || categoryPathIds.length)) {
+        appendPublishTrace({
+          step: "category-selection-skipped",
+          reason: categorySet ? "category-already-set-in-form" : "conditions-not-met"
+        });
+      }
+      if (shouldRunCategorySelection) {
         try {
           console.log("[publishAd] Applying category selection");
           appendPublishTrace({ step: "category-selection-start", selectionUrl, categoryPathIdsLength: categoryPathIds.length });
@@ -5114,7 +5128,17 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         await humanPause(120, 220);
       }
 
-      const requiredState = await ensureRequiredFieldsAcrossContexts(page, formContext);
+      let requiredState = await ensureRequiredFieldsAcrossContexts(page, formContext);
+      if (!requiredState.categorySelected && resolvedCategoryId) {
+        const lateCategoryFallback = await applyCategoryFallbackOnCurrentForm();
+        appendPublishTrace({
+          step: "category-late-form-fallback",
+          success: lateCategoryFallback
+        });
+        if (lateCategoryFallback) {
+          requiredState = await ensureRequiredFieldsAcrossContexts(page, formContext);
+        }
+      }
 
       const missingFields = [];
       if (!titleFallback && !requiredState.titleFilled) missingFields.push("Titel");
