@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { apiFetchJson, getAccessToken } from "../api";
+import { apiFetchJson } from "../api";
 import { MessageIcon } from "./Icons";
 
 const detectMobileView = () => {
@@ -56,25 +56,12 @@ const normalizePreviewImageUrl = (value) => {
   }
 };
 
-const toMessageImageSrc = (value, accountId) => {
+const toMessageImageSrc = (value) => {
   const normalized = normalizePreviewImageUrl(value);
   if (!normalized) return "";
-  const accountToken = accountId !== undefined && accountId !== null && String(accountId).trim()
-    ? String(accountId).trim()
-    : "";
-  const accessToken = getAccessToken();
-  if (normalized.startsWith("/api/messages/image?")) {
-    if (!accountToken || !accessToken) return "";
-    const separator = normalized.includes("?") ? "&" : "?";
-    return `${normalized}${separator}accountId=${encodeURIComponent(accountToken)}&accessToken=${encodeURIComponent(accessToken)}`;
-  }
+  if (normalized.startsWith("/api/messages/image?")) return normalized;
   if (/^https?:\/\//i.test(normalized)) {
-    if (!accountToken || !accessToken) return "";
-    const params = new URLSearchParams();
-    params.set("url", normalized);
-    params.set("accountId", accountToken);
-    params.set("accessToken", accessToken);
-    return `/api/messages/image?${params.toString()}`;
+    return `/api/messages/image?url=${encodeURIComponent(normalized)}`;
   }
   return normalized;
 };
@@ -101,8 +88,7 @@ const getRawMessagePreviewImage = (message) => {
   return "";
 };
 
-const getMessagePreviewImage = (message) =>
-  toMessageImageSrc(getRawMessagePreviewImage(message), message?.accountId);
+const getMessagePreviewImage = (message) => toMessageImageSrc(getRawMessagePreviewImage(message));
 
 const hasMessagePreviewImage = (message) => Boolean(getRawMessagePreviewImage(message));
 
@@ -115,24 +101,11 @@ const MessagesTab = () => {
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState(null);
   const [isMobileView, setIsMobileView] = useState(() => detectMobileView());
-  const [translationByMessageId, setTranslationByMessageId] = useState({});
   const chatScrollRef = useRef(null);
   const previewHydrationInFlight = useRef(new Set());
-  const messagesRefreshInFlight = useRef(false);
-  const translateInFlight = useRef(new Set());
 
   useEffect(() => {
     loadMessages();
-  }, []);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      // Avoid background polling when the tab is hidden (mobile data / lower load).
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      loadMessages({ silent: true });
-    }, 3 * 60 * 1000);
-
-    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -201,15 +174,9 @@ const MessagesTab = () => {
     }
   };
 
-  const loadMessages = async (opts = {}) => {
-    const silent = Boolean(opts && typeof opts === "object" && opts.silent);
-    if (messagesRefreshInFlight.current) return;
-    messagesRefreshInFlight.current = true;
-
-    if (!silent) {
-      setLoading(true);
-      setError(null);
-    }
+  const loadMessages = async () => {
+    setLoading(true);
+    setError(null);
     try {
       const data = await apiFetchJson("/api/messages");
       const list = Array.isArray(data) ? data : [];
@@ -228,10 +195,9 @@ const MessagesTab = () => {
       hydrateMissingPreviewImages(deduped);
     } catch (err) {
       console.error("Ошибка загрузки сообщений:", err);
-      if (!silent) setError(err.message || "Не удалось загрузить сообщения");
+      setError(err.message || "Не удалось загрузить сообщения");
     } finally {
-      if (!silent) setLoading(false);
-      messagesRefreshInFlight.current = false;
+      setLoading(false);
     }
   };
 
@@ -259,52 +225,6 @@ const MessagesTab = () => {
       return;
     }
 
-    const textToSend = replyText.trim();
-    const now = new Date();
-    const optimisticId = `local-${now.getTime()}-${Math.random().toString(16).slice(2)}`;
-    const optimisticMessage = {
-      id: optimisticId,
-      text: textToSend,
-      date: now.toISOString().slice(0, 10),
-      time: now.toTimeString().slice(0, 5),
-      direction: "outgoing",
-      sender: "Вы",
-      pending: true
-    };
-
-    // Optimistic UI: show message immediately in the thread and conversation list.
-    setReplyText("");
-    setSelectedMessage((prev) => {
-      if (!prev) return prev;
-      const existing = Array.isArray(prev.messages) && prev.messages.length
-        ? prev.messages
-        : prev.message
-          ? [{
-            id: prev.id,
-            text: prev.message,
-            sender: prev.sender,
-            date: prev.date,
-            time: prev.time,
-            direction: "incoming"
-          }]
-          : [];
-      return {
-        ...prev,
-        messages: [...existing, optimisticMessage]
-      };
-    });
-    setMessages((prev) => prev.map((msg) => (
-      msg.id === selectedMessage.id
-        ? {
-          ...msg,
-          message: textToSend,
-          date: optimisticMessage.date,
-          time: optimisticMessage.time,
-          unread: false
-        }
-        : msg
-    )));
-
     setSending(true);
     try {
       const result = await apiFetchJson("/api/messages/send", {
@@ -316,81 +236,40 @@ const MessagesTab = () => {
           conversationUrl: selectedMessage.conversationUrl,
           participant: selectedMessage.sender,
           adTitle: selectedMessage.adTitle,
-          text: textToSend
+          text: replyText
         })
       });
       if (result.success) {
         const resolvedConversationId = result.conversationId || selectedMessage.conversationId;
         const resolvedConversationUrl = result.conversationUrl || selectedMessage.conversationUrl;
-        const serverMessages = Array.isArray(result.messages) ? result.messages : [];
-        const hasSameOutgoing = serverMessages.some((m) => (
-          String(m?.direction || "").toLowerCase() === "outgoing"
-          && String(m?.text || "") === textToSend
-        ));
-        const nextMessages = serverMessages.length
-          ? (hasSameOutgoing ? serverMessages : [...serverMessages, { ...optimisticMessage, pending: false }])
-          : null;
-
-        if (nextMessages) {
-          const lastMessage = nextMessages[nextMessages.length - 1];
-          setMessages((prev) => prev.map((msg) => (
+        const latestMessages = result.messages || [];
+        const lastMessage = latestMessages[latestMessages.length - 1];
+        if (lastMessage) {
+          setMessages(prev => prev.map(msg => (
             msg.id === selectedMessage.id
               ? {
                 ...msg,
-                message: lastMessage?.text || msg.message,
-                date: lastMessage?.date || msg.date,
-                time: lastMessage?.time || msg.time,
-                conversationId: resolvedConversationId || msg.conversationId,
-                conversationUrl: resolvedConversationUrl || msg.conversationUrl
-              }
-              : msg
-          )));
-          setSelectedMessage((prev) => ({
-            ...prev,
-            messages: nextMessages,
-            conversationId: resolvedConversationId,
-            conversationUrl: resolvedConversationUrl
-          }));
-        } else {
-          // Backend may respond without thread messages. Keep optimistic entry and mark it as sent.
-          setSelectedMessage((prev) => {
-            if (!prev) return prev;
-            const updated = Array.isArray(prev.messages) ? prev.messages : [];
-            return {
-              ...prev,
-              messages: updated.map((m) => (m?.id === optimisticId ? { ...m, pending: false } : m)),
-              conversationId: resolvedConversationId,
-              conversationUrl: resolvedConversationUrl
-            };
-          });
-          setMessages((prev) => prev.map((msg) => (
-            msg.id === selectedMessage.id
-              ? {
-                ...msg,
+                message: lastMessage.text,
+                date: lastMessage.date,
+                time: lastMessage.time,
                 conversationId: resolvedConversationId || msg.conversationId,
                 conversationUrl: resolvedConversationUrl || msg.conversationUrl
               }
               : msg
           )));
         }
+        setSelectedMessage(prev => ({
+          ...prev,
+          messages: latestMessages,
+          conversationId: resolvedConversationId,
+          conversationUrl: resolvedConversationUrl
+        }));
+        setReplyText("");
       } else {
-        // Revert optimistic update on logical failure.
-        setSelectedMessage((prev) => {
-          if (!prev) return prev;
-          const updated = Array.isArray(prev.messages) ? prev.messages : [];
-          return { ...prev, messages: updated.filter((m) => m?.id !== optimisticId) };
-        });
-        setReplyText(textToSend);
         alert("Ошибка: " + (result.error || "Не удалось отправить"));
       }
     } catch (err) {
       console.error("Ошибка отправки:", err);
-      setSelectedMessage((prev) => {
-        if (!prev) return prev;
-        const updated = Array.isArray(prev.messages) ? prev.messages : [];
-        return { ...prev, messages: updated.filter((m) => m?.id !== optimisticId) };
-      });
-      setReplyText(textToSend);
       alert("Ошибка при отправке сообщения");
     } finally {
       setSending(false);
@@ -521,8 +400,6 @@ const MessagesTab = () => {
         .msg-send-btn:hover:not(:disabled) { background: #16a34a !important; }
         .msg-refresh-btn:hover:not(:disabled) { background: #0284c7 !important; transform: scale(1.02); }
         .msg-refresh-btn:active:not(:disabled) { transform: scale(0.98); }
-        .msg-translate-btn:hover { opacity: 1 !important; transform: translateY(-1px) scale(1.02) !important; }
-        .msg-translate-btn:active { transform: translateY(0px) scale(0.98) !important; }
       `}</style>
 
       <div className="section-header" style={{
@@ -733,7 +610,7 @@ const MessagesTab = () => {
             ) : (
               messages.map((message) => {
                 const rawPreviewImage = getRawMessagePreviewImage(message);
-                const previewImage = toMessageImageSrc(rawPreviewImage, message?.accountId);
+                const previewImage = toMessageImageSrc(rawPreviewImage);
                 return (
                 <div
                   key={message.id}
@@ -1059,78 +936,6 @@ const MessagesTab = () => {
                   <>
                     {threadMessages.map((messageItem, idx) => {
                       const isOutgoing = messageItem.direction === "outgoing";
-                      const isPending = Boolean(messageItem.pending);
-                      const messageKey = String(messageItem.id || `idx-${idx}`);
-                      const translation = translationByMessageId[messageKey] || null;
-                      const canTranslate = !isOutgoing && Boolean(String(messageItem.text || "").trim());
-
-                      const toggleTranslate = async () => {
-                        if (!canTranslate) return;
-
-                        // Toggle off when already shown.
-                        if (translation?.shown && translation?.translatedText) {
-                          setTranslationByMessageId((prev) => ({
-                            ...prev,
-                            [messageKey]: { ...prev[messageKey], shown: false }
-                          }));
-                          return;
-                        }
-
-                        // Toggle on when already fetched.
-                        if (translation?.translatedText && !translation?.loading) {
-                          setTranslationByMessageId((prev) => ({
-                            ...prev,
-                            [messageKey]: { ...prev[messageKey], shown: true, error: "" }
-                          }));
-                          return;
-                        }
-
-                        if (translateInFlight.current.has(messageKey)) return;
-                        translateInFlight.current.add(messageKey);
-                        setTranslationByMessageId((prev) => ({
-                          ...prev,
-                          [messageKey]: {
-                            ...prev[messageKey],
-                            loading: true,
-                            shown: true,
-                            error: ""
-                          }
-                        }));
-
-                        try {
-                          const result = await apiFetchJson("/api/translate", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                              text: String(messageItem.text || ""),
-                              to: "ru",
-                              accountId: selectedMessage?.accountId
-                            })
-                          });
-                          setTranslationByMessageId((prev) => ({
-                            ...prev,
-                            [messageKey]: {
-                              loading: false,
-                              shown: true,
-                              error: "",
-                              translatedText: result?.translatedText || ""
-                            }
-                          }));
-                        } catch (error) {
-                          console.error("Ошибка перевода:", error);
-                          setTranslationByMessageId((prev) => ({
-                            ...prev,
-                            [messageKey]: {
-                              loading: false,
-                              shown: true,
-                              translatedText: "",
-                              error: error?.message || "Не удалось перевести"
-                            }
-                          }));
-                        } finally {
-                          translateInFlight.current.delete(messageKey);
-                        }
-                      };
                       return (
                         <div
                           key={messageItem.id || idx}
@@ -1160,8 +965,7 @@ const MessagesTab = () => {
 
                             {/* Message bubble */}
                             <div style={{
-                              position: "relative",
-                              padding: canTranslate ? "10px 14px 18px 14px" : "10px 14px",
+                              padding: "10px 14px",
                               borderRadius: isOutgoing ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
                               background: isOutgoing
                                 ? "linear-gradient(135deg, #1a4731, #14532d)"
@@ -1180,63 +984,6 @@ const MessagesTab = () => {
                                 {messageItem.text}
                               </div>
 
-                              {/* Translate button */}
-                              {canTranslate && (
-                                <button
-                                  type="button"
-                                  className="msg-translate-btn"
-                                  onClick={toggleTranslate}
-                                  title="Перевести на русский"
-                                  style={{
-                                    position: "absolute",
-                                    left: "8px",
-                                    bottom: "6px",
-                                    width: "22px",
-                                    height: "22px",
-                                    borderRadius: "8px",
-                                    border: "1px solid rgba(148,163,184,0.18)",
-                                    background: "rgba(2,6,23,0.25)",
-                                    color: "#94a3b8",
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor: "pointer",
-                                    opacity: 0.75,
-                                    transition: "transform 0.12s ease, opacity 0.12s ease, background 0.12s ease"
-                                  }}
-                                >
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M5 5h6" />
-                                    <path d="M8 5c0 6-3 10-6 12" />
-                                    <path d="M7 13c2 2 4 4 7 6" />
-                                    <path d="M14 19h7" />
-                                    <path d="M17 4l4 15" />
-                                    <path d="M20 19l-3-9-3 9" />
-                                  </svg>
-                                </button>
-                              )}
-
-                              {/* Translation result */}
-                              {translation?.shown && (
-                                <div style={{
-                                  marginTop: "10px",
-                                  paddingTop: "8px",
-                                  borderTop: "1px dashed rgba(148,163,184,0.18)",
-                                  fontSize: "13px",
-                                  lineHeight: "1.45",
-                                  color: translation?.error ? "#fb7185" : "#cbd5e1",
-                                  opacity: 0.95
-                                }}>
-                                  {translation?.loading ? (
-                                    <span style={{ color: "#94a3b8" }}>Перевод...</span>
-                                  ) : translation?.error ? (
-                                    <span>{translation.error}</span>
-                                  ) : (
-                                    <span>{translation.translatedText}</span>
-                                  )}
-                                </div>
-                              )}
-
                               {/* Timestamp */}
                               <div style={{
                                 fontSize: "10px",
@@ -1244,7 +991,7 @@ const MessagesTab = () => {
                                 marginTop: "6px",
                                 textAlign: "right"
                               }}>
-                                {isPending ? "Отправка..." : formatMessageDate(
+                                {formatMessageDate(
                                   messageItem.date || selectedMessage.date,
                                   messageItem.time || selectedMessage.time
                                 )}
