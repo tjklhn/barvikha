@@ -608,6 +608,60 @@ label {
   -webkit-text-fill-color: #ffffff !important;
   font-size: 14px;
   font-weight: 700;
+  min-height: 42px;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.mobile-nav-toggle:hover {
+  border-color: rgba(125, 211, 252, 0.45);
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.mobile-nav-burger {
+  width: 16px;
+  height: 12px;
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.mobile-nav-burger span {
+  display: block;
+  width: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.95);
+  transform-origin: center;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.mobile-nav-toggle.open .mobile-nav-burger span:nth-child(1) {
+  transform: translateY(5px) rotate(45deg);
+}
+
+.mobile-nav-toggle.open .mobile-nav-burger span:nth-child(2) {
+  opacity: 0;
+}
+
+.mobile-nav-toggle.open .mobile-nav-burger span:nth-child(3) {
+  transform: translateY(-5px) rotate(-45deg);
+}
+
+.app-nav-mobile-panel {
+  display: none;
+}
+
+.app-nav-mobile-panel.open {
+  display: block;
+}
+
+.app-nav-mobile-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 10px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .app-nav-inner::-webkit-scrollbar {
@@ -1177,32 +1231,43 @@ tr:hover td {
   flex-direction: row !important;
   align-items: center !important;
   gap: 8px !important;
-  overflow-x: auto !important;
+  justify-content: flex-start !important;
+  overflow: visible !important;
 }
 
 .app-root.phone-view .mobile-nav-toggle {
-  display: none !important;
+  display: inline-flex !important;
 }
 
 .app-root.phone-view .app-nav-list {
-  display: flex !important;
-  flex-direction: row !important;
-  width: auto !important;
-  gap: 8px !important;
+  display: none !important;
 }
 
 .app-root.phone-view .app-nav-list.open {
-  display: flex !important;
-}
-
-.app-root.phone-view .app-nav-list .nav-button {
-  width: auto !important;
-  justify-content: center !important;
-  border-radius: 9999px !important;
+  display: none !important;
 }
 
 .app-root.phone-view .app-nav-mobile-panel {
-  display: none !important;
+  display: none;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.94) 0%, rgba(15, 23, 42, 0.86) 100%);
+}
+
+.app-root.phone-view .app-nav-mobile-panel.open {
+  display: block !important;
+}
+
+.app-root.phone-view .app-nav-mobile-panel .nav-button {
+  width: 100% !important;
+  justify-content: flex-start !important;
+  border-radius: 12px !important;
+  padding: 12px 14px !important;
+  box-shadow: none !important;
+}
+
+.app-root.phone-view .app-nav-mobile-panel .nav-button.active {
+  background: rgba(59, 130, 246, 0.12) !important;
+  box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.95) !important;
 }
 
 .app-root.phone-view .messages-layout,

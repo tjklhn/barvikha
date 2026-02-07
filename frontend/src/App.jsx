@@ -1763,47 +1763,83 @@ function App() {
           padding: "8px 24px",
           gap: "8px"
         }}>
-          <div
-            className="app-nav-list"
-            style={{
-              display: "flex",
-              flexDirection: "row",
-              alignItems: "center",
-              flexWrap: "nowrap",
-              gap: "8px",
-              width: "max-content"
-            }}
-          >
-            {tabs.map(tab => (
+          {isPhoneView && (
             <button
-              key={tab.id}
-              onClick={() => handleTabSelect(tab.id)}
-              className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
+              type="button"
+              className={`mobile-nav-toggle ${isMobileNavOpen ? "open" : ""}`}
+              onClick={() => setIsMobileNavOpen((prev) => !prev)}
+              aria-expanded={isMobileNavOpen}
+              aria-label={isMobileNavOpen ? "Скрыть разделы" : "Показать разделы"}
+            >
+              <span className="mobile-nav-burger" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </span>
+              <span>{isMobileNavOpen ? "Скрыть разделы" : "Разделы"}</span>
+            </button>
+          )}
+
+          {!isPhoneView && (
+            <div
+              className="app-nav-list"
               style={{
-                padding: "12px 20px",
-                borderRadius: "9999px",
-                cursor: "pointer",
-                fontSize: "14px",
-                fontWeight: "700",
                 display: "flex",
+                flexDirection: "row",
                 alignItems: "center",
-                gap: "10px",
-                whiteSpace: "nowrap",
-                background: "transparent",
-                border: "none",
-                boxShadow: activeTab === tab.id
-                  ? "inset 0 -1px 0 rgba(125, 211, 252, 0.95)"
-                  : "none",
-                color: "#ffffff",
-                WebkitTextFillColor: "#ffffff"
+                flexWrap: "nowrap",
+                gap: "8px",
+                width: "max-content"
               }}
             >
-              <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
-              {tab.label}
-            </button>
-          ))}
-          </div>
+              {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => handleTabSelect(tab.id)}
+                className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
+                style={{
+                  padding: "12px 20px",
+                  borderRadius: "9999px",
+                  cursor: "pointer",
+                  fontSize: "14px",
+                  fontWeight: "700",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                  whiteSpace: "nowrap",
+                  background: "transparent",
+                  border: "none",
+                  boxShadow: activeTab === tab.id
+                    ? "inset 0 -1px 0 rgba(125, 211, 252, 0.95)"
+                    : "none",
+                  color: "#ffffff",
+                  WebkitTextFillColor: "#ffffff"
+                }}
+              >
+                <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+                {tab.label}
+              </button>
+            ))}
+            </div>
+          )}
         </div>
+
+        {isPhoneView && (
+          <div className={`app-nav-mobile-panel ${isMobileNavOpen ? "open" : ""}`}>
+            <div className="app-nav-mobile-inner">
+              {tabs.map((tab) => (
+                <button
+                  key={`mobile-${tab.id}`}
+                  onClick={() => handleTabSelect(tab.id)}
+                  className={`nav-button ${activeTab === tab.id ? "active" : ""}`}
+                >
+                  <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Content */}
