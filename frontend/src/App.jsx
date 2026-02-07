@@ -494,13 +494,6 @@ function App() {
 
       setLoadingExtraFields(true);
       setExtraFieldsError("");
-      const loadingGuardId = setTimeout(() => {
-        if (cancelled) return;
-        setLoadingExtraFields(false);
-        setExtraFields([]);
-        setExtraFieldValues({});
-        setExtraFieldsError("Таймаут загрузки параметров категории. Попробуйте обновить категорию.");
-      }, 60000);
       try {
         const buildFieldsRequestUrl = (forceRefresh = false) => {
           const params = new URLSearchParams();
@@ -578,7 +571,6 @@ function App() {
         const errorMessage = (error?.message || "Ошибка загрузки параметров категории") + debugId;
         setExtraFieldsError(errorMessage);
       } finally {
-        clearTimeout(loadingGuardId);
         if (cancelled) return;
         setLoadingExtraFields(false);
       }

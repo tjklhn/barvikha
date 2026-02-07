@@ -2951,36 +2951,10 @@ app.get("/api/ads/fields", async (req, res) => {
       await page.setViewport(deviceProfile.viewport);
       await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
       await page.emulateTimezone(deviceProfile.timezone);
-      await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded", timeout: 20000 });
-      if (forceDebug) {
-        dumpFieldsDebugMeta({
-          accountLabel: account.email || `account-${accountId}`,
-          step: "fields-homepage-loaded",
-          error: "",
-          extra: { url: page.url() },
-          force: true
-        });
+      if (cookies.length) {
+        await page.setCookie(...cookies);
       }
-      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
-      await acceptGdprConsent(page, { timeout: 15000 }).catch(() => {});
-      await page.setCookie(...cookies);
-
-      try {
-      await page.goto("https://www.kleinanzeigen.de/gdpr", { waitUntil: "domcontentloaded", timeout: 20000 });
-      if (forceDebug) {
-        dumpFieldsDebugMeta({
-          accountLabel: account.email || `account-${accountId}`,
-          step: "fields-gdpr-loaded",
-          error: "",
-          extra: { url: page.url() },
-          force: true
-        });
-      }
-      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
-      await acceptGdprConsent(page);
-      } catch (error) {
-        // ignore consent preload
-      }
+      logFields({ event: "browser-ready", durationMs: Date.now() - requestStartedAt });
 
       let step2Error = null;
       try {
@@ -3014,6 +2988,7 @@ app.get("/api/ads/fields", async (req, res) => {
           force: true
         });
       }
+      logFields({ event: "step2-opened", durationMs: Date.now() - requestStartedAt });
       if (step2Error) {
         throw step2Error;
       }
@@ -3124,6 +3099,58 @@ app.get("/api/ads/fields", async (req, res) => {
         return fields;
       };
 
+      const submitCategoryViaStep2Form = async () => {
+        try {
+          const submitted = await page.evaluate(({ categoryId, categoryPathIds }) => {
+            const sanitize = (value) => {
+              const raw = String(value || "").trim();
+              const match = raw.match(/\d+/);
+              return match ? match[0] : "";
+            };
+            const ids = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
+              .map(sanitize)
+              .filter(Boolean);
+            const fallbackId = sanitize(categoryId);
+            if (!ids.length && fallbackId) ids.push(fallbackId);
+            if (!ids.length) return false;
+
+            const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
+            if (!form) return false;
+
+            const applyField = (name, value) => {
+              let field = form.querySelector(`input[name="${name}"], select[name="${name}"]`);
+              if (!field) {
+                field = document.createElement("input");
+                field.type = "hidden";
+                field.name = name;
+                form.appendChild(field);
+              }
+              field.value = String(value ?? "");
+            };
+
+            if (ids.length > 1) {
+              applyField("parentCategoryId", ids[0]);
+            }
+            applyField("categoryId", ids[ids.length - 1]);
+            applyField("submitted", "true");
+            form.submit();
+            return true;
+          }, { categoryId, categoryPathIds });
+
+          if (!submitted) return false;
+          await Promise.race([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 12000 }).catch(() => false),
+            page.waitForFunction(
+              () => window.location.href.includes("anzeige-aufgeben-schritt2"),
+              { timeout: 12000 }
+            ).catch(() => false)
+          ]);
+          return true;
+        } catch (error) {
+          return false;
+        }
+      };
+
       await injectCategoryId();
       let fields = await collectFields(8000);
       if (fields.length) {
@@ -3144,6 +3171,31 @@ app.get("/api/ads/fields", async (req, res) => {
         }
         return;
       }
+      logFields({ event: "fast-path-empty", durationMs: Date.now() - requestStartedAt });
+
+      const quickSubmitted = await submitCategoryViaStep2Form();
+      if (quickSubmitted) {
+        await dumpFieldsDebug(page, {
+          accountLabel: account.email || `account-${accountId}`,
+          step: "fields-fast-submit",
+          error: "",
+          extra: { url: page.url(), categoryId, categoryPathIds },
+          force: forceDebug
+        });
+        fields = await collectFields(7000);
+        if (fields.length) {
+          setCachedCategoryFields(categoryId, fields);
+          logFields({ event: "success-fast-submit", count: fields.length, durationMs: Date.now() - requestStartedAt });
+          if (!res.headersSent) {
+            res.json({
+              fields,
+              debugId: debugEnabled ? requestId : undefined
+            });
+          }
+          return;
+        }
+      }
+      logFields({ event: "fast-submit-empty", durationMs: Date.now() - requestStartedAt });
 
       const applyCategorySelection = async () => {
         if (!categoryPathIds.length) return false;
@@ -3407,10 +3459,12 @@ app.get("/api/ads/fields", async (req, res) => {
 
       let categoryApplied = false;
       try {
+        logFields({ event: "selection-start", durationMs: Date.now() - requestStartedAt });
         categoryApplied = await withTimeout(applyCategorySelection(), 28000, "category-selection-timeout");
       } catch (error) {
         categoryApplied = false;
       }
+      logFields({ event: "selection-end", success: Boolean(categoryApplied), durationMs: Date.now() - requestStartedAt });
       await dumpFieldsDebug(page, {
         accountLabel: account.email || `account-${accountId}`,
         step: "fields-category-applied",
