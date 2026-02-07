@@ -29,6 +29,7 @@ const AdModal = ({
   const [didRestorePath, setDidRestorePath] = useState(false);
   const [imagePreviews, setImagePreviews] = useState([]);
   const [loadingPlz, setLoadingPlz] = useState(false);
+  const [categoryChildrenError, setCategoryChildrenError] = useState("");
   const categoryListRef = useRef(null);
   const pendingChildrenRef = useRef(new Map());
   const prefetchRootRef = useRef("");
@@ -90,10 +91,16 @@ const AdModal = ({
     if (!isNumericCategoryId(parentId)) return false;
     const idValue = node.id !== undefined && node.id !== null ? String(node.id) : "";
     const urlValue = node.url ? String(node.url) : "";
-    if (isNumericCategoryId(idValue)) return false;
+    const nameValue = String(node.name || node.label || "").trim().toLowerCase();
+    const normalizedId = idValue.trim().toLowerCase();
+    if (isNumericCategoryId(normalizedId)) return false;
     if (looksLikeCategoryUrl(urlValue)) return false;
     if (Array.isArray(node.children) && node.children.length > 0) return false;
-    return Boolean(idValue || urlValue);
+    if (!normalizedId || !nameValue) return false;
+    // Keep real subcategories with slug-like ids (e.g. "drucker_scanner").
+    // Filter only very small option-like values that are likely field options.
+    const optionLikeValues = new Set(["ja", "nein", "yes", "no", "new", "used", "other"]);
+    return optionLikeValues.has(normalizedId) || optionLikeValues.has(nameValue);
   };
 
   const filterCategoryChildren = (nodes, parent) =>
@@ -211,6 +218,7 @@ const AdModal = ({
     if (isOpen) {
       setCategoryPath([]);
       setDidRestorePath(false);
+      setCategoryChildrenError("");
       setNewAd((prev) => ({
         ...prev,
         categoryId: "",
@@ -351,6 +359,7 @@ const AdModal = ({
     // Добавляем категорию в путь
     const newPath = [...categoryPath, normalizedValue];
     setCategoryPath(newPath);
+    setCategoryChildrenError("");
 
     // ВСЕГДА пытаемся загрузить детей, даже если они есть
     // (это обеспечит загрузку 3+ уровней)
@@ -367,7 +376,10 @@ const AdModal = ({
     const hasKnownChildren =
       filterCategoryChildren(knownChildren, category).length > 0 ||
       filterCategoryChildren(selectedChildren, selectedNode).length > 0;
-    const isLeaf = hasFetchedChildren !== null ? !hasFetchedChildren : !hasKnownChildren;
+    const childrenLoadFailed = childrenResult === null && !hasKnownChildren;
+    const isLeaf = childrenLoadFailed
+      ? false
+      : (hasFetchedChildren !== null ? !hasFetchedChildren : !hasKnownChildren);
 
     setNewAd((prev) => {
       const next = { ...prev };
@@ -441,8 +453,16 @@ const AdModal = ({
           console.log("[AdModal] children applied count", updated?.children?.length || 0, "target", targetValue);
           return next;
         });
+        setCategoryChildrenError("");
         return filteredChildren;
       } catch (error) {
+        const message = error?.message || "Ошибка сети";
+        console.error("[AdModal] children request failed", {
+          target: targetValue,
+          accountId: newAd?.accountId || "",
+          message
+        });
+        setCategoryChildrenError(`Не удалось загрузить подкатегории: ${message}`);
         return null;
       }
     })();
@@ -791,8 +811,6 @@ const AdModal = ({
               <div ref={categoryListRef} style={{ padding: "12px", minHeight: "220px", maxHeight: "300px", overflowY: "auto" }}>
                 {currentCategories.length ? (
                   currentCategories.map((category) => {
-                    const value = category.id || category.url || "";
-                    const hasChildren = category.children && category.children.length > 0;
                     return (
                       <button
                         key={category.id || category.url || getCategoryLabel(category)}
@@ -831,12 +849,20 @@ const AdModal = ({
                   <div style={{ color: "#94a3b8", padding: "12px", textAlign: "center" }}>
                     {!newAd.accountId
                       ? "Сначала выберите аккаунт"
+                      : categoryChildrenError
+                        ? "Не удалось загрузить подкатегории. Нажмите «Обновить»."
                       : categoryPath.length > 0
                         ? "Нет подкатегорий - эта категория финальная"
                         : "Категории не найдены"}
                   </div>
                 )}
               </div>
+
+              {categoryChildrenError && (
+                <div style={{ color: "#f87171", fontSize: "12px", padding: "0 16px 10px" }}>
+                  {categoryChildrenError}
+                </div>
+              )}
 
               <div style={{
                 borderTop: "1px solid rgba(148,163,184,0.2)",
