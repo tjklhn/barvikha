@@ -3191,9 +3191,13 @@ const parseExtraSelectFieldsAcrossContexts = async (page) => {
   return collected;
 };
 
-const setCategoryIdInForm = async (context, categoryId) => {
+const setCategoryIdInForm = async (context, categoryId, categoryPathIds = []) => {
   if (isBlankValue(categoryId)) return false;
   let updated = false;
+  const normalizedCategoryId = String(categoryId || "").trim();
+  const numericPath = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
+    .map((item) => String(item || "").trim())
+    .filter((item) => /^\d+$/.test(item));
   const selectors = [
     "#categoryIdField",
     'input[name="categoryId"]',
@@ -3213,6 +3217,65 @@ const setCategoryIdInForm = async (context, categoryId) => {
       const set = await setValueIfExists(context, selector, categoryId);
       if (set) updated = true;
     }
+  }
+
+  try {
+    const hiddenFallbackApplied = await context.evaluate(({ categoryIdValue, numericPathIds }) => {
+      const form = document.querySelector("#adForm") || document.querySelector("form");
+      if (!form || !categoryIdValue) return false;
+      const applyField = (name, value) => {
+        if (!name) return false;
+        let field = form.querySelector(`input[name="${name}"]`);
+        if (!field) {
+          field = document.createElement("input");
+          field.type = "hidden";
+          field.name = name;
+          form.appendChild(field);
+        }
+        field.value = String(value ?? "");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      };
+
+      const categoryFieldNames = [
+        "categoryId",
+        "selectedCategoryId",
+        "adCategoryId"
+      ];
+      let changed = false;
+      for (const name of categoryFieldNames) {
+        changed = applyField(name, categoryIdValue) || changed;
+      }
+
+      if (numericPathIds.length > 1) {
+        changed = applyField("parentCategoryId", numericPathIds[0]) || changed;
+      }
+      if (numericPathIds.length) {
+        const pathValue = numericPathIds.join("/");
+        changed = applyField("categoryPath", pathValue) || changed;
+        changed = applyField("path", pathValue) || changed;
+      }
+
+      const selectCandidates = Array.from(
+        form.querySelectorAll('select[name*="category"], select[id*="category"]')
+      );
+      for (const select of selectCandidates) {
+        const hasOption = Array.from(select.options || []).some((opt) => String(opt.value) === categoryIdValue);
+        if (!hasOption) continue;
+        select.value = categoryIdValue;
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        changed = true;
+      }
+
+      return changed;
+    }, { categoryIdValue: normalizedCategoryId, numericPathIds: numericPath });
+    if (hiddenFallbackApplied) {
+      updated = true;
+    }
+  } catch (error) {
+    // ignore hidden fallback errors
   }
 
   return updated;
@@ -4512,9 +4575,9 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       }
       appendPublishTrace({ step: "after-publish-input", resolvedCategoryId, categoryPathIdsLength: categoryPathIds.length });
       if (resolvedCategoryId) {
-        categorySet = await setCategoryIdInForm(formContext, resolvedCategoryId);
+        categorySet = await setCategoryIdInForm(formContext, resolvedCategoryId, categoryPathIdsNumeric);
         if (!categorySet && formContext !== page) {
-          categorySet = await setCategoryIdInForm(page, resolvedCategoryId);
+          categorySet = await setCategoryIdInForm(page, resolvedCategoryId, categoryPathIdsNumeric);
         }
         if (categorySet) {
           await humanPause(120, 220);
@@ -4532,6 +4595,32 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           formContext = refreshedContext;
         }
       }
+
+      const applyCategoryFallbackOnCurrentForm = async () => {
+        if (!resolvedCategoryId) return false;
+        let applied = false;
+        try {
+          applied = await setCategoryIdInForm(formContext, resolvedCategoryId, categoryPathIdsNumeric);
+        } catch (error) {
+          applied = false;
+        }
+        if (!applied && formContext !== page) {
+          try {
+            applied = await setCategoryIdInForm(page, resolvedCategoryId, categoryPathIdsNumeric);
+          } catch (error) {
+            applied = false;
+          }
+        }
+        if (applied) {
+          categorySet = true;
+          await humanPause(120, 220);
+          const refreshedContext = await getAdFormContext(page);
+          if (refreshedContext) {
+            formContext = refreshedContext;
+          }
+        }
+        return applied;
+      };
 
       if (CATEGORY_SELECTION_NEW_PAGE && categoryPathIds.length) {
         appendPublishTrace({ step: "category-selection-new-page-start" });
@@ -4921,7 +5010,22 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           });
           appendPublishTrace({ step: "category-selection-timeout", error: error.message });
           console.log(`[publishAd] Category selection via selectionUrl failed: ${error.message}`);
-          if (!categorySelectionDone && categoryPathIds.length) {
+          const timeoutFormFallbackDone = await applyCategoryFallbackOnCurrentForm();
+          appendPublishTrace({
+            step: "category-selection-timeout-form-fallback",
+            success: timeoutFormFallbackDone
+          });
+          await dumpPublishDebug(page, {
+            accountLabel,
+            step: "category-selection-timeout-form-fallback",
+            error: timeoutFormFallbackDone ? "" : "form-fallback-failed",
+            extra: { url: page.url(), selectionUrl, categoryPathIds, resolvedCategoryId }
+          });
+          if (timeoutFormFallbackDone) {
+            categorySelectionDone = true;
+            categorySet = true;
+          }
+          if (!categorySelectionDone && categoryPathIds.length && CATEGORY_SELECTION_NEW_PAGE) {
             appendPublishTrace({ step: "category-selection-new-page-fallback-start" });
             const fallbackDone = await withTimeout(
               selectCategoryViaNewPage(browser, {
@@ -4937,6 +5041,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
             appendPublishTrace({ step: "category-selection-new-page-fallback-done", success: fallbackDone });
             if (fallbackDone) {
               categorySelectionDone = true;
+              categorySet = true;
               await page.goto(CREATE_AD_URL, { waitUntil: "domcontentloaded", timeout: 20000 });
               await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
               if (isGdprPage(page.url())) {

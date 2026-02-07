@@ -29,11 +29,7 @@ const PHONE_VIEW_MAX_WIDTH = 900;
 const detectPhoneView = () => {
   if (typeof window === "undefined") return false;
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  if (!(viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH)) return false;
-  if (!window.matchMedia) return true;
-  const hasCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
-  const noHover = window.matchMedia("(hover: none)").matches;
-  return hasCoarsePointer || noHover;
+  return viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH;
 };
 
 const getDebugFlag = (key) => {
