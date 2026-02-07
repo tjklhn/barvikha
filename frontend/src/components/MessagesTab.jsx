@@ -283,17 +283,17 @@ const MessagesTab = () => {
           fontWeight: 700
         }}>
           <span style={{
-            width: "56px",
-            height: "56px",
-            borderRadius: "18px",
-            background: "linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.35))",
-            border: "1px solid rgba(251, 146, 60, 0.45)",
-            boxShadow: "0 8px 24px rgba(251, 146, 60, 0.25)",
+            width: "42px",
+            height: "42px",
+            borderRadius: "14px",
+            background: "linear-gradient(135deg, rgba(249, 115, 22, 0.25), rgba(194, 65, 12, 0.2))",
+            border: "1px solid rgba(251, 146, 60, 0.4)",
+            boxShadow: "0 4px 15px rgba(251, 146, 60, 0.28)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center"
           }}>
-            <MessageIcon size={28} color="#fb923c" />
+            <MessageIcon size={22} color="#fdba74" />
           </span>
           Сообщения
         </h2>

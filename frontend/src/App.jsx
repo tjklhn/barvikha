@@ -704,35 +704,49 @@ function App() {
     );
   };
 
-  const renderSectionTitle = (IconComponent, title, accentColor) => (
-    <h2 style={{
-      margin: 0,
-      color: textTitle,
-      display: "flex",
-      alignItems: "center",
-      gap: "14px",
-      fontWeight: "700"
-    }}>
-      <span style={{
-        width: "56px",
-        height: "56px",
-        borderRadius: "18px",
-        background: "linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.35))",
-        border: `1px solid ${accentColor}66`,
+  const renderSectionTitle = (IconComponent, title, iconTheme = {}) => {
+    const {
+      iconColor = "#e2e8f0",
+      background = "linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.35))",
+      border = "1px solid rgba(148, 163, 184, 0.35)",
+      boxShadow = "0 4px 15px rgba(148, 163, 184, 0.25)"
+    } = iconTheme;
+
+    return (
+      <h2 style={{
+        margin: 0,
+        color: textTitle,
         display: "flex",
         alignItems: "center",
-        justifyContent: "center",
-        boxShadow: `0 8px 24px ${accentColor}40`
+        gap: "14px",
+        fontWeight: "700"
       }}>
-        <IconComponent size={28} color={accentColor} />
-      </span>
-      {title}
-    </h2>
-  );
+        <span style={{
+          width: "42px",
+          height: "42px",
+          borderRadius: "14px",
+          background,
+          border,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow
+        }}>
+          <IconComponent size={22} color={iconColor} />
+        </span>
+        {title}
+      </h2>
+    );
+  };
 
   const DashboardTab = () => (
     <div>
-      {renderSectionTitle(DashboardIcon, "Дашборд", "#a78bfa")}
+      {renderSectionTitle(DashboardIcon, "Дашборд", {
+        iconColor: "#a78bfa",
+        background: "linear-gradient(135deg, rgba(99, 102, 241, 0.22), rgba(76, 29, 149, 0.25))",
+        border: "1px solid rgba(167, 139, 250, 0.45)",
+        boxShadow: "0 4px 15px rgba(139, 92, 246, 0.3)"
+      })}
       {stats && (
         <div className="dashboard-stats" style={{
           display: "flex",
@@ -1097,7 +1111,12 @@ function App() {
         gap: isPhoneView ? "10px" : "0",
         marginBottom: "20px"
       }}>
-        {renderSectionTitle(UserIcon, "Аккаунты", "#60a5fa")}
+        {renderSectionTitle(UserIcon, "Аккаунты", {
+          iconColor: "#c4b5fd",
+          background: "linear-gradient(135deg, rgba(139, 92, 246, 0.3), rgba(76, 29, 149, 0.28))",
+          border: "1px solid rgba(167, 139, 250, 0.45)",
+          boxShadow: "0 4px 15px rgba(139, 92, 246, 0.32)"
+        })}
         <button
           className="primary-button"
           onClick={() => setShowAddAccountModal(true)}
@@ -1423,7 +1442,12 @@ function App() {
         gap: isPhoneView ? "10px" : "0",
         marginBottom: "20px"
       }}>
-        {renderSectionTitle(LinkIcon, "Прокси серверы", "#34d399")}
+        {renderSectionTitle(LinkIcon, "Прокси серверы", {
+          iconColor: "#67e8f9",
+          background: "linear-gradient(135deg, rgba(6, 182, 212, 0.3), rgba(8, 145, 178, 0.28))",
+          border: "1px solid rgba(34, 211, 238, 0.45)",
+          boxShadow: "0 4px 15px rgba(6, 182, 212, 0.32)"
+        })}
         <div className="section-header-actions" style={{
           display: "flex",
           gap: "12px",
