@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { apiFetchJson } from "../api";
+import { MessageIcon } from "./Icons";
 
 const detectMobileView = () => {
   if (typeof window === "undefined") return false;
@@ -265,6 +266,39 @@ const MessagesTab = () => {
         .msg-refresh-btn:active:not(:disabled) { transform: scale(0.98); }
       `}</style>
 
+      <div className="section-header" style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "12px",
+        marginBottom: "20px",
+        flexWrap: "wrap"
+      }}>
+        <h2 style={{
+          margin: 0,
+          color: "#f8fafc",
+          display: "flex",
+          alignItems: "center",
+          gap: "14px",
+          fontWeight: 700
+        }}>
+          <span style={{
+            width: "56px",
+            height: "56px",
+            borderRadius: "18px",
+            background: "linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.35))",
+            border: "1px solid rgba(251, 146, 60, 0.45)",
+            boxShadow: "0 8px 24px rgba(251, 146, 60, 0.25)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center"
+          }}>
+            <MessageIcon size={28} color="#fb923c" />
+          </span>
+          Сообщения
+        </h2>
+      </div>
+
       <div className="messages-layout" style={{ display: "flex", gap: "20px", height: "calc(100vh - 220px)", minHeight: "500px" }}>
         {/* Conversation List */}
         {showConversationList && <div className="messages-list" style={{
@@ -287,7 +321,7 @@ const MessagesTab = () => {
             background: "rgba(15,23,42,0.5)"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-              <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700 }}>Сообщения</h3>
+              <h3 style={{ margin: 0, fontSize: "18px", fontWeight: 700 }}>Диалоги</h3>
               {unreadCount > 0 && (
                 <span style={{
                   padding: "5px 14px",

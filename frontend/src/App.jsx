@@ -704,12 +704,35 @@ function App() {
     );
   };
 
+  const renderSectionTitle = (IconComponent, title, accentColor) => (
+    <h2 style={{
+      margin: 0,
+      color: textTitle,
+      display: "flex",
+      alignItems: "center",
+      gap: "14px",
+      fontWeight: "700"
+    }}>
+      <span style={{
+        width: "56px",
+        height: "56px",
+        borderRadius: "18px",
+        background: "linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.35))",
+        border: `1px solid ${accentColor}66`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: `0 8px 24px ${accentColor}40`
+      }}>
+        <IconComponent size={28} color={accentColor} />
+      </span>
+      {title}
+    </h2>
+  );
+
   const DashboardTab = () => (
     <div>
-      <h2 style={{ color: textTitle, display: "flex", alignItems: "center", gap: "10px", fontWeight: "700" }}>
-        <DashboardIcon size={28} />
-        Дашборд
-      </h2>
+      {renderSectionTitle(DashboardIcon, "Дашборд", "#a78bfa")}
       {stats && (
         <div className="dashboard-stats" style={{
           display: "flex",
@@ -1074,10 +1097,7 @@ function App() {
         gap: isPhoneView ? "10px" : "0",
         marginBottom: "20px"
       }}>
-        <h2 style={{ margin: 0, color: textTitle, display: "flex", alignItems: "center", gap: "10px", fontWeight: "700" }}>
-          <UserIcon size={28} />
-          Аккаунты
-        </h2>
+        {renderSectionTitle(UserIcon, "Аккаунты", "#60a5fa")}
         <button
           className="primary-button"
           onClick={() => setShowAddAccountModal(true)}
@@ -1403,10 +1423,7 @@ function App() {
         gap: isPhoneView ? "10px" : "0",
         marginBottom: "20px"
       }}>
-        <h2 style={{ margin: 0, color: textTitle, display: "flex", alignItems: "center", gap: "10px", fontWeight: "700" }}>
-          <LinkIcon size={28} />
-          Прокси серверы
-        </h2>
+        {renderSectionTitle(LinkIcon, "Прокси серверы", "#34d399")}
         <div className="section-header-actions" style={{
           display: "flex",
           gap: "12px",
