@@ -701,6 +701,8 @@ const requireAccessToken = (req, res, next) => {
   if (req.method === "OPTIONS") return next();
   if (!req.path.startsWith("/api")) return next();
   if (req.path.startsWith("/api/auth/")) return next();
+  // Message preview images are requested by <img>, without custom auth headers.
+  if (req.path.startsWith("/api/messages/image")) return next();
 
   const token = extractAccessToken(req);
   const status = getSubscriptionTokenStatus(token);

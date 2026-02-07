@@ -48,7 +48,17 @@ const normalizeImageUrl = (value, baseUrl = MESSAGE_LIST_URL) => {
     return `https:${src}`;
   }
   try {
-    return new URL(src, baseUrl).href;
+    const url = new URL(src, baseUrl);
+    // Kleinanzeigen sometimes returns template placeholders in `rule`, e.g. `$_{imageId}.JPG`,
+    // which yields HTTP 400 from CDN. Drop such malformed template query params.
+    const ruleParam = url.searchParams.get("rule");
+    if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
+      url.searchParams.delete("rule");
+    }
+    if (url.search && /\$/.test(url.search)) {
+      url.search = "";
+    }
+    return url.href;
   } catch (error) {
     return src;
   }
