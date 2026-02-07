@@ -6409,135 +6409,104 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           appendPublishTrace({ step: "publish-state-from-frames", publishState });
         }
       }
-      if (publishState === "form") {
-        const forceSubmitContextResult = await forceSubmitFormInContext(formContext);
-        let forceSubmitPageResult = null;
-        if (formContext !== page) {
-          forceSubmitPageResult = await forceSubmitFormInContext(page);
+      let resubmitAttempts = 0;
+      const maxResubmitAttempts = 1;
+      const tryResubmitAfterRepair = async (reason) => {
+        if (resubmitAttempts >= maxResubmitAttempts) {
+          appendPublishTrace({
+            step: "publish-resubmit-skipped",
+            reason,
+            resubmitAttempts
+          });
+          return false;
         }
+        resubmitAttempts += 1;
         appendPublishTrace({
-          step: "publish-force-submit",
-          formContext: forceSubmitContextResult,
-          pageContext: forceSubmitPageResult
+          step: "publish-resubmit",
+          reason,
+          resubmitAttempts
         });
-        if (forceSubmitContextResult?.submitted || forceSubmitPageResult?.submitted) {
-          await humanPause(220, 420);
-          publishState = await waitForPublishState(page, defaultTimeout);
-          appendPublishTrace({ step: "publish-state-after-force-submit", publishState });
-        }
-      }
-      if (publishState === "form") {
-        const invalidRepair = await repairInvalidRequiredFieldsAcrossContexts(page, formContext);
+        await humanPause(180, 320);
+        await clickSubmitButton(page, [formContext, page], { allowFallback: false });
+        publishState = await waitForPublishState(page, defaultTimeout);
         appendPublishTrace({
-          step: "publish-invalid-repair",
-          totalInvalid: invalidRepair.totalInvalid,
-          fixedCount: invalidRepair.fixedCount
+          step: "publish-state-after-resubmit",
+          reason,
+          publishState,
+          resubmitAttempts
         });
-        if (invalidRepair.fixedCount > 0) {
-          await humanPause(180, 320);
-          await clickSubmitButton(page, [formContext, page], { allowFallback: false });
-          publishState = await waitForPublishState(page, defaultTimeout);
-          appendPublishTrace({ step: "publish-state-after-invalid-repair", publishState });
-        }
-      }
+        return true;
+      };
+
       if (publishState === "form") {
-        const hardSubmitContextResult = await hardSubmitFormInContext(formContext);
-        let hardSubmitPageResult = null;
-        if (formContext !== page) {
-          hardSubmitPageResult = await hardSubmitFormInContext(page);
-        }
+        const errorsBeforeRepair = await collectFormErrors(page);
         appendPublishTrace({
-          step: "publish-hard-submit",
-          formContext: hardSubmitContextResult,
-          pageContext: hardSubmitPageResult
+          step: "publish-form-errors-before-repair",
+          errors: errorsBeforeRepair.length
         });
-        if (hardSubmitContextResult?.submitted || hardSubmitPageResult?.submitted) {
-          await humanPause(240, 480);
-          publishState = await waitForPublishState(page, defaultTimeout);
-          appendPublishTrace({ step: "publish-state-after-hard-submit", publishState });
-          if (publishState === "form") {
-            await dumpPublishDebug(page, {
-              accountLabel,
-              step: "after-hard-submit-form",
-              error: "still-on-form-after-hard-submit",
-              extra: {
-                url: page.url(),
-                formContext: hardSubmitContextResult,
-                pageContext: hardSubmitPageResult
-              }
-            });
+        if (errorsBeforeRepair.length > 0) {
+          const invalidRepair = await repairInvalidRequiredFieldsAcrossContexts(page, formContext);
+          appendPublishTrace({
+            step: "publish-invalid-repair",
+            totalInvalid: invalidRepair.totalInvalid,
+            fixedCount: invalidRepair.fixedCount
+          });
+          if (invalidRepair.fixedCount > 0) {
+            await tryResubmitAfterRepair("invalid-repair");
           }
+        } else {
+          appendPublishTrace({ step: "publish-invalid-repair-skipped", reason: "no-visible-errors" });
         }
       }
 
-      // Если остаемся на форме (p-anzeige-abschicken), повторно выставляем buyNowSelected и пробуем сабмит
+      // Если остаемся на форме (p-anzeige-abschicken), чиним только явные ошибки и делаем максимум один retry
       if (publishState === "form" && page.url().includes("p-anzeige-abschicken")) {
         const errors = await collectFormErrors(page);
         const buyNowError = errors.find((text) => /direkt kaufen|beiden optionen/i.test(text));
+        let needsResubmit = false;
+
         if (buyNowError) {
-          appendPublishTrace({ step: "publish-form-abschicken-retry" });
+          appendPublishTrace({ step: "publish-form-abschicken-repair-buy-now" });
           try {
             await forceDirectBuyNoAcrossContexts(page, formContext);
             await ensureBuyNowSelectedFalse(page);
             await acceptTermsIfPresent(page);
-            await clickSubmitButton(page, [formContext, page], { allowFallback: false });
-            publishState = await waitForPublishState(page, defaultTimeout);
-            appendPublishTrace({ step: "publish-state-after-abschicken-retry", publishState });
+            needsResubmit = true;
           } catch (error) {
             // ignore retry errors
           }
         } else {
-          appendPublishTrace({ step: "publish-form-abschicken-no-retry" });
+          appendPublishTrace({ step: "publish-form-abschicken-buy-now-not-needed" });
         }
 
-        if (publishState === "form") {
-          const serverErrorRepair = await repairServerSideRequiredErrorsAcrossContexts(
-            page,
-            formContext,
-            preferredFieldValues
-          );
-          appendPublishTrace({
+        const serverErrorRepair = await repairServerSideRequiredErrorsAcrossContexts(
+          page,
+          formContext,
+          preferredFieldValues
+        );
+        appendPublishTrace({
+          step: "publish-server-error-repair",
+          totalErrors: serverErrorRepair.totalErrors,
+          fixedCount: serverErrorRepair.fixedCount
+        });
+        if (serverErrorRepair.fixedCount > 0) {
+          needsResubmit = true;
+          await dumpPublishDebug(page, {
+            accountLabel,
             step: "publish-server-error-repair",
-            totalErrors: serverErrorRepair.totalErrors,
-            fixedCount: serverErrorRepair.fixedCount
-          });
-          if (serverErrorRepair.fixedCount > 0) {
-            await dumpPublishDebug(page, {
-              accountLabel,
-              step: "publish-server-error-repair",
-              error: "",
-              extra: {
-                url: page.url(),
-                errorsBefore: errors,
-                serverErrorRepair
-              }
-            });
-            await humanPause(200, 360);
-            await clickSubmitButton(page, [formContext, page], { allowFallback: false });
-            publishState = await waitForPublishState(page, defaultTimeout);
-            appendPublishTrace({ step: "publish-state-after-server-error-repair", publishState });
-
-            if (publishState === "form") {
-              const hardSubmitAfterRepairContext = await hardSubmitFormInContext(formContext);
-              let hardSubmitAfterRepairPage = null;
-              if (formContext !== page) {
-                hardSubmitAfterRepairPage = await hardSubmitFormInContext(page);
-              }
-              appendPublishTrace({
-                step: "publish-hard-submit-after-server-error-repair",
-                formContext: hardSubmitAfterRepairContext,
-                pageContext: hardSubmitAfterRepairPage
-              });
-              if (hardSubmitAfterRepairContext?.submitted || hardSubmitAfterRepairPage?.submitted) {
-                await humanPause(240, 480);
-                publishState = await waitForPublishState(page, defaultTimeout);
-                appendPublishTrace({
-                  step: "publish-state-after-hard-submit-server-error-repair",
-                  publishState
-                });
-              }
+            error: "",
+            extra: {
+              url: page.url(),
+              errorsBefore: errors,
+              serverErrorRepair
             }
-          }
+          });
+        }
+
+        if (needsResubmit) {
+          await tryResubmitAfterRepair("abschicken-repair");
+        } else {
+          appendPublishTrace({ step: "publish-form-abschicken-no-retry" });
         }
       }
 
