@@ -1134,6 +1134,71 @@ app.get("/api/messages", async (req, res) => {
   }
 });
 
+app.get("/api/messages/image", async (req, res) => {
+  try {
+    const rawUrl = String(req.query.url || "").trim();
+    if (!rawUrl) {
+      res.status(400).send("Image URL is required");
+      return;
+    }
+    if (rawUrl.length > 2048) {
+      res.status(400).send("Image URL is too long");
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(rawUrl);
+    } catch (error) {
+      res.status(400).send("Invalid image URL");
+      return;
+    }
+
+    const protocol = String(parsed.protocol || "").toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") {
+      res.status(400).send("Unsupported image URL protocol");
+      return;
+    }
+
+    const hostname = String(parsed.hostname || "").toLowerCase();
+    const isKleinanzeigenHost = hostname === "kleinanzeigen.de"
+      || hostname.endsWith(".kleinanzeigen.de");
+    if (!isKleinanzeigenHost) {
+      res.status(403).send("Image host is not allowed");
+      return;
+    }
+
+    const upstream = await fetch(parsed.toString(), {
+      redirect: "follow",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Referer": "https://www.kleinanzeigen.de/"
+      }
+    });
+
+    if (!upstream.ok) {
+      res.status(upstream.status).send(`Image fetch failed: ${upstream.status}`);
+      return;
+    }
+
+    const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+    if (!contentType.startsWith("image/")) {
+      res.status(415).send("Upstream resource is not an image");
+      return;
+    }
+
+    const cacheControl = String(upstream.headers.get("cache-control") || "").trim();
+    const payload = Buffer.from(await upstream.arrayBuffer());
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", cacheControl || "public, max-age=900");
+    res.send(payload);
+  } catch (error) {
+    res.status(502).send(`Image proxy failed: ${error.message}`);
+  }
+});
+
 app.get("/api/messages/thread", async (req, res) => {
   try {
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;

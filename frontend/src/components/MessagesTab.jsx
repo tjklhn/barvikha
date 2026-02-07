@@ -35,7 +35,17 @@ const normalizePreviewImageUrl = (value) => {
   }
 };
 
-const getMessagePreviewImage = (message) => {
+const toMessageImageSrc = (value) => {
+  const normalized = normalizePreviewImageUrl(value);
+  if (!normalized) return "";
+  if (normalized.startsWith("/api/messages/image?")) return normalized;
+  if (/^https?:\/\//i.test(normalized)) {
+    return `/api/messages/image?url=${encodeURIComponent(normalized)}`;
+  }
+  return normalized;
+};
+
+const getRawMessagePreviewImage = (message) => {
   if (!message || typeof message !== "object") return "";
   const candidates = [
     message.adImage,
@@ -57,6 +67,10 @@ const getMessagePreviewImage = (message) => {
   return "";
 };
 
+const getMessagePreviewImage = (message) => toMessageImageSrc(getRawMessagePreviewImage(message));
+
+const hasMessagePreviewImage = (message) => Boolean(getRawMessagePreviewImage(message));
+
 const MessagesTab = () => {
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
@@ -67,6 +81,7 @@ const MessagesTab = () => {
   const [error, setError] = useState(null);
   const [isMobileView, setIsMobileView] = useState(() => detectMobileView());
   const chatScrollRef = useRef(null);
+  const previewHydrationInFlight = useRef(new Set());
 
   useEffect(() => {
     loadMessages();
@@ -88,6 +103,56 @@ const MessagesTab = () => {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
+  const hydrateMissingPreviewImages = async (list) => {
+    if (!Array.isArray(list) || !list.length) return;
+
+    const candidates = list
+      .filter((item) => item && !hasMessagePreviewImage(item))
+      .slice(0, 10);
+
+    for (const item of candidates) {
+      const key = String(item.conversationId || item.conversationUrl || item.id || "");
+      if (!key || previewHydrationInFlight.current.has(key)) continue;
+      previewHydrationInFlight.current.add(key);
+
+      try {
+        const params = new URLSearchParams();
+        if (item.accountId != null) params.set("accountId", String(item.accountId));
+        if (item.conversationId) params.set("conversationId", String(item.conversationId));
+        if (item.conversationUrl) params.set("conversationUrl", String(item.conversationUrl));
+        if (!item.conversationId && !item.conversationUrl) {
+          if (item.sender) params.set("participant", String(item.sender));
+          if (item.adTitle) params.set("adTitle", String(item.adTitle));
+        }
+        if (!params.get("accountId")) continue;
+
+        const data = await apiFetchJson(`/api/messages/thread?${params.toString()}`);
+        const adImage = normalizePreviewImageUrl(data?.adImage);
+        if (!adImage) continue;
+
+        setMessages((prev) => prev.map((msg) => {
+          const sameConversation = (
+            (item.conversationId && msg.conversationId && String(item.conversationId) === String(msg.conversationId))
+            || (item.conversationUrl && msg.conversationUrl && String(item.conversationUrl) === String(msg.conversationUrl))
+            || String(msg.id) === String(item.id)
+          );
+          if (!sameConversation) return msg;
+          return {
+            ...msg,
+            adImage,
+            adTitle: data?.adTitle || msg.adTitle,
+            conversationId: data?.conversationId || msg.conversationId,
+            conversationUrl: data?.conversationUrl || msg.conversationUrl
+          };
+        }));
+      } catch (error) {
+        console.error("Не удалось догрузить превью диалога:", error);
+      } finally {
+        previewHydrationInFlight.current.delete(key);
+      }
+    }
+  };
+
   const loadMessages = async () => {
     setLoading(true);
     setError(null);
@@ -106,6 +171,7 @@ const MessagesTab = () => {
         deduped.push(item);
       }
       setMessages(deduped);
+      hydrateMissingPreviewImages(deduped);
     } catch (err) {
       console.error("Ошибка загрузки сообщений:", err);
       setError(err.message || "Не удалось загрузить сообщения");
@@ -254,15 +320,27 @@ const MessagesTab = () => {
       }
       const data = await apiFetchJson(`/api/messages/thread?${params.toString()}`);
       if (data.success) {
+        const adImage = normalizePreviewImageUrl(data.adImage || message.adImage);
         const updated = {
           ...message,
           adTitle: data.adTitle || message.adTitle,
-          adImage: data.adImage || message.adImage,
+          adImage,
           sender: message.sender || data.participant || "",
           messages: data.messages || [],
           conversationId: data.conversationId || message.conversationId,
           conversationUrl: data.conversationUrl || message.conversationUrl
         };
+        setMessages((prev) => prev.map((msg) => (
+          String(msg.id) === String(message.id)
+            ? {
+              ...msg,
+              adTitle: updated.adTitle,
+              adImage: updated.adImage,
+              conversationId: updated.conversationId,
+              conversationUrl: updated.conversationUrl
+            }
+            : msg
+        )));
         setSelectedMessage(updated);
       }
     } catch (err) {
@@ -282,6 +360,7 @@ const MessagesTab = () => {
   const unreadCount = messages.filter(m => m.unread).length;
   const showConversationList = !isMobileView || !selectedMessage;
   const showChatPanel = !isMobileView || Boolean(selectedMessage);
+  const selectedPreviewImage = selectedMessage ? getMessagePreviewImage(selectedMessage) : "";
 
   // Spinner SVG for loading states
   const Spinner = ({ size = 20, color = "#7dd3fc" }) => (
@@ -509,7 +588,8 @@ const MessagesTab = () => {
               </div>
             ) : (
               messages.map((message) => {
-                const previewImage = getMessagePreviewImage(message);
+                const rawPreviewImage = getRawMessagePreviewImage(message);
+                const previewImage = toMessageImageSrc(rawPreviewImage);
                 return (
                 <div
                   key={message.id}
@@ -561,8 +641,14 @@ const MessagesTab = () => {
                         loading="lazy"
                         referrerPolicy="no-referrer"
                         onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                          const fallbackNode = e.currentTarget.nextElementSibling;
+                          const imageNode = e.currentTarget;
+                          if (rawPreviewImage && imageNode.dataset.retryDirect !== "1") {
+                            imageNode.dataset.retryDirect = "1";
+                            imageNode.src = rawPreviewImage;
+                            return;
+                          }
+                          imageNode.style.display = "none";
+                          const fallbackNode = imageNode.nextElementSibling;
                           if (fallbackNode) fallbackNode.style.display = "flex";
                         }}
                       />
@@ -724,12 +810,21 @@ const MessagesTab = () => {
                       alignItems: "center",
                       justifyContent: "center"
                     }}>
-                      {selectedMessage.adImage ? (
+                      {selectedPreviewImage ? (
                         <img
-                          src={selectedMessage.adImage}
+                          src={selectedPreviewImage}
                           alt=""
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                          onError={(e) => { e.target.style.display = "none"; }}
+                          onError={(e) => {
+                            const imageNode = e.currentTarget;
+                            const rawImage = getRawMessagePreviewImage(selectedMessage);
+                            if (rawImage && imageNode.dataset.retryDirect !== "1") {
+                              imageNode.dataset.retryDirect = "1";
+                              imageNode.src = rawImage;
+                              return;
+                            }
+                            imageNode.style.display = "none";
+                          }}
                         />
                       ) : (
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="1.5">
