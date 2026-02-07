@@ -1660,6 +1660,109 @@ const clickSubmitButton = async (page, contexts = []) => {
   return false;
 };
 
+const getSubmitCandidatesInContext = async (context) => {
+  try {
+    return await context.evaluate(() => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
+      const textMatches = (value) => {
+        const text = normalize(value).toLowerCase();
+        if (!text) return false;
+        return (
+          text.includes("anzeige aufgeben")
+          || text.includes("anzeige veroffentlichen")
+          || text.includes("anzeige veröffentlichen")
+          || text.includes("veroffentlichen")
+          || text.includes("veröffentlichen")
+          || text.includes("weiter zur veroffentlichung")
+          || text.includes("weiter zur veröffentlichung")
+        );
+      };
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const nodes = Array.from(
+        document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a')
+      );
+      const items = [];
+      for (const node of nodes) {
+        const label = normalize(
+          node.innerText ||
+          node.textContent ||
+          node.value ||
+          node.getAttribute("aria-label") ||
+          node.getAttribute("title")
+        );
+        if (!textMatches(label)) continue;
+        const rect = node.getBoundingClientRect();
+        items.push({
+          label: label.slice(0, 180),
+          tag: (node.tagName || "").toLowerCase(),
+          type: String(node.getAttribute("type") || "").toLowerCase(),
+          id: String(node.id || "").slice(0, 120),
+          className: String(node.className || "").slice(0, 180),
+          disabled: Boolean(node.disabled),
+          ariaDisabled: node.getAttribute("aria-disabled") === "true",
+          visible: isVisible(node),
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+          name: String(node.getAttribute("name") || "").slice(0, 120),
+          formAction: String(node.getAttribute("formaction") || "").slice(0, 240)
+        });
+        if (items.length >= 40) break;
+      }
+      return {
+        url: window.location.href,
+        title: document.title || "",
+        count: items.length,
+        items
+      };
+    });
+  } catch (error) {
+    return {
+      url: "",
+      title: "",
+      count: 0,
+      items: [],
+      error: error?.message || String(error)
+    };
+  }
+};
+
+const collectSubmitCandidatesDebug = async (page, contexts = []) => {
+  const queue = [];
+  const pushUnique = (ctx) => {
+    if (!ctx || queue.includes(ctx)) return;
+    queue.push(ctx);
+  };
+  contexts.forEach(pushUnique);
+  pushUnique(page);
+  page.frames().forEach(pushUnique);
+
+  const snapshots = [];
+  for (const context of queue) {
+    const snapshot = await getSubmitCandidatesInContext(context);
+    let contextUrl = "";
+    try {
+      contextUrl = typeof context.url === "function" ? context.url() : "";
+    } catch (error) {
+      contextUrl = "";
+    }
+    snapshots.push({
+      contextType: context === page ? "page" : "frame",
+      contextUrl,
+      ...snapshot
+    });
+  }
+  return snapshots;
+};
+
 const waitForPublishState = async (page, timeout) => {
   try {
     const handle = await page.waitForFunction(
@@ -5256,6 +5359,22 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       }
       await sleep(1000);
       const initialUrl = page.url();
+      const submitCandidatesBeforeClick = await collectSubmitCandidatesDebug(page, [formContext]);
+      await dumpPublishDebug(page, {
+        accountLabel,
+        step: "before-submit-click",
+        error: "",
+        extra: {
+          url: page.url(),
+          submitReady,
+          submitCandidates: submitCandidatesBeforeClick
+        }
+      });
+      appendPublishTrace({
+        step: "before-submit-click-dumped",
+        submitCandidateContexts: submitCandidatesBeforeClick.length,
+        submitCandidateTotal: submitCandidatesBeforeClick.reduce((sum, item) => sum + Number(item?.count || 0), 0)
+      });
 
       // Если "Direkt kaufen" всё ещё не выбран - возвращаем ошибку, чтобы не зависать
       try {
@@ -5313,11 +5432,16 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       const submitClicked = await clickSubmitButton(page, [formContext]);
 
       if (!submitClicked) {
+        const submitCandidatesAfterMiss = await collectSubmitCandidatesDebug(page, [formContext]);
         await dumpPublishDebug(page, {
           accountLabel,
           step: "submit-not-found",
           error: "submit-button-missing",
-          extra: { url: page.url() }
+          extra: {
+            url: page.url(),
+            submitReady,
+            submitCandidates: submitCandidatesAfterMiss
+          }
         });
         appendPublishTrace({ step: "submit-not-found" });
         return {
@@ -5372,6 +5496,16 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         } catch (error) {
           // ignore terms
         }
+        const previewSubmitCandidates = await collectSubmitCandidatesDebug(page, [previewContext || page]);
+        await dumpPublishDebug(page, {
+          accountLabel,
+          step: "preview-before-submit-click",
+          error: "",
+          extra: {
+            url: page.url(),
+            previewSubmitCandidates
+          }
+        });
         const clickedPreview = await clickSubmitButton(page, [previewContext || page]);
         if (!clickedPreview) {
           await clickSubmitButton(page, [page]);
