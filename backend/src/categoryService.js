@@ -1,8 +1,11 @@
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const ProxyAgent = require("proxy-agent");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const proxyChain = require("proxy-chain");
+const { buildProxyUrl, buildProxyServer } = require("./cookieUtils");
 
 puppeteer.use(StealthPlugin());
 
@@ -34,6 +37,33 @@ const DEBUG_CATEGORIES = process.env.KL_DEBUG_CATEGORIES === "1";
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
+
+const buildAxiosConfig = ({ proxy, headers = {}, timeout = 20000 } = {}) => {
+  const config = {
+    headers,
+    timeout,
+    validateStatus: (status) => status >= 200 && status < 400
+  };
+  const proxyUrl = buildProxyUrl(proxy);
+  if (proxyUrl) {
+    let agent = null;
+    if (typeof ProxyAgent === "function") {
+      try {
+        agent = new ProxyAgent(proxyUrl);
+      } catch (error) {
+        agent = ProxyAgent(proxyUrl);
+      }
+    } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
+      agent = new ProxyAgent.ProxyAgent(proxyUrl);
+    }
+    if (agent) {
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+      config.proxy = false;
+    }
+  }
+  return config;
+};
 
 const slugify = (value) =>
   String(value || "")
@@ -673,16 +703,22 @@ const parseCategoriesFromPage = async (page, url) => {
   });
 };
 
-const fetchCategoriesFromPage = async () => {
+const fetchCategoriesFromPage = async ({ proxy } = {}) => {
+  if (!proxy) {
+    return [];
+  }
   try {
-    const response = await axios.get("https://www.kleinanzeigen.de/s-kategorien.html", {
-      headers: {
+    const response = await axios.get(
+      "https://www.kleinanzeigen.de/s-kategorien.html",
+      buildAxiosConfig({
+        proxy,
+        headers: {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"
-      },
-      timeout: 20000,
-      validateStatus: (status) => status >= 200 && status < 400
-    });
+        },
+        timeout: 20000
+      })
+    );
     const htmlCategories = parseCategoriesFromHtml(response.data);
     if (htmlCategories.length) {
       return htmlCategories;
@@ -691,9 +727,28 @@ const fetchCategoriesFromPage = async () => {
     // fallback to puppeteer below
   }
 
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  if (!proxyServer || !proxyUrl) {
+    return [];
+  }
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl = "";
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
   const browser = await puppeteer.launch({
     headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"],
+    args: launchArgs,
     timeout: PUPPETEER_LAUNCH_TIMEOUT,
     protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
@@ -702,6 +757,12 @@ const fetchCategoriesFromPage = async () => {
     const page = await browser.newPage();
     page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
     page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
     await page.setExtraHTTPHeaders({ "Accept-Language": "de-DE,de;q=0.9,en;q=0.8" });
 
     let loaded = false;
@@ -738,6 +799,9 @@ const fetchCategoriesFromPage = async () => {
     return Array.isArray(categories) ? categories : [];
   } finally {
     await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
   }
 };
 
@@ -886,7 +950,8 @@ const extractCategoryChildrenFromListingHtml = (html, targetId = "") => {
   return parseCategoryLinksFromBlock(lastList, targetId);
 };
 
-const fetchCategoryChildrenFromListing = async ({ id, url }) => {
+const fetchCategoryChildrenFromListing = async ({ id, url, proxy } = {}) => {
+  if (!proxy) return [];
   let targetId = id && /^\d+$/.test(String(id)) ? String(id) : "";
   const targetUrl = url ? normalizeHref(url) : (targetId ? buildCategoryUrl(targetId) : "");
   if (!targetId && targetUrl) {
@@ -894,14 +959,17 @@ const fetchCategoryChildrenFromListing = async ({ id, url }) => {
   }
   if (!targetUrl) return [];
   try {
-    const response = await axios.get(targetUrl, {
-      headers: {
+    const response = await axios.get(
+      targetUrl,
+      buildAxiosConfig({
+        proxy,
+        headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"
-      },
-      timeout: 15000,
-      validateStatus: (status) => status >= 200 && status < 400
-    });
+        },
+        timeout: 15000
+      })
+    );
     if (!response?.data) return [];
     const children = extractCategoryChildrenFromListingHtml(String(response.data || ""), targetId);
     if (DEBUG_CATEGORIES) {
@@ -946,9 +1014,12 @@ const buildFallbackCategories = () =>
     children: []
   }));
 
-const fetchCategories = async () => {
+const fetchCategories = async ({ proxy } = {}) => {
   try {
-    const rawCategories = await fetchCategoriesFromPage();
+    if (!proxy) {
+      return buildStaticCategoryTree();
+    }
+    const rawCategories = await fetchCategoriesFromPage({ proxy });
     const normalized = normalizeCategoryTree(rawCategories);
     if (!normalized.length || normalized.length < 8) {
       throw new Error("Список категорий выглядит неполным");
@@ -959,7 +1030,7 @@ const fetchCategories = async () => {
   }
 };
 
-const getCategoryChildren = async ({ id, url }) => {
+const getCategoryChildren = async ({ id, url, proxy } = {}) => {
   const targetId = id ? String(id) : "";
   const targetUrl = url ? String(url) : "";
   const targetIdFromUrl = !targetId && targetUrl ? extractIdFromUrl(targetUrl) : "";
@@ -990,16 +1061,22 @@ const getCategoryChildren = async ({ id, url }) => {
   };
 
   try {
-    let data = await getCategories({ forceRefresh: false });
+    let data = await getCategories({ forceRefresh: false, proxy });
     let node = findNode(data?.categories || []);
-    if (!node) {
-      data = await getCategories({ forceRefresh: true });
+    if (!node && proxy) {
+      data = await getCategories({ forceRefresh: true, proxy });
       node = findNode(data?.categories || []);
     }
     if (node && Array.isArray(node.children) && node.children.length) return node.children || [];
     const fallbackUrl = node?.url || targetUrl || (targetId ? buildCategoryUrl(targetId) : "");
-    const fetchedChildren = await fetchCategoryChildrenFromListing({ id: targetId || targetIdFromUrl, url: fallbackUrl });
-    if (fetchedChildren.length) return fetchedChildren;
+    if (proxy) {
+      const fetchedChildren = await fetchCategoryChildrenFromListing({
+        id: targetId || targetIdFromUrl,
+        url: fallbackUrl,
+        proxy
+      });
+      if (fetchedChildren.length) return fetchedChildren;
+    }
   } catch (error) {
     // ignore and fallback below
   }
@@ -1010,22 +1087,36 @@ const getCategoryChildren = async ({ id, url }) => {
     return node?.children || [];
   }
 
-  if (targetId || targetUrl) {
+  if ((targetId || targetUrl) && proxy) {
     const fallbackUrl = targetUrl || (targetId ? buildCategoryUrl(targetId) : "");
-    const fetchedChildren = await fetchCategoryChildrenFromListing({ id: targetId || targetIdFromUrl, url: fallbackUrl });
+    const fetchedChildren = await fetchCategoryChildrenFromListing({
+      id: targetId || targetIdFromUrl,
+      url: fallbackUrl,
+      proxy
+    });
     if (fetchedChildren.length) return fetchedChildren;
   }
 
   return [];
 };
 
-const getCategories = async ({ forceRefresh = false } = {}) => {
+const getCategories = async ({ forceRefresh = false, proxy } = {}) => {
   const cache = readCache();
   if (!forceRefresh && cache && isCacheFresh(cache) && isCacheComplete(cache)) {
     return cache;
   }
 
-  const categories = await fetchCategories();
+  if (!proxy) {
+    if (cache && Array.isArray(cache.categories) && cache.categories.length) {
+      return cache;
+    }
+    return {
+      updatedAt: new Date().toISOString(),
+      categories: buildStaticCategoryTree()
+    };
+  }
+
+  const categories = await fetchCategories({ proxy });
   const payload = {
     updatedAt: new Date().toISOString(),
     categories

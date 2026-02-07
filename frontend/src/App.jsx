@@ -516,7 +516,11 @@ function App() {
   const loadCategories = async (forceRefresh = false) => {
     setLoadingCategories(true);
     try {
-      const data = await apiFetchJson(`/api/categories${forceRefresh ? "?refresh=true" : ""}`);
+      const params = new URLSearchParams();
+      if (forceRefresh) params.set("refresh", "true");
+      if (newAd.accountId) params.set("accountId", String(newAd.accountId));
+      const query = params.toString();
+      const data = await apiFetchJson(`/api/categories${query ? `?${query}` : ""}`);
       const items = Array.isArray(data?.categories) ? data.categories : [];
       setCategories(items);
       setCategoriesUpdatedAt(data?.updatedAt || null);

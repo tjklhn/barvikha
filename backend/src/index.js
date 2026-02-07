@@ -1,6 +1,7 @@
 ﻿const express = require("express");
 const cors = require("cors");
 const proxyChecker = require("./proxyChecker");
+const axios = require("axios");
 const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
@@ -754,8 +755,6 @@ const requireAccessToken = (req, res, next) => {
   if (req.method === "OPTIONS") return next();
   if (!req.path.startsWith("/api")) return next();
   if (req.path.startsWith("/api/auth/")) return next();
-  // Message preview images are requested by <img>, without custom auth headers.
-  if (req.path.startsWith("/api/messages/image")) return next();
 
   const token = extractAccessToken(req);
   const status = getSubscriptionTokenStatus(token);
@@ -1192,8 +1191,13 @@ app.get("/api/messages", async (req, res) => {
 app.get("/api/messages/image", async (req, res) => {
   try {
     const rawUrl = String(req.query.url || "").trim();
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
     if (!rawUrl) {
       res.status(400).send("Image URL is required");
+      return;
+    }
+    if (!accountId) {
+      res.status(400).send("Account is required for image loading");
       return;
     }
     if (rawUrl.length > 2048) {
@@ -1222,6 +1226,11 @@ app.get("/api/messages/image", async (req, res) => {
       res.status(403).send("Image host is not allowed");
       return;
     }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+    const proxy = requireAccountProxy(account, res, "загрузки изображения", getOwnerContext(req));
+    if (!proxy) return;
 
     const isProdAdsImage = parsed.hostname.toLowerCase() === "img.kleinanzeigen.de"
       && parsed.pathname.startsWith("/api/v1/prod-ads/images/");
@@ -1257,28 +1266,37 @@ app.get("/api/messages/image", async (req, res) => {
 
     let lastStatus = 502;
     let lastErrorMessage = "Image fetch failed";
+    const axiosConfig = proxyChecker.buildAxiosConfig(proxy, 20000);
+    axiosConfig.headers = { ...axiosConfig.headers, ...requestHeaders };
+    axiosConfig.responseType = "arraybuffer";
+    axiosConfig.maxRedirects = 5;
+    axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
 
     for (const candidateUrl of candidates) {
-      const upstream = await fetch(candidateUrl, {
-        redirect: "follow",
-        headers: requestHeaders
-      });
-
-      if (!upstream.ok) {
-        lastStatus = upstream.status;
-        lastErrorMessage = `Image fetch failed: ${upstream.status}`;
+      let upstream;
+      try {
+        upstream = await axios.get(candidateUrl, axiosConfig);
+      } catch (error) {
+        lastStatus = 502;
+        lastErrorMessage = `Image fetch failed: ${error.message || "network error"}`;
         continue;
       }
 
-      const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+      if (!upstream || upstream.status < 200 || upstream.status >= 300) {
+        lastStatus = upstream?.status || 502;
+        lastErrorMessage = `Image fetch failed: ${upstream?.status || "network error"}`;
+        continue;
+      }
+
+      const contentType = String(upstream.headers?.["content-type"] || "").toLowerCase();
       if (!contentType.startsWith("image/")) {
         lastStatus = 415;
         lastErrorMessage = "Upstream resource is not an image";
         continue;
       }
 
-      const cacheControl = String(upstream.headers.get("cache-control") || "").trim();
-      const payload = Buffer.from(await upstream.arrayBuffer());
+      const cacheControl = String(upstream.headers?.["cache-control"] || "").trim();
+      const payload = Buffer.isBuffer(upstream.data) ? upstream.data : Buffer.from(upstream.data || "");
 
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", cacheControl || "public, max-age=900");
@@ -1389,7 +1407,20 @@ app.get("/api/proxies", (req, res) => {
 app.get("/api/categories", async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === "true";
-    const data = await getCategories({ forceRefresh });
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    let selectedProxy = null;
+    if (accountId) {
+      const account = getAccountForRequest(accountId, req, res);
+      if (!account) return;
+      const ownerContext = getOwnerContext(req);
+      if (account.proxyId) {
+        const proxy = findProxyById(account.proxyId);
+        if (proxy && isOwnerMatch(proxy, ownerContext)) {
+          selectedProxy = proxy;
+        }
+      }
+    }
+    const data = await getCategories({ forceRefresh, proxy: selectedProxy });
     res.json(data);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -1408,6 +1439,10 @@ app.get("/api/categories/children", async (req, res) => {
     if (accountId && !requestAccount) {
       return;
     }
+    const scopedProxies = filterByOwner(proxies, ownerContext);
+    const selectedProxy = requestAccount?.proxyId
+      ? scopedProxies.find((item) => isSameEntityId(item?.id, requestAccount.proxyId))
+      : null;
     const cacheKey = buildCategoryChildrenCacheKey({ id, url });
     if (!forceRefresh && cacheKey) {
       const cachedEntry = getCachedCategoryChildrenEntry(cacheKey);
@@ -1420,7 +1455,7 @@ app.get("/api/categories/children", async (req, res) => {
         return;
       }
     }
-    let children = await getCategoryChildren({ id, url });
+    let children = await getCategoryChildren({ id, url, proxy: selectedProxy });
     if (process.env.KL_DEBUG_CATEGORIES === "1") {
       console.log(`[categories/children] request id=${id} url=${url} accountId=${accountId} initialChildren=${children.length}`);
     }
@@ -1457,7 +1492,6 @@ app.get("/api/categories/children", async (req, res) => {
       return;
     }
 
-    const scopedProxies = filterByOwner(proxies, ownerContext);
     if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
       if (process.env.KL_DEBUG_CATEGORIES === "1") {
         console.log("[categories/children] proxy missing, skip puppeteer fallback");
@@ -1471,7 +1505,7 @@ app.get("/api/categories/children", async (req, res) => {
     }
 
     const resolveCategoryPath = async () => {
-      const data = await getCategories({ forceRefresh: false }).catch(() => null);
+      const data = await getCategories({ forceRefresh: false, proxy: selectedProxy }).catch(() => null);
       const categories = data?.categories || [];
       const targetId = id || "";
       const targetUrl = url || "";
@@ -1496,10 +1530,6 @@ app.get("/api/categories/children", async (req, res) => {
 
       return walk(categories) || [];
     };
-
-    const selectedProxy = account.proxyId
-      ? scopedProxies.find((item) => isSameEntityId(item?.id, account.proxyId))
-      : null;
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");

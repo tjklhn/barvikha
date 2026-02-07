@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { apiFetchJson } from "../api";
+import { apiFetchJson, getAccessToken } from "../api";
 import { MessageIcon } from "./Icons";
 
 const detectMobileView = () => {
@@ -56,12 +56,25 @@ const normalizePreviewImageUrl = (value) => {
   }
 };
 
-const toMessageImageSrc = (value) => {
+const toMessageImageSrc = (value, accountId) => {
   const normalized = normalizePreviewImageUrl(value);
   if (!normalized) return "";
-  if (normalized.startsWith("/api/messages/image?")) return normalized;
+  const accountToken = accountId !== undefined && accountId !== null && String(accountId).trim()
+    ? String(accountId).trim()
+    : "";
+  const accessToken = getAccessToken();
+  if (normalized.startsWith("/api/messages/image?")) {
+    if (!accountToken || !accessToken) return "";
+    const separator = normalized.includes("?") ? "&" : "?";
+    return `${normalized}${separator}accountId=${encodeURIComponent(accountToken)}&accessToken=${encodeURIComponent(accessToken)}`;
+  }
   if (/^https?:\/\//i.test(normalized)) {
-    return `/api/messages/image?url=${encodeURIComponent(normalized)}`;
+    if (!accountToken || !accessToken) return "";
+    const params = new URLSearchParams();
+    params.set("url", normalized);
+    params.set("accountId", accountToken);
+    params.set("accessToken", accessToken);
+    return `/api/messages/image?${params.toString()}`;
   }
   return normalized;
 };
@@ -88,7 +101,8 @@ const getRawMessagePreviewImage = (message) => {
   return "";
 };
 
-const getMessagePreviewImage = (message) => toMessageImageSrc(getRawMessagePreviewImage(message));
+const getMessagePreviewImage = (message) =>
+  toMessageImageSrc(getRawMessagePreviewImage(message), message?.accountId);
 
 const hasMessagePreviewImage = (message) => Boolean(getRawMessagePreviewImage(message));
 
@@ -610,7 +624,7 @@ const MessagesTab = () => {
             ) : (
               messages.map((message) => {
                 const rawPreviewImage = getRawMessagePreviewImage(message);
-                const previewImage = toMessageImageSrc(rawPreviewImage);
+                const previewImage = toMessageImageSrc(rawPreviewImage, message?.accountId);
                 return (
                 <div
                   key={message.id}
