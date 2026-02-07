@@ -1103,7 +1103,8 @@ const MessagesTab = () => {
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
                               text: String(messageItem.text || ""),
-                              to: "ru"
+                              to: "ru",
+                              accountId: selectedMessage?.accountId
                             })
                           });
                           setTranslationByMessageId((prev) => ({

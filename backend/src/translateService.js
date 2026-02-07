@@ -1,5 +1,7 @@
 const crypto = require("crypto");
 const axios = require("axios");
+const ProxyAgent = require("proxy-agent");
+const { buildProxyUrl } = require("./cookieUtils");
 
 const DEFAULT_AZURE_ENDPOINT = "https://api.cognitive.microsofttranslator.com";
 const DEFAULT_DEEPL_FREE_ENDPOINT = "https://api-free.deepl.com/v2/translate";
@@ -67,6 +69,33 @@ const createCacheKey = ({ text, to, from }) =>
 
 const translationsCache = new Map();
 
+const buildAxiosConfig = ({ proxy, headers = {}, timeout = 12000, validateStatus } = {}) => {
+  const config = {
+    headers,
+    timeout,
+    validateStatus: validateStatus || ((status) => status >= 200 && status < 500)
+  };
+  const proxyUrl = buildProxyUrl(proxy);
+  if (proxyUrl) {
+    let agent = null;
+    if (typeof ProxyAgent === "function") {
+      try {
+        agent = new ProxyAgent(proxyUrl);
+      } catch (error) {
+        agent = ProxyAgent(proxyUrl);
+      }
+    } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
+      agent = new ProxyAgent.ProxyAgent(proxyUrl);
+    }
+    if (agent) {
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+      config.proxy = false;
+    }
+  }
+  return config;
+};
+
 const cleanupCache = (ttlMs) => {
   const now = Date.now();
   for (const [key, entry] of translationsCache.entries()) {
@@ -87,7 +116,7 @@ const getCacheTtlMs = () => {
   return Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : DEFAULT_CACHE_TTL_MS;
 };
 
-const translateViaAzure = async ({ text, to, from }) => {
+const translateViaAzure = async ({ text, to, from, proxy }) => {
   const target = normalizeLang(to) || "ru";
   const source = normalizeLang(from);
   const { key, region, endpoint } = getAzureTranslatorConfig();
@@ -102,7 +131,8 @@ const translateViaAzure = async ({ text, to, from }) => {
   const response = await axios.post(
     url,
     [{ text }],
-    {
+    buildAxiosConfig({
+      proxy,
       timeout: 12000,
       headers: {
         "Content-Type": "application/json",
@@ -110,7 +140,7 @@ const translateViaAzure = async ({ text, to, from }) => {
         "Ocp-Apim-Subscription-Region": region
       },
       validateStatus: (status) => status >= 200 && status < 500
-    }
+    })
   );
 
   if (!response || response.status < 200 || response.status >= 300) {
@@ -140,7 +170,7 @@ const translateViaAzure = async ({ text, to, from }) => {
   };
 };
 
-const translateViaDeepL = async ({ text, to, from }) => {
+const translateViaDeepL = async ({ text, to, from, proxy }) => {
   const target = toDeepLLang(to || "ru") || "RU";
   const source = from ? toDeepLLang(from) : "";
   const { key, endpoint } = getDeepLConfig();
@@ -160,14 +190,15 @@ const translateViaDeepL = async ({ text, to, from }) => {
   const response = await axios.post(
     endpoint,
     params.toString(),
-    {
+    buildAxiosConfig({
+      proxy,
       timeout: 12000,
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         Authorization: `DeepL-Auth-Key ${key}`
       },
       validateStatus: (status) => status >= 200 && status < 500
-    }
+    })
   );
 
   if (!response || response.status < 200 || response.status >= 300) {
@@ -198,7 +229,7 @@ const translateViaDeepL = async ({ text, to, from }) => {
   };
 };
 
-const translateText = async ({ text, to = "ru", from = "" } = {}) => {
+const translateText = async ({ text, to = "ru", from = "", proxy } = {}) => {
   const sourceText = String(text || "").trim();
   if (!sourceText) {
     const error = new Error("Text is required");
@@ -233,9 +264,9 @@ const translateText = async ({ text, to = "ru", from = "" } = {}) => {
 
   let translatedResult;
   if (provider === "deepl") {
-    translatedResult = await translateViaDeepL({ text: sourceText, to: target, from: source });
+    translatedResult = await translateViaDeepL({ text: sourceText, to: target, from: source, proxy });
   } else if (provider === "azure") {
-    translatedResult = await translateViaAzure({ text: sourceText, to: target, from: source });
+    translatedResult = await translateViaAzure({ text: sourceText, to: target, from: source, proxy });
   } else {
     const error = new Error("Translator is not configured");
     error.code = "NOT_CONFIGURED";
