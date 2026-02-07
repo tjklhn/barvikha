@@ -14,7 +14,7 @@ const DEBUG_PUBLISH = process.env.KL_DEBUG_PUBLISH === "1";
 let publishDebugOverride = false;
 const isPublishDebugEnabled = () => DEBUG_PUBLISH || publishDebugOverride;
 const CATEGORY_SELECTION_NEW_PAGE = process.env.KL_CATEGORY_SELECTION_NEW_PAGE === "1";
-const PUBLISH_FLOW_VERSION = "2026-02-07-v3";
+const PUBLISH_FLOW_VERSION = "2026-02-07-v4";
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
@@ -1493,6 +1493,88 @@ const clickSubmitButtonInContext = async (context, options = {}) => {
     "Verbindlich einstellen"
   ];
 
+  const clickBestSubmitCandidate = async (texts, { requireSubmitLike = false } = {}) => {
+    const handle = await context.evaluateHandle((variants, strictSubmitLike) => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const needles = Array.isArray(variants) ? variants.map(normalize).filter(Boolean) : [];
+      if (!needles.length) return null;
+
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const nodes = Array.from(
+        document.querySelectorAll('button, input[type="submit"], input[type="button"], [role="button"], a')
+      );
+      let best = null;
+      let bestScore = Number.NEGATIVE_INFINITY;
+
+      for (const node of nodes) {
+        const text = normalize(
+          node.innerText ||
+          node.textContent ||
+          node.value ||
+          node.getAttribute("aria-label") ||
+          node.getAttribute("title")
+        );
+        if (!text) continue;
+        if (!needles.some((needle) => text.includes(needle))) continue;
+        if (text.includes("entwurf") || text.includes("draft")) continue;
+        if (node.disabled) continue;
+        if (node.getAttribute("aria-disabled") === "true") continue;
+        if (node.classList.contains("disabled")) continue;
+        if (!isVisible(node)) continue;
+
+        const tag = String(node.tagName || "").toLowerCase();
+        const type = String(node.getAttribute("type") || "").toLowerCase();
+        const form = node.form || node.closest("form");
+        const inForm = Boolean(form);
+        const formId = String((form && form.id) || "").toLowerCase();
+        const formAction = String((form && form.getAttribute("action")) || "").toLowerCase();
+        const isSubmitLike = type === "submit" || tag === "button";
+        if (strictSubmitLike && !isSubmitLike && !inForm) continue;
+
+        const rect = node.getBoundingClientRect();
+        let score = 0;
+        if (isSubmitLike) score += 120;
+        if (inForm) score += 70;
+        if (formId.includes("postad") || formId.includes("anzeige")) score += 40;
+        if (formAction.includes("postad") || formAction.includes("anzeige")) score += 40;
+        if (text.includes("anzeige aufgeben")) score += 60;
+        if (text.includes("veröffentlichen") || text.includes("veroeffentlichen")) score += 40;
+        score += Math.min(45, Math.max(0, Math.round(rect.y / 40)));
+        score += Math.min(20, Math.max(0, Math.round(rect.height / 6)));
+
+        if (score > bestScore) {
+          bestScore = score;
+          best = node;
+        }
+      }
+
+      return best || null;
+    }, texts, requireSubmitLike);
+
+    const element = handle.asElement();
+    if (!element) {
+      await handle.dispose();
+      return false;
+    }
+    try {
+      await scrollIntoView(element);
+      return await safeClick(element);
+    } finally {
+      try {
+        await element.dispose();
+      } catch (error) {
+        // ignore dispose errors
+      }
+    }
+  };
+
   const findVisibleClickable = async (text) => {
     const handle = await context.evaluateHandle((targetText) => {
       const normalize = (value) => (value || "").replace(/\s+/g, " ").trim();
@@ -1571,6 +1653,10 @@ const clickSubmitButtonInContext = async (context, options = {}) => {
     return false;
   };
 
+  if (await clickBestSubmitCandidate(primaryTexts, { requireSubmitLike: true })) {
+    return true;
+  }
+
   if (await clickWithTexts(primaryTexts)) {
     return true;
   }
@@ -1583,6 +1669,10 @@ const clickSubmitButtonInContext = async (context, options = {}) => {
         return true;
       }
     }
+  }
+
+  if (allowFallback && await clickBestSubmitCandidate(fallbackTexts, { requireSubmitLike: false })) {
+    return true;
   }
 
   if (allowFallback && await clickWithTexts(fallbackTexts)) {
@@ -1706,6 +1796,42 @@ const forceSubmitFormInContext = async (context) => {
     return {
       submitted: false,
       reason: error?.message || "force-submit-error"
+    };
+  }
+};
+
+const hardSubmitFormInContext = async (context) => {
+  try {
+    return await context.evaluate(() => {
+      const forms = Array.from(document.querySelectorAll("form"));
+      if (!forms.length) {
+        return { submitted: false, reason: "form-not-found" };
+      }
+
+      const candidates = forms.filter((form) => {
+        const action = String(form.getAttribute("action") || "").toLowerCase();
+        const id = String(form.id || "").toLowerCase();
+        return action.includes("anzeige") || id.includes("postad") || id.includes("anzeige");
+      });
+      const target = candidates.find((form) =>
+        Boolean(form.querySelector('button[type="submit"], input[type="submit"]'))
+      ) || candidates[0] || forms[0];
+      if (!target) {
+        return { submitted: false, reason: "target-form-not-found" };
+      }
+
+      target.submit();
+      return {
+        submitted: true,
+        via: "native-submit",
+        formId: String(target.id || ""),
+        action: String(target.getAttribute("action") || "")
+      };
+    });
+  } catch (error) {
+    return {
+      submitted: false,
+      reason: error?.message || "hard-submit-error"
     };
   }
 };
@@ -5959,6 +6085,35 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           appendPublishTrace({ step: "publish-state-after-invalid-repair", publishState });
         }
       }
+      if (publishState === "form") {
+        const hardSubmitContextResult = await hardSubmitFormInContext(formContext);
+        let hardSubmitPageResult = null;
+        if (formContext !== page) {
+          hardSubmitPageResult = await hardSubmitFormInContext(page);
+        }
+        appendPublishTrace({
+          step: "publish-hard-submit",
+          formContext: hardSubmitContextResult,
+          pageContext: hardSubmitPageResult
+        });
+        if (hardSubmitContextResult?.submitted || hardSubmitPageResult?.submitted) {
+          await humanPause(240, 480);
+          publishState = await waitForPublishState(page, defaultTimeout);
+          appendPublishTrace({ step: "publish-state-after-hard-submit", publishState });
+          if (publishState === "form") {
+            await dumpPublishDebug(page, {
+              accountLabel,
+              step: "after-hard-submit-form",
+              error: "still-on-form-after-hard-submit",
+              extra: {
+                url: page.url(),
+                formContext: hardSubmitContextResult,
+                pageContext: hardSubmitPageResult
+              }
+            });
+          }
+        }
+      }
 
       // Если остаемся на форме (p-anzeige-abschicken), повторно выставляем buyNowSelected и пробуем сабмит
       if (publishState === "form" && page.url().includes("p-anzeige-abschicken")) {
@@ -5984,6 +6139,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       if (publishState !== "success") {
         const progressDetected = await waitForPublishProgress(page, initialUrl, 30000);
         const errors = await collectFormErrors(page);
+        const submitCandidatesFinal = await collectSubmitCandidatesDebug(page, [formContext]);
         const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
         const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
         const inferred = await inferPublishSuccess(page);
@@ -6030,6 +6186,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
             errors,
             inferred,
             progressDetected,
+            submitCandidatesFinal,
             url: page.url()
           }
         });
