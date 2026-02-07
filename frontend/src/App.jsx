@@ -239,6 +239,71 @@ function App() {
     }
   };
 
+  const parseMessageDateTime = (dateValue, timeValue) => {
+    const dateText = String(dateValue || "").trim();
+    const timeText = String(timeValue || "").trim();
+    if (!dateText && !timeText) return null;
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateText)) {
+      const parsed = new Date(`${dateText}T${/^\d{1,2}:\d{2}$/.test(timeText) ? timeText : "00:00"}:00`);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    const dotDateMatch = dateText.match(/^(\d{1,2})[./](\d{1,2})[./](\d{2,4})$/);
+    if (dotDateMatch) {
+      const day = Number(dotDateMatch[1]);
+      const month = Number(dotDateMatch[2]) - 1;
+      const year = Number(dotDateMatch[3].length === 2 ? `20${dotDateMatch[3]}` : dotDateMatch[3]);
+      const parsed = new Date(year, month, day);
+      if (!Number.isNaN(parsed.getTime())) return parsed;
+    }
+
+    const fallback = new Date(`${dateText}${timeText ? ` ${timeText}` : ""}`);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  };
+
+  const dedupeMessageSummaries = (messages = []) => {
+    const seen = new Set();
+    const unique = [];
+    messages.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const key = item.conversationId
+        || item.conversationUrl
+        || item.id
+        || `${item.accountId || ""}|${item.sender || ""}|${item.adTitle || ""}|${item.message || ""}|${item.time || ""}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      unique.push(item);
+    });
+    return unique;
+  };
+
+  const buildMessagesStats = (messages = []) => {
+    const uniqueMessages = dedupeMessageSummaries(messages);
+    const now = new Date();
+    let unread = 0;
+    let today = 0;
+
+    uniqueMessages.forEach((message) => {
+      if (message?.unread) unread += 1;
+      const parsedDate = parseMessageDateTime(message?.date, message?.time);
+      if (!parsedDate) return;
+      if (
+        parsedDate.getFullYear() === now.getFullYear()
+        && parsedDate.getMonth() === now.getMonth()
+        && parsedDate.getDate() === now.getDate()
+      ) {
+        today += 1;
+      }
+    });
+
+    return {
+      total: uniqueMessages.length,
+      today,
+      unread
+    };
+  };
+
   const validateToken = async (tokenValue) => {
     try {
       const response = await apiFetchJson("/api/auth/validate", {
@@ -280,15 +345,21 @@ function App() {
 
   const loadData = async () => {
     try {
-      const [accountsRes, proxiesRes, statsRes] = await Promise.all([
+      const [accountsRes, proxiesRes, statsRes, messagesRes] = await Promise.all([
         apiFetchJson("/api/accounts"),
         apiFetchJson("/api/proxies"),
-        apiFetchJson("/api/stats")
+        apiFetchJson("/api/stats"),
+        apiFetchJson("/api/messages").catch(() => null)
       ]);
 
       setAccounts(accountsRes);
       setProxies(proxiesRes);
-      setStats(statsRes);
+
+      const realMessageStats = Array.isArray(messagesRes) ? buildMessagesStats(messagesRes) : null;
+      setStats({
+        ...statsRes,
+        messages: realMessageStats || statsRes?.messages || { total: 0, today: 0, unread: 0 }
+      });
     } catch (error) {
       handleAuthError(error);
       console.error("Ошибка загрузки данных:", error);
@@ -1891,8 +1962,9 @@ function App() {
                 onClick={() => handleTabSelect(tab.id)}
                 className={`nav-button ${activeTab === tab.id ? 'active' : ''}`}
                 style={{
-                  padding: "12px 20px",
-                  borderRadius: "9999px",
+                  "--tab-color": tab.color,
+                  padding: "12px 18px",
+                  borderRadius: "8px",
                   cursor: "pointer",
                   fontSize: "14px",
                   fontWeight: "700",
@@ -1902,14 +1974,12 @@ function App() {
                   whiteSpace: "nowrap",
                   background: "transparent",
                   border: "none",
-                  boxShadow: activeTab === tab.id
-                    ? "inset 0 -1px 0 rgba(125, 211, 252, 0.95)"
-                    : "none",
+                  boxShadow: "none",
                   color: "#ffffff",
                   WebkitTextFillColor: "#ffffff"
                 }}
               >
-                <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+                <span className="tab-icon" style={{ color: tab.color }}>{tab.icon}</span>
                 {tab.label}
               </button>
             ))}
@@ -1943,6 +2013,7 @@ function App() {
                   onClick={() => handleTabSelect(tab.id)}
                   className={`mobile-nav-item ${activeTab === tab.id ? "active" : ""}`}
                   style={{
+                    "--tab-color": tab.color,
                     width: "100%",
                     display: "flex",
                     alignItems: "center",
@@ -1951,10 +2022,10 @@ function App() {
                     padding: "11px 12px",
                     borderRadius: "12px",
                     border: activeTab === tab.id
-                      ? "1px solid rgba(125, 211, 252, 0.45)"
+                      ? `1px solid ${tab.color}`
                       : "1px solid rgba(148, 163, 184, 0.2)",
                     background: activeTab === tab.id
-                      ? "linear-gradient(135deg, rgba(30,64,175,0.2), rgba(15,23,42,0.9))"
+                      ? "rgba(30, 41, 59, 0.85)"
                       : "rgba(15, 23, 42, 0.55)",
                     color: "#e2e8f0",
                     fontSize: "14px",
@@ -1962,7 +2033,7 @@ function App() {
                     boxShadow: "none"
                   }}
                 >
-                  <span style={{ color: activeTab === tab.id ? "#a78bfa" : tab.color }}>{tab.icon}</span>
+                  <span className="tab-icon" style={{ color: tab.color }}>{tab.icon}</span>
                   {tab.label}
                 </button>
               ))}
