@@ -620,6 +620,46 @@ const adUpload = multer({
   limits: { fileSize: 10 * 1024 * 1024, files: 20 }
 });
 
+const mapAdUploadErrorMessage = (error) => {
+  if (!error) return "Не удалось загрузить файлы объявления";
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return "Файл слишком большой. Максимум 10MB на изображение.";
+    }
+    if (error.code === "LIMIT_FILE_COUNT") {
+      return "Слишком много файлов. Максимум 20 изображений.";
+    }
+    if (error.code === "LIMIT_UNEXPECTED_FILE") {
+      return "Некорректный формат загрузки изображений.";
+    }
+    return error.message || "Ошибка загрузки изображений";
+  }
+  return error.message || "Ошибка загрузки изображений";
+};
+
+const adUploadMiddleware = (req, res, next) => {
+  adUpload.array("images", 20)(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const message = mapAdUploadErrorMessage(error);
+    appendServerLog(getPublishRequestLogPath(), {
+      event: "upload-error",
+      requestId,
+      ip: req.ip,
+      errorCode: error.code || "",
+      error: error.message || String(error)
+    });
+    res.status(error instanceof multer.MulterError ? 400 : 500).json({
+      success: false,
+      error: message,
+      debugId: requestId
+    });
+  });
+};
+
 // Middleware
 const parseOriginList = (value) => String(value || "")
   .split(",")
@@ -3644,7 +3684,7 @@ app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) =
 });
 
 // Маршрут для создания объявления (синхронизация с Kleinanzeigen)
-app.post("/api/ads/create", adUpload.array("images", 20), async (req, res) => {
+app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
   if (req.socket) {
