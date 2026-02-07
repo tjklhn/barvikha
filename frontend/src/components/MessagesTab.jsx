@@ -257,6 +257,52 @@ const MessagesTab = () => {
       return;
     }
 
+    const textToSend = replyText.trim();
+    const now = new Date();
+    const optimisticId = `local-${now.getTime()}-${Math.random().toString(16).slice(2)}`;
+    const optimisticMessage = {
+      id: optimisticId,
+      text: textToSend,
+      date: now.toISOString().slice(0, 10),
+      time: now.toTimeString().slice(0, 5),
+      direction: "outgoing",
+      sender: "Вы",
+      pending: true
+    };
+
+    // Optimistic UI: show message immediately in the thread and conversation list.
+    setReplyText("");
+    setSelectedMessage((prev) => {
+      if (!prev) return prev;
+      const existing = Array.isArray(prev.messages) && prev.messages.length
+        ? prev.messages
+        : prev.message
+          ? [{
+            id: prev.id,
+            text: prev.message,
+            sender: prev.sender,
+            date: prev.date,
+            time: prev.time,
+            direction: "incoming"
+          }]
+          : [];
+      return {
+        ...prev,
+        messages: [...existing, optimisticMessage]
+      };
+    });
+    setMessages((prev) => prev.map((msg) => (
+      msg.id === selectedMessage.id
+        ? {
+          ...msg,
+          message: textToSend,
+          date: optimisticMessage.date,
+          time: optimisticMessage.time,
+          unread: false
+        }
+        : msg
+    )));
+
     setSending(true);
     try {
       const result = await apiFetchJson("/api/messages/send", {
@@ -268,40 +314,81 @@ const MessagesTab = () => {
           conversationUrl: selectedMessage.conversationUrl,
           participant: selectedMessage.sender,
           adTitle: selectedMessage.adTitle,
-          text: replyText
+          text: textToSend
         })
       });
       if (result.success) {
         const resolvedConversationId = result.conversationId || selectedMessage.conversationId;
         const resolvedConversationUrl = result.conversationUrl || selectedMessage.conversationUrl;
-        const latestMessages = result.messages || [];
-        const lastMessage = latestMessages[latestMessages.length - 1];
-        if (lastMessage) {
-          setMessages(prev => prev.map(msg => (
+        const serverMessages = Array.isArray(result.messages) ? result.messages : [];
+        const hasSameOutgoing = serverMessages.some((m) => (
+          String(m?.direction || "").toLowerCase() === "outgoing"
+          && String(m?.text || "") === textToSend
+        ));
+        const nextMessages = serverMessages.length
+          ? (hasSameOutgoing ? serverMessages : [...serverMessages, { ...optimisticMessage, pending: false }])
+          : null;
+
+        if (nextMessages) {
+          const lastMessage = nextMessages[nextMessages.length - 1];
+          setMessages((prev) => prev.map((msg) => (
             msg.id === selectedMessage.id
               ? {
                 ...msg,
-                message: lastMessage.text,
-                date: lastMessage.date,
-                time: lastMessage.time,
+                message: lastMessage?.text || msg.message,
+                date: lastMessage?.date || msg.date,
+                time: lastMessage?.time || msg.time,
+                conversationId: resolvedConversationId || msg.conversationId,
+                conversationUrl: resolvedConversationUrl || msg.conversationUrl
+              }
+              : msg
+          )));
+          setSelectedMessage((prev) => ({
+            ...prev,
+            messages: nextMessages,
+            conversationId: resolvedConversationId,
+            conversationUrl: resolvedConversationUrl
+          }));
+        } else {
+          // Backend may respond without thread messages. Keep optimistic entry and mark it as sent.
+          setSelectedMessage((prev) => {
+            if (!prev) return prev;
+            const updated = Array.isArray(prev.messages) ? prev.messages : [];
+            return {
+              ...prev,
+              messages: updated.map((m) => (m?.id === optimisticId ? { ...m, pending: false } : m)),
+              conversationId: resolvedConversationId,
+              conversationUrl: resolvedConversationUrl
+            };
+          });
+          setMessages((prev) => prev.map((msg) => (
+            msg.id === selectedMessage.id
+              ? {
+                ...msg,
                 conversationId: resolvedConversationId || msg.conversationId,
                 conversationUrl: resolvedConversationUrl || msg.conversationUrl
               }
               : msg
           )));
         }
-        setSelectedMessage(prev => ({
-          ...prev,
-          messages: latestMessages,
-          conversationId: resolvedConversationId,
-          conversationUrl: resolvedConversationUrl
-        }));
-        setReplyText("");
       } else {
+        // Revert optimistic update on logical failure.
+        setSelectedMessage((prev) => {
+          if (!prev) return prev;
+          const updated = Array.isArray(prev.messages) ? prev.messages : [];
+          return { ...prev, messages: updated.filter((m) => m?.id !== optimisticId) };
+        });
+        setReplyText(textToSend);
         alert("Ошибка: " + (result.error || "Не удалось отправить"));
       }
     } catch (err) {
       console.error("Ошибка отправки:", err);
+      setSelectedMessage((prev) => {
+        if (!prev) return prev;
+        const updated = Array.isArray(prev.messages) ? prev.messages : [];
+        return { ...prev, messages: updated.filter((m) => m?.id !== optimisticId) };
+      });
+      setReplyText(textToSend);
       alert("Ошибка при отправке сообщения");
     } finally {
       setSending(false);
@@ -968,6 +1055,7 @@ const MessagesTab = () => {
                   <>
                     {threadMessages.map((messageItem, idx) => {
                       const isOutgoing = messageItem.direction === "outgoing";
+                      const isPending = Boolean(messageItem.pending);
                       return (
                         <div
                           key={messageItem.id || idx}
@@ -1023,7 +1111,7 @@ const MessagesTab = () => {
                                 marginTop: "6px",
                                 textAlign: "right"
                               }}>
-                                {formatMessageDate(
+                                {isPending ? "Отправка..." : formatMessageDate(
                                   messageItem.date || selectedMessage.date,
                                   messageItem.time || selectedMessage.time
                                 )}
