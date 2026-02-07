@@ -25,19 +25,22 @@ const normalizePreviewImageUrl = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
   if (/^data:/i.test(raw)) return "";
+  const normalizeRuleForKleinanzeigen = (parsed) => {
+    const host = String(parsed.hostname || "").toLowerCase();
+    const isProdAdsImage = host === "img.kleinanzeigen.de"
+      && parsed.pathname.startsWith("/api/v1/prod-ads/images/");
+    if (!isProdAdsImage) return parsed;
+    const ruleParam = String(parsed.searchParams.get("rule") || "");
+    const malformedRule = /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam);
+    const validRule = /^\$_[a-z0-9_.-]+$/i.test(ruleParam);
+    if (!validRule || malformedRule) {
+      parsed.searchParams.set("rule", "$_57.JPG");
+    }
+    return parsed;
+  };
   if (/^(https?:)?\/\//i.test(raw)) {
     try {
-      const parsed = new URL(raw.startsWith("//") ? `https:${raw}` : raw);
-      const host = String(parsed.hostname || "").toLowerCase();
-      if (host === "img.kleinanzeigen.de" || host.endsWith(".kleinanzeigen.de")) {
-        const ruleParam = parsed.searchParams.get("rule");
-        if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
-          parsed.searchParams.delete("rule");
-        }
-        if (parsed.search && /\$/.test(parsed.search)) {
-          parsed.search = "";
-        }
-      }
+      const parsed = normalizeRuleForKleinanzeigen(new URL(raw.startsWith("//") ? `https:${raw}` : raw));
       return parsed.href;
     } catch {
       return raw.startsWith("//") ? `https:${raw}` : raw;
@@ -46,17 +49,7 @@ const normalizePreviewImageUrl = (value) => {
   if (/^img\.kleinanzeigen\.de/i.test(raw)) return normalizePreviewImageUrl(`https://${raw}`);
   if (/^\/api\/v1\/prod-ads\/images\//i.test(raw)) return normalizePreviewImageUrl(`https://img.kleinanzeigen.de${raw}`);
   try {
-    const parsed = new URL(raw, "https://www.kleinanzeigen.de");
-    const host = String(parsed.hostname || "").toLowerCase();
-    if (host === "img.kleinanzeigen.de" || host.endsWith(".kleinanzeigen.de")) {
-      const ruleParam = parsed.searchParams.get("rule");
-      if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
-        parsed.searchParams.delete("rule");
-      }
-      if (parsed.search && /\$/.test(parsed.search)) {
-        parsed.search = "";
-      }
-    }
+    const parsed = normalizeRuleForKleinanzeigen(new URL(raw, "https://www.kleinanzeigen.de"));
     return parsed.href;
   } catch {
     return "";
@@ -670,11 +663,6 @@ const MessagesTab = () => {
                         referrerPolicy="no-referrer"
                         onError={(e) => {
                           const imageNode = e.currentTarget;
-                          if (rawPreviewImage && imageNode.dataset.retryDirect !== "1") {
-                            imageNode.dataset.retryDirect = "1";
-                            imageNode.src = rawPreviewImage;
-                            return;
-                          }
                           imageNode.style.display = "none";
                           const fallbackNode = imageNode.nextElementSibling;
                           if (fallbackNode) fallbackNode.style.display = "flex";
@@ -845,12 +833,6 @@ const MessagesTab = () => {
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
                           onError={(e) => {
                             const imageNode = e.currentTarget;
-                            const rawImage = getRawMessagePreviewImage(selectedMessage);
-                            if (rawImage && imageNode.dataset.retryDirect !== "1") {
-                              imageNode.dataset.retryDirect = "1";
-                              imageNode.src = rawImage;
-                              return;
-                            }
                             imageNode.style.display = "none";
                           }}
                         />

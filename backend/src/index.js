@@ -1170,40 +1170,70 @@ app.get("/api/messages/image", async (req, res) => {
       return;
     }
 
-    const ruleParam = parsed.searchParams.get("rule");
-    if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
-      parsed.searchParams.delete("rule");
-    }
-    if (parsed.search && /\$/.test(parsed.search)) {
-      parsed.search = "";
-    }
+    const isProdAdsImage = parsed.hostname.toLowerCase() === "img.kleinanzeigen.de"
+      && parsed.pathname.startsWith("/api/v1/prod-ads/images/");
 
-    const upstream = await fetch(parsed.toString(), {
-      redirect: "follow",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        "Referer": "https://www.kleinanzeigen.de/"
+    const defaultRule = "$_57.JPG";
+    const ruleVariants = [defaultRule, "$_24.JPG", "$_2.JPG", "$_57.AUTO", "$_24.AUTO"];
+    const looksLikeMalformedRule = (rule) => /(imageid|\$\{.*\}|\$_\{.*\})/i.test(String(rule || ""));
+    const isValidRule = (rule) => /^\$_[a-z0-9_.-]+$/i.test(String(rule || ""));
+
+    const baseUrl = new URL(parsed.toString());
+    if (isProdAdsImage) {
+      const currentRule = baseUrl.searchParams.get("rule") || "";
+      if (!isValidRule(currentRule) || looksLikeMalformedRule(currentRule)) {
+        baseUrl.searchParams.set("rule", defaultRule);
       }
-    });
+    }
 
-    if (!upstream.ok) {
-      res.status(upstream.status).send(`Image fetch failed: ${upstream.status}`);
+    const candidates = [baseUrl.toString()];
+    if (isProdAdsImage) {
+      for (const variant of ruleVariants) {
+        const candidate = new URL(baseUrl.toString());
+        candidate.searchParams.set("rule", variant);
+        const href = candidate.toString();
+        if (!candidates.includes(href)) candidates.push(href);
+      }
+    }
+
+    const requestHeaders = {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      "Referer": "https://www.kleinanzeigen.de/"
+    };
+
+    let lastStatus = 502;
+    let lastErrorMessage = "Image fetch failed";
+
+    for (const candidateUrl of candidates) {
+      const upstream = await fetch(candidateUrl, {
+        redirect: "follow",
+        headers: requestHeaders
+      });
+
+      if (!upstream.ok) {
+        lastStatus = upstream.status;
+        lastErrorMessage = `Image fetch failed: ${upstream.status}`;
+        continue;
+      }
+
+      const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+      if (!contentType.startsWith("image/")) {
+        lastStatus = 415;
+        lastErrorMessage = "Upstream resource is not an image";
+        continue;
+      }
+
+      const cacheControl = String(upstream.headers.get("cache-control") || "").trim();
+      const payload = Buffer.from(await upstream.arrayBuffer());
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", cacheControl || "public, max-age=900");
+      res.send(payload);
       return;
     }
 
-    const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
-    if (!contentType.startsWith("image/")) {
-      res.status(415).send("Upstream resource is not an image");
-      return;
-    }
-
-    const cacheControl = String(upstream.headers.get("cache-control") || "").trim();
-    const payload = Buffer.from(await upstream.arrayBuffer());
-
-    res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", cacheControl || "public, max-age=900");
-    res.send(payload);
+    res.status(lastStatus).send(lastErrorMessage);
   } catch (error) {
     res.status(502).send(`Image proxy failed: ${error.message}`);
   }

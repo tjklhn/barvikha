@@ -49,14 +49,16 @@ const normalizeImageUrl = (value, baseUrl = MESSAGE_LIST_URL) => {
   }
   try {
     const url = new URL(src, baseUrl);
-    // Kleinanzeigen sometimes returns template placeholders in `rule`, e.g. `$_{imageId}.JPG`,
-    // which yields HTTP 400 from CDN. Drop such malformed template query params.
-    const ruleParam = url.searchParams.get("rule");
-    if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
-      url.searchParams.delete("rule");
-    }
-    if (url.search && /\$/.test(url.search)) {
-      url.search = "";
+    const host = String(url.hostname || "").toLowerCase();
+    const isProdAdsImage = host === "img.kleinanzeigen.de"
+      && url.pathname.startsWith("/api/v1/prod-ads/images/");
+    if (isProdAdsImage) {
+      const ruleParam = String(url.searchParams.get("rule") || "");
+      const malformedRule = /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam);
+      const validRule = /^\$_[a-z0-9_.-]+$/i.test(ruleParam);
+      if (!validRule || malformedRule) {
+        url.searchParams.set("rule", "$_57.JPG");
+      }
     }
     return url.href;
   } catch (error) {
