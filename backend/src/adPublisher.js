@@ -2988,13 +2988,52 @@ const fillPriceField = async (context, value) => {
   return false;
 };
 
+const escapeSelectorAttrValue = (value) => String(value ?? "")
+  .replace(/\\/g, "\\\\")
+  .replace(/"/g, '\\"');
+
+const buildSelectFieldSelectors = (fieldName) => {
+  const normalized = String(fieldName || "").trim();
+  if (!normalized) return [];
+  const safe = escapeSelectorAttrValue(normalized);
+  return [
+    `select[name="${safe}"]`,
+    `select[id="${safe}"]`
+  ];
+};
+
 const selectOption = async (context, selectors, value) => {
   if (isBlankValue(value)) return false;
   for (const selector of selectors) {
-    const element = await context.$(selector);
-    if (element) {
-      await context.select(selector, value);
+    if (!selector || typeof selector !== "string") continue;
+    let element = null;
+    try {
+      element = await context.$(selector);
+    } catch (error) {
+      // ignore invalid selector syntax and keep trying fallbacks
+      continue;
+    }
+    if (!element) continue;
+    try {
+      await context.select(selector, String(value));
       return true;
+    } catch (error) {
+      // Fallback to direct value set when option exists but select() fails.
+      try {
+        const applied = await element.evaluate((node, targetValue) => {
+          if (!node || node.tagName !== "SELECT") return false;
+          const desired = String(targetValue ?? "");
+          const hasOption = Array.from(node.options || []).some((opt) => String(opt.value) === desired);
+          if (!hasOption) return false;
+          node.value = desired;
+          node.dispatchEvent(new Event("input", { bubbles: true }));
+          node.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        }, value);
+        if (applied) return true;
+      } catch (innerError) {
+        // ignore and continue selector loop
+      }
     }
   }
   return false;
@@ -5338,7 +5377,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           if (isBlankValue(fieldValue)) continue;
           const selectors = [];
           if (fieldName) {
-            selectors.push(`select[name="${fieldName}"]`, `select#${fieldName}`);
+            selectors.push(...buildSelectFieldSelectors(fieldName));
           }
           let applied = false;
           if (selectors.length) {
