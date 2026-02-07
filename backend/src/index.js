@@ -1170,6 +1170,14 @@ app.get("/api/messages/image", async (req, res) => {
       return;
     }
 
+    const ruleParam = parsed.searchParams.get("rule");
+    if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
+      parsed.searchParams.delete("rule");
+    }
+    if (parsed.search && /\$/.test(parsed.search)) {
+      parsed.search = "";
+    }
+
     const upstream = await fetch(parsed.toString(), {
       redirect: "follow",
       headers: {

@@ -25,11 +25,39 @@ const normalizePreviewImageUrl = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
   if (/^data:/i.test(raw)) return "";
-  if (/^(https?:)?\/\//i.test(raw)) return raw.startsWith("//") ? `https:${raw}` : raw;
-  if (/^img\.kleinanzeigen\.de/i.test(raw)) return `https://${raw}`;
-  if (/^\/api\/v1\/prod-ads\/images\//i.test(raw)) return `https://img.kleinanzeigen.de${raw}`;
+  if (/^(https?:)?\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw.startsWith("//") ? `https:${raw}` : raw);
+      const host = String(parsed.hostname || "").toLowerCase();
+      if (host === "img.kleinanzeigen.de" || host.endsWith(".kleinanzeigen.de")) {
+        const ruleParam = parsed.searchParams.get("rule");
+        if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
+          parsed.searchParams.delete("rule");
+        }
+        if (parsed.search && /\$/.test(parsed.search)) {
+          parsed.search = "";
+        }
+      }
+      return parsed.href;
+    } catch {
+      return raw.startsWith("//") ? `https:${raw}` : raw;
+    }
+  }
+  if (/^img\.kleinanzeigen\.de/i.test(raw)) return normalizePreviewImageUrl(`https://${raw}`);
+  if (/^\/api\/v1\/prod-ads\/images\//i.test(raw)) return normalizePreviewImageUrl(`https://img.kleinanzeigen.de${raw}`);
   try {
-    return new URL(raw, "https://www.kleinanzeigen.de").href;
+    const parsed = new URL(raw, "https://www.kleinanzeigen.de");
+    const host = String(parsed.hostname || "").toLowerCase();
+    if (host === "img.kleinanzeigen.de" || host.endsWith(".kleinanzeigen.de")) {
+      const ruleParam = parsed.searchParams.get("rule");
+      if (ruleParam && /(imageid|\$\{.*\}|\$_\{.*\})/i.test(ruleParam)) {
+        parsed.searchParams.delete("rule");
+      }
+      if (parsed.search && /\$/.test(parsed.search)) {
+        parsed.search = "";
+      }
+    }
+    return parsed.href;
   } catch {
     return "";
   }
