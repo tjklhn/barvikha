@@ -5730,6 +5730,15 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       }
       await sleep(1000);
       const initialUrl = page.url();
+      await dumpPublishDebug(page, {
+        accountLabel,
+        step: "before-publish-page",
+        error: "",
+        extra: {
+          url: page.url(),
+          submitReady
+        }
+      });
       const submitCandidatesBeforeClick = await collectSubmitCandidatesDebug(page, [formContext]);
       await dumpPublishDebug(page, {
         accountLabel,
@@ -5824,6 +5833,16 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
 
       let publishState = await waitForPublishState(page, defaultTimeout);
       appendPublishTrace({ step: "publish-state-initial", publishState });
+      if (publishState === "form") {
+        await dumpPublishDebug(page, {
+          accountLabel,
+          step: "after-submit-form",
+          error: "still-on-form-after-submit",
+          extra: {
+            url: page.url()
+          }
+        });
+      }
       if (publishState !== "success" && isGdprPage(page.url())) {
         const accepted = await acceptGdprConsent(page, { timeout: 20000 });
         const redirectTarget = getGdprRedirectTarget(page.url()) || CREATE_AD_URL;
