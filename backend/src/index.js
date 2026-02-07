@@ -38,6 +38,7 @@ const {
   summarizeConversations,
   sendConversationMessage
 } = require("./messageService");
+const { translateText } = require("./translateService");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -1396,6 +1397,37 @@ app.post("/api/messages/send", async (req, res) => {
       return;
     }
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/translate", async (req, res) => {
+  try {
+    const text = req.body?.text ? String(req.body.text) : "";
+    const to = req.body?.to ? String(req.body.to) : "ru";
+    const from = req.body?.from ? String(req.body.from) : "";
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      res.status(400).json({ success: false, error: "Текст обязателен для перевода." });
+      return;
+    }
+    if (trimmed.length > 5000) {
+      res.status(400).json({ success: false, error: "Слишком длинный текст для перевода (макс 5000 символов)." });
+      return;
+    }
+
+    const result = await translateText({ text: trimmed, to, from });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error?.code === "NOT_CONFIGURED") {
+      res.status(500).json({ success: false, error: "Переводчик не настроен на сервере." });
+      return;
+    }
+    if (error?.code === "BAD_REQUEST") {
+      res.status(400).json({ success: false, error: "Некорректный запрос на перевод." });
+      return;
+    }
+    res.status(502).json({ success: false, error: error?.message || "Ошибка перевода" });
   }
 });
 

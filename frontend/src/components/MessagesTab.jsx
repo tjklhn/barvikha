@@ -115,9 +115,11 @@ const MessagesTab = () => {
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState(null);
   const [isMobileView, setIsMobileView] = useState(() => detectMobileView());
+  const [translationByMessageId, setTranslationByMessageId] = useState({});
   const chatScrollRef = useRef(null);
   const previewHydrationInFlight = useRef(new Set());
   const messagesRefreshInFlight = useRef(false);
+  const translateInFlight = useRef(new Set());
 
   useEffect(() => {
     loadMessages();
@@ -519,6 +521,8 @@ const MessagesTab = () => {
         .msg-send-btn:hover:not(:disabled) { background: #16a34a !important; }
         .msg-refresh-btn:hover:not(:disabled) { background: #0284c7 !important; transform: scale(1.02); }
         .msg-refresh-btn:active:not(:disabled) { transform: scale(0.98); }
+        .msg-translate-btn:hover { opacity: 1 !important; transform: translateY(-1px) scale(1.02) !important; }
+        .msg-translate-btn:active { transform: translateY(0px) scale(0.98) !important; }
       `}</style>
 
       <div className="section-header" style={{
@@ -1056,6 +1060,76 @@ const MessagesTab = () => {
                     {threadMessages.map((messageItem, idx) => {
                       const isOutgoing = messageItem.direction === "outgoing";
                       const isPending = Boolean(messageItem.pending);
+                      const messageKey = String(messageItem.id || `idx-${idx}`);
+                      const translation = translationByMessageId[messageKey] || null;
+                      const canTranslate = !isOutgoing && Boolean(String(messageItem.text || "").trim());
+
+                      const toggleTranslate = async () => {
+                        if (!canTranslate) return;
+
+                        // Toggle off when already shown.
+                        if (translation?.shown && translation?.translatedText) {
+                          setTranslationByMessageId((prev) => ({
+                            ...prev,
+                            [messageKey]: { ...prev[messageKey], shown: false }
+                          }));
+                          return;
+                        }
+
+                        // Toggle on when already fetched.
+                        if (translation?.translatedText && !translation?.loading) {
+                          setTranslationByMessageId((prev) => ({
+                            ...prev,
+                            [messageKey]: { ...prev[messageKey], shown: true, error: "" }
+                          }));
+                          return;
+                        }
+
+                        if (translateInFlight.current.has(messageKey)) return;
+                        translateInFlight.current.add(messageKey);
+                        setTranslationByMessageId((prev) => ({
+                          ...prev,
+                          [messageKey]: {
+                            ...prev[messageKey],
+                            loading: true,
+                            shown: true,
+                            error: ""
+                          }
+                        }));
+
+                        try {
+                          const result = await apiFetchJson("/api/translate", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              text: String(messageItem.text || ""),
+                              to: "ru"
+                            })
+                          });
+                          setTranslationByMessageId((prev) => ({
+                            ...prev,
+                            [messageKey]: {
+                              loading: false,
+                              shown: true,
+                              error: "",
+                              translatedText: result?.translatedText || ""
+                            }
+                          }));
+                        } catch (error) {
+                          console.error("Ошибка перевода:", error);
+                          setTranslationByMessageId((prev) => ({
+                            ...prev,
+                            [messageKey]: {
+                              loading: false,
+                              shown: true,
+                              translatedText: "",
+                              error: error?.message || "Не удалось перевести"
+                            }
+                          }));
+                        } finally {
+                          translateInFlight.current.delete(messageKey);
+                        }
+                      };
                       return (
                         <div
                           key={messageItem.id || idx}
@@ -1085,7 +1159,8 @@ const MessagesTab = () => {
 
                             {/* Message bubble */}
                             <div style={{
-                              padding: "10px 14px",
+                              position: "relative",
+                              padding: canTranslate ? "10px 14px 18px 14px" : "10px 14px",
                               borderRadius: isOutgoing ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
                               background: isOutgoing
                                 ? "linear-gradient(135deg, #1a4731, #14532d)"
@@ -1103,6 +1178,63 @@ const MessagesTab = () => {
                               }}>
                                 {messageItem.text}
                               </div>
+
+                              {/* Translate button */}
+                              {canTranslate && (
+                                <button
+                                  type="button"
+                                  className="msg-translate-btn"
+                                  onClick={toggleTranslate}
+                                  title="Перевести на русский"
+                                  style={{
+                                    position: "absolute",
+                                    left: "8px",
+                                    bottom: "6px",
+                                    width: "22px",
+                                    height: "22px",
+                                    borderRadius: "8px",
+                                    border: "1px solid rgba(148,163,184,0.18)",
+                                    background: "rgba(2,6,23,0.25)",
+                                    color: "#94a3b8",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    cursor: "pointer",
+                                    opacity: 0.75,
+                                    transition: "transform 0.12s ease, opacity 0.12s ease, background 0.12s ease"
+                                  }}
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M5 5h6" />
+                                    <path d="M8 5c0 6-3 10-6 12" />
+                                    <path d="M7 13c2 2 4 4 7 6" />
+                                    <path d="M14 19h7" />
+                                    <path d="M17 4l4 15" />
+                                    <path d="M20 19l-3-9-3 9" />
+                                  </svg>
+                                </button>
+                              )}
+
+                              {/* Translation result */}
+                              {translation?.shown && (
+                                <div style={{
+                                  marginTop: "10px",
+                                  paddingTop: "8px",
+                                  borderTop: "1px dashed rgba(148,163,184,0.18)",
+                                  fontSize: "13px",
+                                  lineHeight: "1.45",
+                                  color: translation?.error ? "#fb7185" : "#cbd5e1",
+                                  opacity: 0.95
+                                }}>
+                                  {translation?.loading ? (
+                                    <span style={{ color: "#94a3b8" }}>Перевод...</span>
+                                  ) : translation?.error ? (
+                                    <span>{translation.error}</span>
+                                  ) : (
+                                    <span>{translation.translatedText}</span>
+                                  )}
+                                </div>
+                              )}
 
                               {/* Timestamp */}
                               <div style={{
