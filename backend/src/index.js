@@ -1676,6 +1676,26 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       });
       return;
     }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId
+      });
+      return;
+    }
+    if (error.code === "MESSAGE_ACTION_TIMEOUT") {
+      res.status(504).json({
+        success: false,
+        error: "Действие в сообщениях заняло слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId
+      });
+      return;
+    }
     res.status(500).json({
       success: false,
       error: error?.message || "Не удалось отклонить предложение",
@@ -1822,6 +1842,26 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       res.status(401).json({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId
+      });
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId
+      });
+      return;
+    }
+    if (error.code === "MESSAGE_ACTION_TIMEOUT") {
+      res.status(504).json({
+        success: false,
+        error: "Отправка медиа заняла слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
         debugId
       });
       return;
