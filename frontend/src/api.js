@@ -22,6 +22,7 @@ const API_BASES = resolveApiBases();
 let preferredBaseIndex = 0;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const makeRequestId = () => `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 const isRetryableNetworkError = (error) => {
   if (!error) return false;
@@ -61,11 +62,15 @@ export const apiFetch = async (path, options = {}) => {
   const allowRetry = typeof retry === "boolean" ? retry : (method === "GET" || method === "HEAD");
   const timeoutValue = Number(timeoutMs);
   const shouldTimeout = Number.isFinite(timeoutValue) && timeoutValue > 0;
+  const requestId = String(fetchOptions.requestId || makeRequestId());
 
   const headers = new Headers(fetchOptions.headers || {});
   const token = getAccessToken();
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (!headers.has("X-Client-Request-Id")) {
+    headers.set("X-Client-Request-Id", requestId);
   }
 
   const buildApiUrl = (rawPath, base) => {
@@ -126,8 +131,13 @@ export const apiFetch = async (path, options = {}) => {
         timeoutError.url = url;
         timeoutError.timeoutMs = Math.max(5000, timeoutValue);
         timeoutError.originalError = error;
+        timeoutError.requestId = requestId;
         lastError = timeoutError;
       } else {
+        if (error && typeof error === "object") {
+          error.requestId = requestId;
+          error.url = url;
+        }
         lastError = error;
       }
       const hasAnotherBase = index < uniqueCandidates.length - 1;
@@ -142,7 +152,10 @@ export const apiFetch = async (path, options = {}) => {
     await sleep(350);
     return apiFetch(path, { ...options, _retried: true });
   }
-  throw lastError || new Error("Failed to fetch");
+  if (lastError) throw lastError;
+  const genericError = new Error("Failed to fetch");
+  genericError.requestId = requestId;
+  throw genericError;
 };
 
 export const apiFetchJson = async (path, options = {}) => {

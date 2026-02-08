@@ -1560,11 +1560,13 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     req.socket.setTimeout(0);
   }
   const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const clientRequestId = String(req.get("x-client-request-id") || "");
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
     route: "offer-decline",
     debugId,
+    clientRequestId,
     ip: req.ip,
     bodyKeys: Object.keys(req.body || {})
   });
@@ -1581,6 +1583,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       event: "response-close",
       route: "offer-decline",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt,
       statusCode: res.statusCode,
       writableEnded: res.writableEnded,
@@ -1595,6 +1598,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       event: "payload",
       route: "offer-decline",
       debugId,
+      clientRequestId,
       accountId,
       hasConversationId: Boolean(conversationId),
       hasConversationUrl: Boolean(conversationUrl)
@@ -1647,6 +1651,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       event: "service-success",
       route: "offer-decline",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
@@ -1656,13 +1661,15 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       messages: result.messages || [],
       conversationId: result.conversationId || conversationId,
       conversationUrl: result.conversationUrl || conversationUrl,
-      debugId
+      debugId,
+      requestId: clientRequestId
     });
   } catch (error) {
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-error",
       route: "offer-decline",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt,
       code: error?.code || "",
       message: error?.message || String(error),
@@ -1672,7 +1679,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       res.status(401).json({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
-        debugId
+        debugId,
+        requestId: clientRequestId
       });
       return;
     }
@@ -1682,7 +1690,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
         error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
-        debugId
+        debugId,
+        requestId: clientRequestId
       });
       return;
     }
@@ -1692,7 +1701,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
         error: "Действие в сообщениях заняло слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
-        debugId
+        debugId,
+        requestId: clientRequestId
       });
       return;
     }
@@ -1700,7 +1710,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       success: false,
       error: error?.message || "Не удалось отклонить предложение",
       code: error?.code || "",
-      debugId
+      debugId,
+      requestId: clientRequestId
     });
   }
 });
@@ -1712,11 +1723,13 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     req.socket.setTimeout(0);
   }
   const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const clientRequestId = String(req.get("x-client-request-id") || "");
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
     route: "send-media",
     debugId,
+    clientRequestId,
     ip: req.ip,
     bodyKeys: Object.keys(req.body || {})
   });
@@ -1733,6 +1746,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       event: "response-close",
       route: "send-media",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt,
       statusCode: res.statusCode,
       writableEnded: res.writableEnded,
@@ -1750,6 +1764,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       event: "payload",
       route: "send-media",
       debugId,
+      clientRequestId,
       accountId,
       hasConversationId: Boolean(conversationId),
       hasConversationUrl: Boolean(conversationUrl),
@@ -1816,6 +1831,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       event: "service-success",
       route: "send-media",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
@@ -1825,13 +1841,15 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       messages: result.messages || [],
       conversationId: result.conversationId || conversationId,
       conversationUrl: result.conversationUrl || conversationUrl,
-      debugId
+      debugId,
+      requestId: clientRequestId
     });
   } catch (error) {
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-error",
       route: "send-media",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt,
       code: error?.code || "",
       message: error?.message || String(error),
@@ -1842,7 +1860,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       res.status(401).json({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
-        debugId
+        debugId,
+        requestId: clientRequestId
       });
       return;
     }
@@ -1852,7 +1871,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
         error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
-        debugId
+        debugId,
+        requestId: clientRequestId
       });
       return;
     }
@@ -1862,7 +1882,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
         error: "Отправка медиа заняла слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
-        debugId
+        debugId,
+        requestId: clientRequestId
       });
       return;
     }
@@ -1871,7 +1892,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       error: error?.message || "Не удалось отправить фото",
       code: error?.code || "",
       details: error?.details || "",
-      debugId
+      debugId,
+      requestId: clientRequestId
     });
   }
 });

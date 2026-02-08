@@ -463,8 +463,12 @@ const MessagesTab = () => {
   const formatRequestError = (error, fallbackText) => {
     const baseMessage = String(error?.message || fallbackText || "Ошибка запроса").trim();
     const debugId = error?.data?.debugId || error?.debugId || "";
+    const requestId = error?.data?.requestId || error?.requestId || "";
     if (debugId) {
       return `${baseMessage} (debugId: ${debugId})`;
+    }
+    if (requestId) {
+      return `${baseMessage} (requestId: ${requestId})`;
     }
     return baseMessage;
   };
