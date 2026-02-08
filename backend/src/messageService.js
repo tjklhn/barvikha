@@ -170,6 +170,136 @@ const pickParticipantFromApi = (conversation, userId) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 240) => sleep(Math.floor(min + Math.random() * (max - min)));
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
+const randomInt = (min, max) => {
+  const low = Math.floor(Math.min(min, max));
+  const high = Math.floor(Math.max(min, max));
+  return low + Math.floor(Math.random() * (high - low + 1));
+};
+const randomChance = (value = 0.5) => Math.random() < Math.max(0, Math.min(1, Number(value) || 0));
+
+const typeTextHumanLike = async (
+  inputHandle,
+  text,
+  { minDelay = 22, maxDelay = 68, pauseChance = 0.08 } = {}
+) => {
+  if (!inputHandle) return;
+  const content = String(text || "");
+  if (!content) return;
+  for (const char of content) {
+    await inputHandle.type(char, { delay: randomInt(minDelay, maxDelay) });
+    if (randomChance(pauseChance)) {
+      await sleep(randomInt(40, 180));
+    }
+  }
+};
+
+const performHumanLikePageActivity = async (
+  page,
+  { intensity = "light", force = false } = {}
+) => {
+  if (!page) return;
+  const profile = {
+    light: {
+      runChance: 0.45,
+      minMoves: 1,
+      maxMoves: 2,
+      scrollChance: 0.35,
+      reverseScrollChance: 0.2,
+      pauseMin: 70,
+      pauseMax: 150
+    },
+    medium: {
+      runChance: 0.7,
+      minMoves: 2,
+      maxMoves: 4,
+      scrollChance: 0.5,
+      reverseScrollChance: 0.35,
+      pauseMin: 90,
+      pauseMax: 220
+    },
+    strong: {
+      runChance: 0.9,
+      minMoves: 3,
+      maxMoves: 5,
+      scrollChance: 0.65,
+      reverseScrollChance: 0.45,
+      pauseMin: 110,
+      pauseMax: 280
+    }
+  };
+  const cfg = profile[intensity] || profile.light;
+  if (!force && !randomChance(cfg.runChance)) return;
+
+  try {
+    const viewport = page.viewport() || { width: 1365, height: 860 };
+    const width = Math.max(220, Number(viewport.width) || 1365);
+    const height = Math.max(220, Number(viewport.height) || 860);
+
+    let x = randomInt(20, Math.max(40, width - 20));
+    let y = randomInt(20, Math.max(40, height - 20));
+    await page.mouse.move(x, y, { steps: randomInt(8, 18) }).catch(() => {});
+
+    const moves = randomInt(cfg.minMoves, cfg.maxMoves);
+    for (let i = 0; i < moves; i += 1) {
+      const nextX = randomInt(16, Math.max(32, width - 16));
+      const nextY = randomInt(16, Math.max(32, height - 16));
+      await page.mouse.move(nextX, nextY, { steps: randomInt(10, 26) }).catch(() => {});
+      x = nextX;
+      y = nextY;
+      await sleep(randomInt(30, 120));
+    }
+
+    if (randomChance(cfg.scrollChance)) {
+      const delta = randomInt(60, 420);
+      await page.mouse.wheel({ deltaY: delta }).catch(async () => {
+        await page.evaluate((value) => window.scrollBy({ top: value, behavior: "auto" }), delta).catch(() => {});
+      });
+      await sleep(randomInt(45, 160));
+      if (randomChance(cfg.reverseScrollChance)) {
+        const reverse = -randomInt(20, Math.min(260, Math.max(40, delta)));
+        await page.mouse.wheel({ deltaY: reverse }).catch(async () => {
+          await page.evaluate((value) => window.scrollBy({ top: value, behavior: "auto" }), reverse).catch(() => {});
+        });
+      }
+    }
+
+    await humanPause(cfg.pauseMin, cfg.pauseMax);
+  } catch (error) {
+    // do not fail workflow if human-like jitter failed
+  }
+};
+
+const clickHandleHumanLike = async (page, handle) => {
+  if (!page || !handle) return false;
+
+  await handle.evaluate((node) => {
+    node.scrollIntoView({ block: "center", inline: "center" });
+  }).catch(() => {});
+  await humanPause(60, 140);
+
+  const box = await handle.boundingBox().catch(() => null);
+  if (box && box.width > 0 && box.height > 0) {
+    const x = box.x + box.width * (0.2 + Math.random() * 0.6);
+    const y = box.y + box.height * (0.2 + Math.random() * 0.6);
+    try {
+      await page.mouse.move(x, y, { steps: randomInt(10, 24) });
+      await sleep(randomInt(24, 90));
+      await page.mouse.down();
+      await sleep(randomInt(22, 86));
+      await page.mouse.up();
+      return true;
+    } catch (error) {
+      // fallback to element click
+    }
+  }
+
+  try {
+    await handle.click({ delay: randomInt(32, 110) });
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
 
 const decodeJwtPayload = (token) => {
   if (!token) return null;
@@ -485,13 +615,97 @@ const findFirstVisibleHandle = async (context, selectors) => {
   return null;
 };
 
-const findMessageInputHandle = async (page, selectors) => {
-  const contexts = [page, ...page.frames()];
-  for (const context of contexts) {
-    const handle = await findFirstVisibleHandle(context, selectors);
-    if (handle) return { handle, context };
+const getPageContexts = (page) => {
+  if (!page) return [];
+  let frames = [];
+  try {
+    frames = typeof page.frames === "function" ? page.frames() : [];
+  } catch (error) {
+    frames = [];
   }
+  return [page, ...frames];
+};
+
+const findFirstHandleInAnyContext = async (
+  page,
+  selectors,
+  { timeout = 0, requireVisible = false } = {}
+) => {
+  const startedAt = Date.now();
+  while (true) {
+    const contexts = getPageContexts(page);
+    for (const context of contexts) {
+      if (requireVisible) {
+        const handle = await findFirstVisibleHandle(context, selectors);
+        if (handle) return { handle, context };
+        continue;
+      }
+
+      for (const selector of selectors) {
+        let handle = null;
+        try {
+          handle = await context.$(selector);
+        } catch (error) {
+          handle = null;
+        }
+        if (handle) return { handle, context };
+      }
+    }
+
+    if (!timeout || Date.now() - startedAt >= timeout) break;
+    await sleep(220);
+  }
+
   return null;
+};
+
+const isInteractiveButtonHandle = async (handle) => {
+  if (!handle) return false;
+  return handle.evaluate((node) => {
+    if (!node) return false;
+    const style = window.getComputedStyle(node);
+    if (!style) return false;
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+      return false;
+    }
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (node.hasAttribute("disabled")) return false;
+    if (node.getAttribute("aria-disabled") === "true") return false;
+    if (node.getAttribute("aria-busy") === "true") return false;
+    return true;
+  }).catch(() => false);
+};
+
+const clickFirstInteractiveHandleInAnyContext = async (page, selectors, { timeout = 15000 } = {}) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const contexts = getPageContexts(page);
+    for (const context of contexts) {
+      for (const selector of selectors) {
+        let handles = [];
+        try {
+          handles = await context.$$(selector);
+        } catch (error) {
+          handles = [];
+        }
+        for (const handle of handles) {
+          if (!(await isInteractiveButtonHandle(handle))) continue;
+          if (randomChance(0.35)) {
+            await performHumanLikePageActivity(page, { intensity: "light" });
+          }
+          const clicked = await clickHandleHumanLike(page, handle);
+          if (clicked) return true;
+        }
+      }
+    }
+    await sleep(180);
+  }
+  return false;
+};
+
+const findMessageInputHandle = async (page, selectors) => {
+  return findFirstHandleInAnyContext(page, selectors, { requireVisible: true });
 };
 
 const getDeviceProfile = (account) => {
@@ -619,53 +833,232 @@ const mapApiThreadMessage = (message, index, participantName) => {
   return mapped;
 };
 
-const clickVisibleButtonByText = async (page, needle, { timeout = 15000, preferDialog = false } = {}) => {
+const clickVisibleButtonByText = async (
+  page,
+  needle,
+  {
+    timeout = 15000,
+    preferDialog = false,
+    preferTopLayer = false,
+    requireInSelectors = [],
+    excludeInSelectors = []
+  } = {}
+) => {
   if (!page) return false;
-  const wanted = normalizeMatch(needle);
-  if (!wanted) return false;
+  const wanted = (Array.isArray(needle) ? needle : [needle])
+    .map((value) => normalizeMatch(value))
+    .filter(Boolean);
+  if (!wanted.length) return false;
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeout) {
-    const clicked = await page.evaluate((label, useDialog) => {
-      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-      const isVisible = (node) => {
-        if (!node) return false;
-        const style = window.getComputedStyle(node);
-        if (!style) return false;
-        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      };
+    const clicked = await page.evaluate(
+      (labels, useDialog, useTopLayer, includeSelectors, skipSelectors) => {
+        const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const parseZ = (value) => {
+          const parsed = Number.parseInt(String(value || "").replace(/[^\d-]+/g, ""), 10);
+          return Number.isFinite(parsed) ? parsed : 0;
+        };
+        const isVisible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          if (!style) return false;
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+            return false;
+          }
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const matchesAnySelector = (node, selectors) => {
+          if (!node || !Array.isArray(selectors) || !selectors.length) return false;
+          return selectors.some((selector) => {
+            if (!selector) return false;
+            try {
+              return Boolean(node.closest(selector));
+            } catch (error) {
+              return false;
+            }
+          });
+        };
+        const getLayerZIndex = (node) => {
+          let max = 0;
+          let current = node;
+          while (current && current !== document.body) {
+            const style = window.getComputedStyle(current);
+            if (style) {
+              const z = parseZ(style.zIndex);
+              if (z > max) max = z;
+            }
+            current = current.parentElement;
+          }
+          return max;
+        };
+        const isTopHit = (node) => {
+          const rect = node.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+          const centerX = Math.min(window.innerWidth - 1, Math.max(0, rect.left + rect.width / 2));
+          const centerY = Math.min(window.innerHeight - 1, Math.max(0, rect.top + rect.height / 2));
+          const hit = document.elementFromPoint(centerX, centerY);
+          if (!hit) return false;
+          return node === hit || node.contains(hit) || hit.contains(node);
+        };
+        const dialogSelector = "[role='dialog'], [aria-modal='true'], [data-testid*='modal'], [data-testid*='dialog'], [class*='Modal'], [class*='modal'], [class*='Dialog'], [class*='dialog']";
 
-      const collectRoots = () => {
-        if (!useDialog) return [document];
-        const dialogs = Array.from(document.querySelectorAll(
-          "[role='dialog'], [data-testid*='modal'], [class*='Modal'], [class*='modal']"
-        )).filter(isVisible);
-        return dialogs.length ? dialogs : [document];
-      };
+        const collectRoots = () => {
+          if (!useDialog) return [document];
+          const dialogs = Array.from(document.querySelectorAll(dialogSelector)).filter(isVisible);
+          return dialogs.length ? dialogs : [document];
+        };
 
-      const roots = collectRoots();
-      for (const root of roots) {
-        const candidates = Array.from(root.querySelectorAll("button, a, [role='button']"));
-        for (const candidate of candidates) {
-          if (!isVisible(candidate)) continue;
-          if (candidate.hasAttribute("disabled") || candidate.getAttribute("aria-disabled") === "true") continue;
-          const text = normalize(candidate.textContent);
-          if (!text) continue;
-          if (text === label || text.includes(label)) {
-            candidate.click();
-            return true;
+        const roots = collectRoots();
+        let order = 0;
+        const scored = [];
+        for (const root of roots) {
+          const candidates = Array.from(root.querySelectorAll("button, a, [role='button']"));
+          for (const candidate of candidates) {
+            if (!isVisible(candidate)) continue;
+            if (candidate.hasAttribute("disabled") || candidate.getAttribute("aria-disabled") === "true") continue;
+            if (includeSelectors.length && !matchesAnySelector(candidate, includeSelectors)) continue;
+            if (skipSelectors.length && matchesAnySelector(candidate, skipSelectors)) continue;
+            const text = normalize(candidate.textContent || candidate.getAttribute("aria-label") || candidate.getAttribute("title"));
+            if (!text) continue;
+            const matchesLabel = labels.some((label) => text === label || text.includes(label));
+            if (!matchesLabel) continue;
+            const rect = candidate.getBoundingClientRect();
+            scored.push({
+              candidate,
+              inDialog: Boolean(candidate.closest(dialogSelector)),
+              topHit: isTopHit(candidate),
+              zIndex: getLayerZIndex(candidate),
+              order: order += 1,
+              area: rect.width * rect.height
+            });
           }
         }
-      }
-      return false;
-    }, wanted, preferDialog);
+
+        if (!scored.length) return false;
+        scored.sort((a, b) => {
+          if (useDialog && a.inDialog !== b.inDialog) {
+            return Number(b.inDialog) - Number(a.inDialog);
+          }
+          if (useTopLayer && a.topHit !== b.topHit) {
+            return Number(b.topHit) - Number(a.topHit);
+          }
+          if (a.zIndex !== b.zIndex) {
+            return b.zIndex - a.zIndex;
+          }
+          if (useTopLayer && a.order !== b.order) {
+            return b.order - a.order;
+          }
+          if (a.area !== b.area) {
+            return a.area - b.area;
+          }
+          return 0;
+        });
+
+        const target = scored[0]?.candidate;
+        if (!target) return false;
+        try {
+          if (typeof target.focus === "function") target.focus();
+          target.click();
+          return true;
+        } catch (error) {
+          return false;
+        }
+      },
+      wanted,
+      preferDialog,
+      preferTopLayer,
+      requireInSelectors,
+      excludeInSelectors
+    );
 
     if (clicked) return true;
     await sleep(220);
   }
 
+  return false;
+};
+
+const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 12000) => {
+  if (!page) return false;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const contexts = getPageContexts(page);
+    for (const context of contexts) {
+      const ready = await context.evaluate((expected) => {
+        const normalizeExpected = Math.max(1, Number(expected) || 1);
+        const inputSelectors = [
+          "input[data-testid='reply-box-file-input']",
+          "input[type='file'][accept*='image']",
+          "input[type='file']"
+        ];
+        const previewSelectors = [
+          "[data-testid*='attachment'] img",
+          "[class*='Attachment'] img",
+          "[class*='attachment'] img",
+          "[class*='Reply'] img",
+          "[class*='reply'] img"
+        ];
+        const sendSelectors = [
+          "button[data-testid='submit-button']",
+          "button[aria-label*='Senden']",
+          "button[type='submit']"
+        ];
+
+        const fileCount = inputSelectors.reduce((max, selector) => {
+          let current = max;
+          try {
+            const inputs = Array.from(document.querySelectorAll(selector));
+            for (const input of inputs) {
+              const count = Number(input?.files?.length || 0);
+              if (count > current) current = count;
+            }
+          } catch (error) {
+            // ignore invalid selectors
+          }
+          return current;
+        }, 0);
+
+        const previewCount = previewSelectors.reduce((max, selector) => {
+          try {
+            return Math.max(max, document.querySelectorAll(selector).length);
+          } catch (error) {
+            return max;
+          }
+        }, 0);
+
+        const sendReady = sendSelectors.some((selector) => {
+          let buttons = [];
+          try {
+            buttons = Array.from(document.querySelectorAll(selector));
+          } catch (error) {
+            buttons = [];
+          }
+          return buttons.some((button) => {
+            if (!button) return false;
+            const style = window.getComputedStyle(button);
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+              return false;
+            }
+            const rect = button.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            if (button.hasAttribute("disabled")) return false;
+            if (button.getAttribute("aria-disabled") === "true") return false;
+            if (button.getAttribute("aria-busy") === "true") return false;
+            return true;
+          });
+        });
+
+        const hasAttachment = fileCount >= normalizeExpected || previewCount > 0;
+        return Boolean(hasAttachment && sendReady);
+      }, expectedCount).catch(() => false);
+
+      if (ready) return true;
+    }
+    await sleep(220);
+  }
   return false;
 };
 
@@ -1633,10 +2026,12 @@ const fetchConversationListFromWeb = async ({
 
     await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
     await humanPause();
+    await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
     await humanPause(180, 320);
+    await performHumanLikePageActivity(page, { intensity: "medium" });
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -1720,10 +2115,12 @@ const fetchConversationHeaderPreviews = async ({
 
     await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
     await humanPause();
+    await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
     await humanPause(180, 320);
+    await performHumanLikePageActivity(page, { intensity: "medium" });
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -1740,6 +2137,9 @@ const fetchConversationHeaderPreviews = async ({
 
       await page.goto(href, { waitUntil: "domcontentloaded" });
       await humanPause(160, 280);
+      if (randomChance(0.55)) {
+        await performHumanLikePageActivity(page, { intensity: "light" });
+      }
 
       const meta = await parseConversationMetaFromThread(page);
       const resolvedId = conversation.conversationId || extractConversationId(href);
@@ -1929,6 +2329,7 @@ const sendConversationMessage = async ({
 
     await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
     await humanPause();
+    await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     let resolvedConversationId = conversationId;
@@ -1936,6 +2337,7 @@ const sendConversationMessage = async ({
     if (!resolvedConversationId && !resolvedConversationUrl) {
       await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
       await humanPause(120, 240);
+      await performHumanLikePageActivity(page, { intensity: "medium" });
       const conversations = await parseConversationList(page);
       const matched = conversations.find((item) => matchConversation(item, { participant, adTitle }));
       if (matched) {
@@ -1948,6 +2350,7 @@ const sendConversationMessage = async ({
     resolvedConversationUrl = buildConversationUrl(resolvedConversationId, resolvedConversationUrl);
     await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
     await humanPause(120, 240);
+    await performHumanLikePageActivity(page, { intensity: "medium", force: true });
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -1994,7 +2397,7 @@ const sendConversationMessage = async ({
       }
     });
     await inputHandle.focus();
-    await inputHandle.type(text, { delay: 20 });
+    await typeTextHumanLike(inputHandle, text);
 
     const clicked = await inputHandle.evaluate((input) => {
       const root = input.closest("form")
@@ -2297,10 +2700,12 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
 
     await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
     await humanPause();
+    await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
     await humanPause(180, 360);
+    await performHumanLikePageActivity(page, { intensity: "medium" });
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -2328,6 +2733,9 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
 
       await page.goto(href, { waitUntil: "domcontentloaded" });
       await humanPause(120, 240);
+      if (randomChance(0.5)) {
+        await performHumanLikePageActivity(page, { intensity: "light" });
+      }
 
       const messages = await parseMessagesFromThread(page, conversation.participant);
       const meta = await parseConversationMetaFromThread(page);
@@ -2525,6 +2933,7 @@ const fetchThreadMessages = async ({
 
     await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
     await humanPause();
+    await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     let resolvedConversationId = conversationId;
@@ -2532,6 +2941,7 @@ const fetchThreadMessages = async ({
     if (!resolvedConversationId && !resolvedConversationUrl) {
       await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
       await humanPause(120, 240);
+      await performHumanLikePageActivity(page, { intensity: "medium" });
       const conversations = await parseConversationList(page);
       const matched = conversations.find((item) => matchConversation(item, { participant, adTitle }));
       if (matched) {
@@ -2544,6 +2954,7 @@ const fetchThreadMessages = async ({
     resolvedConversationUrl = buildConversationUrl(resolvedConversationId, resolvedConversationUrl);
     await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
     await humanPause(120, 240);
+    await performHumanLikePageActivity(page, { intensity: "medium", force: true });
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -2731,6 +3142,7 @@ const declineConversationOffer = async ({
       await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
     }
     await humanPause();
+    await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
@@ -2739,6 +3151,7 @@ const declineConversationOffer = async ({
       await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
     }
     await humanPause(140, 260);
+    await performHumanLikePageActivity(page, { intensity: "medium", force: true });
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -2746,13 +3159,44 @@ const declineConversationOffer = async ({
       throw error;
     }
 
-    const clicked = await clickVisibleButtonByText(page, "Anfrage ablehnen", { timeout: 20000 });
+    const clicked = await clickVisibleButtonByText(page, "Anfrage ablehnen", {
+      timeout: 20000,
+      requireInSelectors: [
+        "section.PaymentMessageBox",
+        ".PaymentMessageBox",
+        "[data-testid='payment-message-header-extended']"
+      ]
+    });
     if (!clicked) {
-      throw new Error("DECLINE_BUTTON_NOT_FOUND");
+      const fallbackClicked = await clickVisibleButtonByText(page, "Anfrage ablehnen", { timeout: 10000 });
+      if (!fallbackClicked) {
+        throw new Error("DECLINE_BUTTON_NOT_FOUND");
+      }
     }
-    await humanPause(100, 160);
+    await humanPause(140, 220);
+    await performHumanLikePageActivity(page, { intensity: "light" });
 
-    const confirmed = await clickVisibleButtonByText(page, "Anfrage ablehnen", { timeout: 20000, preferDialog: true });
+    const confirmed = await clickVisibleButtonByText(
+      page,
+      [
+        "Anfrage ablehnen",
+        "Angebot ablehnen",
+        "Ja, ablehnen",
+        "Ja ablehnen",
+        "Jetzt ablehnen",
+        "Ablehnen"
+      ],
+      {
+        timeout: 25000,
+        preferDialog: true,
+        preferTopLayer: true,
+        excludeInSelectors: [
+          "section.PaymentMessageBox",
+          ".PaymentMessageBox",
+          "[data-testid='payment-message-header-extended']"
+        ]
+      }
+    );
     if (!confirmed) {
       throw new Error("DECLINE_CONFIRM_NOT_FOUND");
     }
@@ -2903,6 +3347,7 @@ const sendConversationMedia = async ({
         await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
       }
       await humanPause();
+      await performHumanLikePageActivity(page, { intensity: "light" });
       await page.setCookie(...cookies);
       await humanPause();
       await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
@@ -2911,6 +3356,7 @@ const sendConversationMedia = async ({
         await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
       }
       await humanPause(140, 240);
+      await performHumanLikePageActivity(page, { intensity: "medium", force: true });
 
       if (await isAuthFailure(page)) {
         const error = new Error("AUTH_REQUIRED");
@@ -2924,25 +3370,53 @@ const sendConversationMedia = async ({
           "input[type='file'][accept*='image']",
           "input[type='file']"
         ];
-        await waitForDynamicContent(page, fileInputSelectors, 20000);
-        let fileInputHandle = null;
-        for (const selector of fileInputSelectors) {
-          fileInputHandle = await page.$(selector);
-          if (fileInputHandle) break;
-        }
-        if (!fileInputHandle) {
-          throw new Error("MESSAGE_FILE_INPUT_NOT_FOUND");
+        const cameraButtonSelectors = [
+          "button[aria-label*='Bilder hochladen']",
+          "button[data-testid='generic-button-ghost'][aria-label*='Bilder']"
+        ];
+        let uploaded = false;
+
+        const cameraButton = await findFirstHandleInAnyContext(page, cameraButtonSelectors, {
+          timeout: 3500,
+          requireVisible: true
+        });
+        if (cameraButton?.handle) {
+          const chooserPromise = page.waitForFileChooser({ timeout: 4500 }).catch(() => null);
+          await cameraButton.handle.click({ delay: 30 }).catch(() => {});
+          const chooser = await chooserPromise;
+          if (chooser) {
+            await chooser.accept(tempPaths);
+            uploaded = true;
+          }
         }
 
-        await fileInputHandle.evaluate((node) => {
-          node.hidden = false;
-          node.style.display = "block";
-          node.style.visibility = "visible";
-          node.style.opacity = "1";
-        }).catch(() => {});
+        if (!uploaded) {
+          const fileInputResult = await findFirstHandleInAnyContext(page, fileInputSelectors, {
+            timeout: 20000,
+            requireVisible: false
+          });
+          const fileInputHandle = fileInputResult?.handle;
+          if (!fileInputHandle) {
+            throw new Error("MESSAGE_FILE_INPUT_NOT_FOUND");
+          }
 
-        await fileInputHandle.uploadFile(...tempPaths);
-        await humanPause(220, 320);
+          await fileInputHandle.evaluate((node) => {
+            node.hidden = false;
+            node.style.display = "block";
+            node.style.visibility = "visible";
+            node.style.opacity = "1";
+          }).catch(() => {});
+
+          await fileInputHandle.uploadFile(...tempPaths);
+          await fileInputHandle.evaluate((node) => {
+            node.dispatchEvent(new Event("input", { bubbles: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true }));
+          }).catch(() => {});
+        }
+
+        await humanPause(260, 380);
+        await waitForMessageAttachmentReady(page, tempPaths.length, 12000).catch(() => false);
+        await performHumanLikePageActivity(page, { intensity: "light" });
       }
 
       if (trimmedText) {
@@ -2972,7 +3446,10 @@ const sendConversationMedia = async ({
           }
         }).catch(() => {});
         await inputHandle.focus();
-        await inputHandle.type(trimmedText, { delay: 20 });
+        await typeTextHumanLike(inputHandle, trimmedText);
+        if (randomChance(0.3)) {
+          await performHumanLikePageActivity(page, { intensity: "light" });
+        }
       }
 
       const sendSelectors = [
@@ -2981,18 +3458,7 @@ const sendConversationMedia = async ({
         "button[type='submit']"
       ];
       await waitForDynamicContent(page, sendSelectors, 20000);
-      let sendClicked = false;
-      for (const selector of sendSelectors) {
-        try {
-          const handle = await page.$(selector);
-          if (!handle) continue;
-          await handle.click({ delay: 40 });
-          sendClicked = true;
-          break;
-        } catch (error) {
-          // keep trying selectors
-        }
-      }
+      const sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 22000 });
       if (!sendClicked) {
         await page.keyboard.press("Enter");
       }

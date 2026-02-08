@@ -66,16 +66,25 @@ const toMessageImageSrc = (value, accountId) => {
     : "";
   const accessToken = getAccessToken();
   if (normalized.startsWith("/api/messages/image?")) {
-    if (!accountToken || !accessToken) return "";
-    const separator = normalized.includes("?") ? "&" : "?";
-    return `${normalized}${separator}accountId=${encodeURIComponent(accountToken)}&accessToken=${encodeURIComponent(accessToken)}`;
+    let src = normalized;
+    if (accountToken && !/[?&]accountId=/i.test(src)) {
+      const separator = src.includes("?") ? "&" : "?";
+      src = `${src}${separator}accountId=${encodeURIComponent(accountToken)}`;
+    }
+    if (accessToken && !/[?&](accessToken|token)=/i.test(src)) {
+      const separator = src.includes("?") ? "&" : "?";
+      src = `${src}${separator}accessToken=${encodeURIComponent(accessToken)}`;
+    }
+    return src;
   }
   if (/^https?:\/\//i.test(normalized)) {
-    if (!accountToken || !accessToken) return "";
+    if (!accountToken) return normalized;
     const params = new URLSearchParams();
     params.set("url", normalized);
     params.set("accountId", accountToken);
-    params.set("accessToken", accessToken);
+    if (accessToken) {
+      params.set("accessToken", accessToken);
+    }
     return `/api/messages/image?${params.toString()}`;
   }
   return normalized;
@@ -755,7 +764,11 @@ const MessagesTab = () => {
   const unreadCount = messages.filter(m => m.unread).length;
   const showConversationList = !isMobileView || !selectedMessage;
   const showChatPanel = !isMobileView || Boolean(selectedMessage);
-  const selectedPreviewImage = selectedMessage ? getMessagePreviewImage(selectedMessage) : "";
+  const selectedRawPreviewImage = selectedMessage ? getRawMessagePreviewImage(selectedMessage) : "";
+  const selectedPreviewImage = selectedMessage
+    ? toMessageImageSrc(selectedRawPreviewImage, selectedMessage?.accountId)
+    : "";
+  const selectedDirectPreviewImage = normalizePreviewImageUrl(selectedRawPreviewImage);
   const hasReplyPayload = Boolean(replyText.trim()) || replyImages.length > 0;
   const canSendReply = !sending && hasReplyPayload;
 
@@ -989,6 +1002,7 @@ const MessagesTab = () => {
               messages.map((message) => {
                 const rawPreviewImage = getRawMessagePreviewImage(message);
                 const previewImage = toMessageImageSrc(rawPreviewImage, message?.accountId);
+                const directPreviewImage = normalizePreviewImageUrl(rawPreviewImage);
                 return (
                 <div
                   key={message.id}
@@ -1035,12 +1049,22 @@ const MessagesTab = () => {
                     {previewImage ? (
                       <img
                         src={previewImage}
+                        data-direct-src={directPreviewImage || ""}
+                        data-fallback-tried="0"
                         alt=""
                         style={{ width: "100%", height: "100%", objectFit: "cover" }}
                         loading="lazy"
                         referrerPolicy="no-referrer"
                         onError={(e) => {
                           const imageNode = e.currentTarget;
+                          const directSrc = String(imageNode.dataset?.directSrc || "").trim();
+                          const fallbackTried = imageNode.dataset?.fallbackTried === "1";
+                          const currentSrc = String(imageNode.getAttribute("src") || "").trim();
+                          if (!fallbackTried && directSrc && directSrc !== currentSrc) {
+                            imageNode.dataset.fallbackTried = "1";
+                            imageNode.setAttribute("src", directSrc);
+                            return;
+                          }
                           imageNode.style.display = "none";
                           const fallbackNode = imageNode.nextElementSibling;
                           if (fallbackNode) fallbackNode.style.display = "flex";
@@ -1208,10 +1232,20 @@ const MessagesTab = () => {
                       {selectedPreviewImage ? (
                         <img
                           src={selectedPreviewImage}
+                          data-direct-src={selectedDirectPreviewImage || ""}
+                          data-fallback-tried="0"
                           alt=""
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
                           onError={(e) => {
                             const imageNode = e.currentTarget;
+                            const directSrc = String(imageNode.dataset?.directSrc || "").trim();
+                            const fallbackTried = imageNode.dataset?.fallbackTried === "1";
+                            const currentSrc = String(imageNode.getAttribute("src") || "").trim();
+                            if (!fallbackTried && directSrc && directSrc !== currentSrc) {
+                              imageNode.dataset.fallbackTried = "1";
+                              imageNode.setAttribute("src", directSrc);
+                              return;
+                            }
                             imageNode.style.display = "none";
                           }}
                         />
