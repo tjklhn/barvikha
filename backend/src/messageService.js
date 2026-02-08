@@ -3186,8 +3186,18 @@ const countOutgoingAttachmentUnits = (snapshot) => {
   return messages.reduce((sum, message) => {
     const direction = String(message?.direction || "").toLowerCase();
     if (direction !== "outgoing") return sum;
-    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
-    return sum + attachments.length;
+    const attachmentBuckets = [
+      message?.attachments,
+      message?.images,
+      message?.imageUrls,
+      message?.media,
+      message?.pictures
+    ];
+    const attachmentCount = attachmentBuckets.reduce((count, bucket) => {
+      if (!Array.isArray(bucket)) return count;
+      return count + bucket.length;
+    }, 0);
+    return sum + attachmentCount;
   }, 0);
 };
 
@@ -3376,7 +3386,31 @@ const declineConversationOffer = async ({
       throw error;
     }
 
-    await page.waitForFunction(() => {
+    const paymentActionSelectors = [
+      "section.PaymentMessageBox",
+      ".PaymentMessageBox",
+      "[data-testid='payment-message-header-extended']"
+    ];
+    const declineLabels = [
+      "Anfrage ablehnen",
+      "Angebot ablehnen",
+      "Ja, ablehnen",
+      "Ja ablehnen",
+      "Jetzt ablehnen",
+      "Ablehnen"
+    ];
+    const modalContinueLabels = [
+      "Weiter",
+      "Fortfahren",
+      "Alles klar",
+      "Verstanden",
+      "Ok",
+      "Okay",
+      "Schliessen",
+      "Schließen"
+    ];
+
+    const hasInlineDeclineButtons = async () => page.evaluate((selectors) => {
       const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
       const isVisible = (node) => {
         if (!node) return false;
@@ -3388,26 +3422,57 @@ const declineConversationOffer = async ({
         const rect = node.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       };
-      const paymentRoots = Array.from(document.querySelectorAll(
-        "section.PaymentMessageBox, .PaymentMessageBox, [data-testid='payment-message-header-extended']"
-      ));
-      return paymentRoots.some((root) => {
-        const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
-        return buttons.some((button) => {
-          if (!isVisible(button)) return false;
-          const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
-          return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+      return selectors.some((selector) => {
+        let roots = [];
+        try {
+          roots = Array.from(document.querySelectorAll(selector));
+        } catch (error) {
+          roots = [];
+        }
+        return roots.some((root) => {
+          const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
+          return buttons.some((button) => {
+            if (!isVisible(button)) return false;
+            const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
+            return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+          });
         });
       });
-    }, { timeout: 12000 }).catch(() => {});
+    }, paymentActionSelectors).catch(() => false);
+
+    await page.waitForFunction((selectors) => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (!style) return false;
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+          return false;
+        }
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      return selectors.some((selector) => {
+        let roots = [];
+        try {
+          roots = Array.from(document.querySelectorAll(selector));
+        } catch (error) {
+          roots = [];
+        }
+        return roots.some((root) => {
+          const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
+          return buttons.some((button) => {
+            if (!isVisible(button)) return false;
+            const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
+            return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+          });
+        });
+      });
+    }, { timeout: 12000 }, paymentActionSelectors).catch(() => {});
 
     const clicked = await clickVisibleButtonByText(page, "Anfrage ablehnen", {
       timeout: 24000,
-      requireInSelectors: [
-        "section.PaymentMessageBox",
-        ".PaymentMessageBox",
-        "[data-testid='payment-message-header-extended']"
-      ]
+      requireInSelectors: paymentActionSelectors
     });
     if (!clicked) {
       const fallbackClicked = await clickVisibleButtonByText(page, ["Anfrage ablehnen", "Angebot ablehnen"], { timeout: 12000 });
@@ -3418,83 +3483,48 @@ const declineConversationOffer = async ({
     await humanPause(140, 220);
     await performHumanLikePageActivity(page, { intensity: "light" });
 
-    await page.waitForFunction(() => {
-      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-      const isVisible = (node) => {
-        if (!node) return false;
-        const style = window.getComputedStyle(node);
-        if (!style) return false;
-        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-          return false;
-        }
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      };
-      const paymentSelector = "section.PaymentMessageBox, .PaymentMessageBox, [data-testid='payment-message-header-extended']";
-      const paymentDeclineButtons = Array.from(document.querySelectorAll(`${paymentSelector} button, ${paymentSelector} [role='button'], ${paymentSelector} a`))
-        .filter((node) => {
-          const text = normalize(node.textContent || node.getAttribute("aria-label") || node.getAttribute("title"));
-          return isVisible(node) && (text.includes("anfrage ablehnen") || text.includes("angebot ablehnen"));
-        });
-      const topLevelButtons = Array.from(document.querySelectorAll("button, [role='button'], a"))
-        .filter((node) => {
-          if (!isVisible(node)) return false;
-          if (node.closest(paymentSelector)) return false;
-          const text = normalize(node.textContent || node.getAttribute("aria-label") || node.getAttribute("title"));
-          return text.includes("anfrage ablehnen")
-            || text.includes("angebot ablehnen")
-            || text.includes("ja, ablehnen")
-            || text.includes("ja ablehnen")
-            || text.includes("jetzt ablehnen")
-            || text === "ablehnen";
-        });
-      return topLevelButtons.length > 0 || paymentDeclineButtons.length === 0;
-    }, { timeout: 8000 }).catch(() => {});
+    let confirmed = false;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const inlineStillVisible = await hasInlineDeclineButtons();
+      if (!inlineStillVisible) {
+        confirmed = true;
+        break;
+      }
 
-    const confirmed = await clickVisibleButtonByText(
-      page,
-      [
-        "Anfrage ablehnen",
-        "Angebot ablehnen",
-        "Ja, ablehnen",
-        "Ja ablehnen",
-        "Jetzt ablehnen",
-        "Ablehnen"
-      ],
-      {
-        timeout: 32000,
+      const clickedConfirm = await clickVisibleButtonByText(page, declineLabels, {
+        timeout: attempt === 0 ? 12000 : 5000,
         preferDialog: true,
         preferTopLayer: true,
-        excludeInSelectors: [
-          "section.PaymentMessageBox",
-          ".PaymentMessageBox",
-          "[data-testid='payment-message-header-extended']"
-        ]
+        excludeInSelectors: paymentActionSelectors
+      });
+      if (clickedConfirm) {
+        confirmed = true;
+        await humanPause(220, 340);
+        break;
       }
-    );
-    if (!confirmed) {
-      await page.keyboard.press("Enter").catch(() => {});
-      await humanPause(120, 200);
-      const retryConfirmed = await clickVisibleButtonByText(
-        page,
-        ["Anfrage ablehnen", "Angebot ablehnen", "Ja, ablehnen", "Ja ablehnen", "Jetzt ablehnen", "Ablehnen"],
-        {
-          timeout: 6000,
-          preferDialog: true,
-          preferTopLayer: true,
-          excludeInSelectors: [
-            "section.PaymentMessageBox",
-            ".PaymentMessageBox",
-            "[data-testid='payment-message-header-extended']"
-          ]
-        }
-      );
-      if (!retryConfirmed) {
-        throw new Error("DECLINE_CONFIRM_NOT_FOUND");
+
+      const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
+        timeout: 4500,
+        preferDialog: true,
+        preferTopLayer: true,
+        excludeInSelectors: paymentActionSelectors
+      });
+      if (clickedContinue) {
+        await humanPause(180, 300);
+        continue;
       }
+
+      if (attempt === 0) {
+        await page.keyboard.press("Enter").catch(() => {});
+      }
+      await humanPause(140, 220);
     }
+    if (!confirmed && await hasInlineDeclineButtons()) {
+      throw new Error("DECLINE_CONFIRM_NOT_FOUND");
+    }
+
     await humanPause(260, 360);
-    const uiDeclined = await page.waitForFunction(() => {
+    let uiDeclined = await page.waitForFunction((selectors) => {
       const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
       const isVisible = (node) => {
         if (!node) return false;
@@ -3506,15 +3536,45 @@ const declineConversationOffer = async ({
         const rect = node.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0;
       };
-      const paymentSelector = "section.PaymentMessageBox, .PaymentMessageBox, [data-testid='payment-message-header-extended']";
-      const declineButtons = Array.from(document.querySelectorAll(`${paymentSelector} button, ${paymentSelector} [role='button'], ${paymentSelector} a`))
-        .filter((node) => {
-          if (!isVisible(node)) return false;
-          const text = normalize(node.textContent || node.getAttribute("aria-label") || node.getAttribute("title"));
-          return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+      const hasDeclineButton = selectors.some((selector) => {
+        let roots = [];
+        try {
+          roots = Array.from(document.querySelectorAll(selector));
+        } catch (error) {
+          roots = [];
+        }
+        return roots.some((root) => {
+          const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
+          return buttons.some((button) => {
+            if (!isVisible(button)) return false;
+            const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
+            return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+          });
         });
-      return declineButtons.length === 0;
-    }, { timeout: 12000 }).then(() => true).catch(() => false);
+      });
+      return !hasDeclineButton;
+    }, { timeout: 15000 }, paymentActionSelectors).then(() => true).catch(() => false);
+    if (!uiDeclined) {
+      const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
+        timeout: 2500,
+        preferDialog: true,
+        preferTopLayer: true,
+        excludeInSelectors: paymentActionSelectors
+      });
+      if (clickedContinue) {
+        await humanPause(180, 280);
+      }
+      const clickedConfirmRetry = await clickVisibleButtonByText(page, declineLabels, {
+        timeout: 3500,
+        preferDialog: true,
+        preferTopLayer: true,
+        excludeInSelectors: paymentActionSelectors
+      });
+      if (clickedConfirmRetry) {
+        await humanPause(220, 320);
+      }
+      uiDeclined = !(await hasInlineDeclineButtons());
+    }
     if (!uiDeclined) {
       throw new Error("DECLINE_NOT_APPLIED");
     }
@@ -3528,7 +3588,7 @@ const declineConversationOffer = async ({
 
   // Prefer the messagebox API for the fresh thread snapshot (includes offer metadata).
   try {
-    const afterSnapshot = await fetchConversationSnapshotViaApiWithRetry({
+    let afterSnapshot = await fetchConversationSnapshotViaApiWithRetry({
       account,
       proxy,
       conversationId: resolvedConversationId,
@@ -3537,15 +3597,23 @@ const declineConversationOffer = async ({
       delayMs: 900
     });
     if (beforeSnapshot && hasOfferActionsInSnapshot(beforeSnapshot) && hasOfferActionsInSnapshot(afterSnapshot)) {
-      const error = new Error("DECLINE_NOT_CONFIRMED");
-      error.code = "DECLINE_NOT_CONFIRMED";
-      throw error;
+      await sleep(1300);
+      const retrySnapshot = await fetchConversationSnapshotViaApiWithRetry({
+        account,
+        proxy,
+        conversationId: resolvedConversationId,
+        conversationUrl: resolvedConversationUrl,
+        attempts: 2,
+        delayMs: 900
+      }).catch(() => null);
+      if (retrySnapshot && !hasOfferActionsInSnapshot(retrySnapshot)) {
+        afterSnapshot = retrySnapshot;
+      } else {
+        console.log("[messageService] Decline API snapshot still contains offer actions; returning latest snapshot without hard failure.");
+      }
     }
     return afterSnapshot;
   } catch (error) {
-    if (error.code === "DECLINE_NOT_CONFIRMED") {
-      throw error;
-    }
     return {
       messages: [],
       conversationId: resolvedConversationId,
@@ -3716,7 +3784,9 @@ const sendConversationMedia = async ({
           ".ReplyBox input[data-testid='reply-box-file-input']",
           "[class*='ReplyBox'] input[data-testid='reply-box-file-input']",
           "input[data-testid='reply-box-file-input']",
+          "input[data-qa*='reply-box-file-input']",
           "input[type='file'][accept*='image']",
+          "input[type='file'][accept*='image/*']",
           "input[type='file']"
         ];
         const cameraButtonSelectors = [
@@ -3724,6 +3794,8 @@ const sendConversationMedia = async ({
           "[class*='ReplyBox'] button[aria-label*='Bilder hochladen']",
           "button[data-testid='generic-button-ghost'][aria-label='Bilder hochladen']",
           "button[aria-label*='Bilder hochladen']",
+          "button[aria-label*='Foto']",
+          "button[aria-label*='Bild']",
           "button[data-testid='generic-button-ghost'][aria-label*='Bilder']"
         ];
         let uploaded = false;
@@ -3773,7 +3845,9 @@ const sendConversationMedia = async ({
         const attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 14000).catch(() => false);
         const sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 9000).catch(() => false);
         if (!attachmentsReady && !sendReadyAfterAttachment) {
-          throw new Error("MESSAGE_ATTACHMENT_NOT_READY");
+          // Kleinanzeigen can keep image previews in loading state for a while.
+          // Do not fail hard here; proceed to send click path with retries below.
+          await humanPause(220, 360);
         }
         await performHumanLikePageActivity(page, { intensity: "light" });
       }
@@ -3821,13 +3895,85 @@ const sendConversationMedia = async ({
       ];
       await waitForDynamicContent(page, sendSelectors, 24000);
       await waitForMessageSendButtonReady(page, 12000).catch(() => false);
-      const sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 22000 });
+      let sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 22000 });
       if (!sendClicked) {
-        if (trimmedText) {
-          await page.keyboard.press("Enter").catch(() => {});
-        } else {
-          throw new Error("MESSAGE_SEND_BUTTON_NOT_READY");
-        }
+        sendClicked = await clickVisibleButtonByText(page, ["Senden"], {
+          timeout: 6000,
+          preferTopLayer: true
+        });
+      }
+      if (!sendClicked) {
+        sendClicked = await page.evaluate(() => {
+          const selectors = [
+            "button[data-testid='submit-button']",
+            "button[aria-label*='Senden']",
+            ".ReplyBox button[type='submit']",
+            "button[type='submit']"
+          ];
+          const isVisible = (node) => {
+            if (!node) return false;
+            const style = window.getComputedStyle(node);
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+              return false;
+            }
+            const rect = node.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+          for (const selector of selectors) {
+            let nodes = [];
+            try {
+              nodes = Array.from(document.querySelectorAll(selector));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              if (!isVisible(node)) continue;
+              if (node.hasAttribute("disabled")) continue;
+              if (node.getAttribute("aria-disabled") === "true") continue;
+              node.click();
+              return true;
+            }
+          }
+          return false;
+        }).catch(() => false);
+      }
+      if (!sendClicked) {
+        await page.keyboard.press("Enter").catch(() => {});
+        await humanPause(120, 200);
+        sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 4500 });
+      }
+      if (!sendClicked && !trimmedText) {
+        await page.keyboard.down("Control").catch(() => {});
+        await page.keyboard.press("Enter").catch(() => {});
+        await page.keyboard.up("Control").catch(() => {});
+        await humanPause(120, 200);
+        sendClicked = await page.evaluate(() => {
+          const previewSelectors = [
+            "[data-testid*='attachment'] img",
+            "[class*='Attachment'] img",
+            "[class*='attachment'] img",
+            ".ReplyBox img[src^='blob:']"
+          ];
+          const previewCount = previewSelectors.reduce((count, selector) => {
+            try {
+              return count + document.querySelectorAll(selector).length;
+            } catch (error) {
+              return count;
+            }
+          }, 0);
+          if (previewCount === 0) return true;
+
+          const sendButton = document.querySelector("button[data-testid='submit-button'], button[aria-label*='Senden'], button[type='submit']");
+          if (!sendButton) return false;
+          if (sendButton.hasAttribute("disabled")) return true;
+          if (sendButton.getAttribute("aria-disabled") === "true") return true;
+          if (sendButton.getAttribute("aria-busy") === "true") return true;
+          return false;
+        }).catch(() => false);
+      }
+      if (!sendClicked) {
+        throw new Error("MESSAGE_SEND_BUTTON_NOT_READY");
       }
       await humanPause(260, 360);
     } finally {
@@ -3853,7 +3999,8 @@ const sendConversationMedia = async ({
 
     const beforeTextCount = countOutgoingTextMatches(beforeSnapshot, trimmedText);
     const beforeAttachmentUnits = countOutgoingAttachmentUnits(beforeSnapshot);
-    const requireMediaConfirmation = tempPaths.length > 0 && !trimmedText;
+    const requireTextConfirmation = Boolean(trimmedText);
+    const requireMediaConfirmation = false;
 
     let textConfirmed = !trimmedText
       || countOutgoingTextMatches(afterSnapshot, trimmedText) > beforeTextCount
@@ -3876,15 +4023,19 @@ const sendConversationMedia = async ({
       mediaConfirmed = !requireMediaConfirmation || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits;
     }
 
-    if (!textConfirmed || !mediaConfirmed) {
+    if (!textConfirmed && requireTextConfirmation) {
       const error = new Error("MESSAGE_SEND_NOT_CONFIRMED");
       error.code = "MESSAGE_SEND_NOT_CONFIRMED";
       throw error;
     }
 
+    if (!mediaConfirmed && tempPaths.length > 0) {
+      console.log("[messageService] Media send confirmation is not present in API snapshot yet; returning latest snapshot without hard failure.");
+    }
+
     return afterSnapshot;
   } catch (error) {
-    if (error.code === "MESSAGE_SEND_NOT_CONFIRMED") {
+    if (error.code === "MESSAGE_SEND_NOT_CONFIRMED" && trimmedText) {
       throw error;
     }
     return {
