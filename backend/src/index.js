@@ -1561,7 +1561,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   }
   const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const clientRequestId = String(req.get("x-client-request-id") || "");
-  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 55000));
+  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 90000));
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
@@ -1653,7 +1653,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       proxy,
       conversationId,
       conversationUrl,
-      abortSignal: abortController.signal
+      abortSignal: abortController.signal,
+      hardDeadlineMs: routeDeadlineMs
     });
     const timeoutPromise = new Promise((_, reject) => {
       serviceTimer = setTimeout(() => {
@@ -1774,7 +1775,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
   }
   const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const clientRequestId = String(req.get("x-client-request-id") || "");
-  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 55000));
+  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 90000));
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
@@ -1883,7 +1884,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       conversationUrl,
       text: text.trim(),
       files: imageFiles,
-      abortSignal: abortController.signal
+      abortSignal: abortController.signal,
+      hardDeadlineMs: routeDeadlineMs
     });
     const timeoutPromise = new Promise((_, reject) => {
       serviceTimer = setTimeout(() => {
