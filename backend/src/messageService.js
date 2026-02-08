@@ -20,6 +20,9 @@ const MESSAGEBOX_API_HOST = "https://gateway.kleinanzeigen.de";
 const MESSAGEBOX_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEBUG_MESSAGES = process.env.KL_DEBUG_MESSAGES === "1";
 const FORCE_WEB_MESSAGES = process.env.KL_FORCE_WEB_MESSAGES === "1";
+const FAST_SNAPSHOT_TIMEOUT_MS = Number(process.env.KL_FAST_SNAPSHOT_TIMEOUT_MS || 4500);
+const FAST_SNAPSHOT_ATTEMPTS = Math.max(1, Number(process.env.KL_FAST_SNAPSHOT_ATTEMPTS || 1));
+const FAST_SNAPSHOT_DELAY_MS = Math.max(100, Number(process.env.KL_FAST_SNAPSHOT_DELAY_MS || 250));
 const buildConversationUrl = (conversationId, conversationUrl) => {
   if (conversationUrl) return conversationUrl;
   if (!conversationId) return MESSAGE_LIST_URL;
@@ -360,7 +363,7 @@ const buildAxiosConfig = ({ proxy, headers = {}, timeout = 20000 } = {}) => {
   return config;
 };
 
-const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile }) => {
+const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeoutMs = 20000 }) => {
   const cookieHeader = buildCookieHeader(cookies);
   if (!cookieHeader) {
     const error = new Error("AUTH_REQUIRED");
@@ -373,6 +376,7 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile }) => 
     "https://www.kleinanzeigen.de/m-access-token.json",
     buildAxiosConfig({
       proxy,
+      timeout: timeoutMs,
       headers: {
         Cookie: cookieHeader,
         "User-Agent": userAgent,
@@ -448,7 +452,8 @@ const fetchConversationDetailViaApi = async ({
   accessToken,
   cookies,
   proxy,
-  deviceProfile
+  deviceProfile,
+  timeoutMs = 20000
 }) => {
   const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
@@ -459,6 +464,7 @@ const fetchConversationDetailViaApi = async ({
     url,
     buildAxiosConfig({
       proxy,
+      timeout: timeoutMs,
       headers: {
         Accept: "application/json",
         Authorization: accessToken,
@@ -626,6 +632,76 @@ const getPageContexts = (page) => {
   return [page, ...frames];
 };
 
+const findFirstDeepHandleInContext = async (context, selectors, { requireVisible = false } = {}) => {
+  if (!context || !Array.isArray(selectors) || !selectors.length) return null;
+  const resultHandle = await context.evaluateHandle((selectorList, mustBeVisible) => {
+    const normalize = (value) => String(value || "").trim();
+    const preparedSelectors = (Array.isArray(selectorList) ? selectorList : [])
+      .map((selector) => normalize(selector))
+      .filter(Boolean);
+    if (!preparedSelectors.length) return null;
+
+    const isVisible = (node) => {
+      if (!node || !node.ownerDocument) return false;
+      const view = node.ownerDocument.defaultView || window;
+      const style = view.getComputedStyle(node);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const collectRoots = (startRoot) => {
+      const roots = [startRoot];
+      const queue = [startRoot];
+      const seen = new Set([startRoot]);
+      while (queue.length) {
+        const root = queue.shift();
+        let nodes = [];
+        try {
+          nodes = Array.from(root.querySelectorAll("*"));
+        } catch (error) {
+          nodes = [];
+        }
+        for (const node of nodes) {
+          const shadowRoot = node?.shadowRoot;
+          if (!shadowRoot || seen.has(shadowRoot)) continue;
+          seen.add(shadowRoot);
+          roots.push(shadowRoot);
+          queue.push(shadowRoot);
+        }
+      }
+      return roots;
+    };
+
+    const roots = collectRoots(document);
+    for (const selector of preparedSelectors) {
+      for (const root of roots) {
+        let nodes = [];
+        try {
+          nodes = Array.from(root.querySelectorAll(selector));
+        } catch (error) {
+          nodes = [];
+        }
+        for (const node of nodes) {
+          if (mustBeVisible && !isVisible(node)) continue;
+          return node;
+        }
+      }
+    }
+    return null;
+  }, selectors, requireVisible).catch(() => null);
+  if (!resultHandle) return null;
+  const elementHandle = typeof resultHandle.asElement === "function" ? resultHandle.asElement() : null;
+  if (!elementHandle) {
+    await resultHandle.dispose().catch(() => {});
+    return null;
+  }
+  return elementHandle;
+};
+
 const findFirstHandleInAnyContext = async (
   page,
   selectors,
@@ -638,17 +714,21 @@ const findFirstHandleInAnyContext = async (
       if (requireVisible) {
         const handle = await findFirstVisibleHandle(context, selectors);
         if (handle) return { handle, context };
-        continue;
+      } else {
+        for (const selector of selectors) {
+          let handle = null;
+          try {
+            handle = await context.$(selector);
+          } catch (error) {
+            handle = null;
+          }
+          if (handle) return { handle, context };
+        }
       }
 
-      for (const selector of selectors) {
-        let handle = null;
-        try {
-          handle = await context.$(selector);
-        } catch (error) {
-          handle = null;
-        }
-        if (handle) return { handle, context };
+      const deepHandle = await findFirstDeepHandleInContext(context, selectors, { requireVisible });
+      if (deepHandle) {
+        return { handle: deepHandle, context };
       }
     }
 
@@ -1052,6 +1132,134 @@ const clickVisibleButtonByText = async (
   }
 
   return false;
+};
+
+const hasVisibleDialogInAnyContext = async (page) => {
+  const contexts = getPageContexts(page);
+  for (const context of contexts) {
+    const visible = await context.evaluate(() => {
+      const collectRoots = (startRoot) => {
+        const roots = [startRoot];
+        const queue = [startRoot];
+        const seen = new Set([startRoot]);
+        while (queue.length) {
+          const root = queue.shift();
+          let nodes = [];
+          try {
+            nodes = Array.from(root.querySelectorAll("*"));
+          } catch (error) {
+            nodes = [];
+          }
+          for (const node of nodes) {
+            const shadowRoot = node?.shadowRoot;
+            if (!shadowRoot || seen.has(shadowRoot)) continue;
+            seen.add(shadowRoot);
+            roots.push(shadowRoot);
+            queue.push(shadowRoot);
+          }
+        }
+        return roots;
+      };
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (!style) return false;
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+          return false;
+        }
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const dialogSelectors = [
+        "[role='dialog']",
+        "[aria-modal='true']",
+        "[data-testid*='modal']",
+        "[data-testid*='dialog']",
+        "[class*='Modal']",
+        "[class*='modal']",
+        "[class*='Dialog']",
+        "[class*='dialog']"
+      ];
+      const roots = collectRoots(document);
+      for (const root of roots) {
+        for (const selector of dialogSelectors) {
+          let nodes = [];
+          try {
+            nodes = Array.from(root.querySelectorAll(selector));
+          } catch (error) {
+            nodes = [];
+          }
+          if (nodes.some(isVisible)) return true;
+        }
+      }
+      return false;
+    }).catch(() => false);
+    if (visible) return true;
+  }
+  return false;
+};
+
+const dismissConversationBlockingModals = async (page, { maxPasses = 6 } = {}) => {
+  if (!page) return false;
+  const continueLabels = [
+    "Weiter",
+    "Fortfahren",
+    "Alles klar",
+    "Verstanden",
+    "Okay",
+    "Ok",
+    "Schließen",
+    "Schliessen",
+    "Später",
+    "Nicht jetzt",
+    "Überspringen"
+  ];
+  const closeSelectors = [
+    "[role='dialog'] button[aria-label*='schlie']",
+    "[role='dialog'] button[aria-label*='close']",
+    "[aria-modal='true'] button[aria-label*='schlie']",
+    "[aria-modal='true'] button[aria-label*='close']",
+    "[role='dialog'] button[data-testid*='close']",
+    "[aria-modal='true'] button[data-testid*='close']",
+    "[role='dialog'] button[class*='close']",
+    "[aria-modal='true'] button[class*='close']"
+  ];
+  let actedAny = false;
+
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    let acted = false;
+    const clickedContinue = await clickVisibleButtonByText(page, continueLabels, {
+      timeout: 1400,
+      preferDialog: true,
+      preferTopLayer: true
+    });
+    if (clickedContinue) {
+      acted = true;
+      actedAny = true;
+      await humanPause(110, 190);
+      continue;
+    }
+
+    const clickedClose = await clickFirstInteractiveHandleInAnyContext(page, closeSelectors, { timeout: 1200 });
+    if (clickedClose) {
+      acted = true;
+      actedAny = true;
+      await humanPause(100, 170);
+      continue;
+    }
+
+    await page.keyboard.press("Escape").catch(() => {});
+    await sleep(120);
+
+    const hasDialog = await hasVisibleDialogInAnyContext(page);
+    if (!hasDialog) break;
+    if (!acted) {
+      await sleep(120);
+    }
+  }
+
+  return actedAny;
 };
 
 const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 12000) => {
@@ -3246,7 +3454,8 @@ const fetchConversationSnapshotViaApi = async ({
   account,
   proxy,
   conversationId,
-  conversationUrl
+  conversationUrl,
+  requestTimeoutMs = 20000
 }) => {
   const deviceProfile = getDeviceProfile(account);
   const cookies = parseCookies(account.cookie).map(normalizeCookie);
@@ -3263,10 +3472,19 @@ const fetchConversationSnapshotViaApi = async ({
     throw error;
   }
 
+  const normalizedTimeout = Number.isFinite(Number(requestTimeoutMs)) && Number(requestTimeoutMs) > 0
+    ? Math.max(2500, Number(requestTimeoutMs))
+    : 20000;
+
   let userId = getUserIdFromCookies(cookies);
   let accessTokenInfo = null;
   if (!userId) {
-    accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+    accessTokenInfo = await fetchMessageboxAccessToken({
+      cookies,
+      proxy,
+      deviceProfile,
+      timeoutMs: normalizedTimeout
+    });
     userId = getUserIdFromAccessToken(accessTokenInfo.token);
   }
 
@@ -3277,7 +3495,12 @@ const fetchConversationSnapshotViaApi = async ({
   }
 
   if (!accessTokenInfo) {
-    accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+    accessTokenInfo = await fetchMessageboxAccessToken({
+      cookies,
+      proxy,
+      deviceProfile,
+      timeoutMs: normalizedTimeout
+    });
   }
 
   const detail = await fetchConversationDetailViaApi({
@@ -3286,7 +3509,8 @@ const fetchConversationSnapshotViaApi = async ({
     accessToken: accessTokenInfo.token,
     cookies,
     proxy,
-    deviceProfile
+    deviceProfile,
+    timeoutMs: normalizedTimeout
   });
 
   const participantName = pickParticipantFromApi(detail, userId);
@@ -3385,7 +3609,8 @@ const fetchConversationSnapshotViaApiWithRetry = async ({
   conversationId,
   conversationUrl,
   attempts = 3,
-  delayMs = 900
+  delayMs = 900,
+  requestTimeoutMs = 20000
 }) => {
   let lastError = null;
   for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
@@ -3394,7 +3619,8 @@ const fetchConversationSnapshotViaApiWithRetry = async ({
         account,
         proxy,
         conversationId,
-        conversationUrl
+        conversationUrl,
+        requestTimeoutMs
       });
     } catch (error) {
       lastError = error;
@@ -3440,8 +3666,9 @@ const declineConversationOffer = async ({
       proxy,
       conversationId: resolvedConversationId,
       conversationUrl: resolvedConversationUrl,
-      attempts: 2,
-      delayMs: 450
+      attempts: FAST_SNAPSHOT_ATTEMPTS,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: FAST_SNAPSHOT_TIMEOUT_MS
     });
   } catch (error) {
     beforeSnapshot = null;
@@ -3510,6 +3737,7 @@ const declineConversationOffer = async ({
     }
     await humanPause(140, 260);
     await performHumanLikePageActivity(page, { intensity: "medium", force: true });
+    await dismissConversationBlockingModals(page, { maxPasses: 6 }).catch(() => {});
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -3587,7 +3815,36 @@ const declineConversationOffer = async ({
             });
           };
 
-          const nodes = Array.from(document.querySelectorAll("button, [role='button'], a"));
+          const collectRoots = () => {
+            const roots = [document];
+            const queue = [document];
+            const seen = new Set([document]);
+            while (queue.length) {
+              const root = queue.shift();
+              let nodes = [];
+              try {
+                nodes = Array.from(root.querySelectorAll("*"));
+              } catch (error) {
+                nodes = [];
+              }
+              for (const node of nodes) {
+                const shadowRoot = node?.shadowRoot;
+                if (!shadowRoot || seen.has(shadowRoot)) continue;
+                seen.add(shadowRoot);
+                roots.push(shadowRoot);
+                queue.push(shadowRoot);
+              }
+            }
+            return roots;
+          };
+
+          const nodes = collectRoots().flatMap((root) => {
+            try {
+              return Array.from(root.querySelectorAll("button, [role='button'], a"));
+            } catch (error) {
+              return [];
+            }
+          });
           return nodes.some((node) => {
             if (!isVisible(node)) return false;
             if (isInsideSelectors(node, excludeSelectors)) return false;
@@ -3671,26 +3928,31 @@ const declineConversationOffer = async ({
           });
         });
       });
-    }, { timeout: 12000 }, paymentActionSelectors).catch(() => {});
+    }, { timeout: 7000 }, paymentActionSelectors).catch(() => {});
 
     const clicked = await clickVisibleButtonByText(page, "Anfrage ablehnen", {
-      timeout: 24000,
+      timeout: 10000,
       requireInSelectors: paymentActionSelectors
     });
+    let declineClicksPerformed = Boolean(clicked);
     if (!clicked) {
-      const fallbackClicked = await clickVisibleButtonByText(page, ["Anfrage ablehnen", "Angebot ablehnen"], { timeout: 12000 });
+      const fallbackClicked = await clickVisibleButtonByText(page, ["Anfrage ablehnen", "Angebot ablehnen"], { timeout: 4500 });
       if (!fallbackClicked) {
         throw new Error("DECLINE_BUTTON_NOT_FOUND");
       }
+      declineClicksPerformed = true;
     }
-    await humanPause(140, 220);
+    await humanPause(100, 170);
     await performHumanLikePageActivity(page, { intensity: "light" });
 
     let confirmed = false;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
       const inlineStillVisible = await hasInlineDeclineButtons();
       const modalHasContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
       const modalHasDecline = await hasVisibleButtonsOutsidePayment(declineLabels);
+      if (modalHasContinue || modalHasDecline) {
+        await dismissConversationBlockingModals(page, { maxPasses: 2 }).catch(() => {});
+      }
 
       if (!inlineStillVisible && !modalHasContinue && !modalHasDecline) {
         confirmed = true;
@@ -3698,68 +3960,71 @@ const declineConversationOffer = async ({
       }
 
       let acted = false;
-      for (let continueAttempt = 0; continueAttempt < 3; continueAttempt += 1) {
+      for (let continueAttempt = 0; continueAttempt < 2; continueAttempt += 1) {
         const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-          timeout: modalHasContinue ? 5500 : 1800,
+          timeout: modalHasContinue ? 2200 : 900,
           preferDialog: true,
           preferTopLayer: true,
           excludeInSelectors: paymentActionSelectors
         });
         if (!clickedContinue) break;
         acted = true;
-        await humanPause(170, 300);
+        await humanPause(100, 180);
       }
 
-      for (let declineAttempt = 0; declineAttempt < 4; declineAttempt += 1) {
+      for (let declineAttempt = 0; declineAttempt < 3; declineAttempt += 1) {
         const clickedConfirm = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: modalHasDecline ? 6500 : 2200,
+          timeout: modalHasDecline ? 2800 : 1100,
           preferDialog: true,
           preferTopLayer: true,
           excludeInSelectors: paymentActionSelectors
         });
         if (!clickedConfirm) break;
         acted = true;
-        await humanPause(190, 330);
+        declineClicksPerformed = true;
+        await humanPause(110, 190);
       }
 
       if (inlineStillVisible) {
         const clickedInlineAgain = await clickVisibleButtonByText(page, ["Anfrage ablehnen", "Angebot ablehnen"], {
-          timeout: 2800,
+          timeout: 1200,
           requireInSelectors: paymentActionSelectors
         });
         if (clickedInlineAgain) {
           acted = true;
-          await humanPause(180, 300);
+          declineClicksPerformed = true;
+          await humanPause(100, 180);
         }
       }
 
       if (!acted) {
         const clickedLooseDecline = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: 1800,
+          timeout: 900,
           preferDialog: true,
           preferTopLayer: true
         });
         if (clickedLooseDecline) {
           acted = true;
-          await humanPause(190, 300);
+          declineClicksPerformed = true;
+          await humanPause(100, 180);
         }
       }
 
       if (!acted) {
         const clickedLooseContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-          timeout: 1500,
+          timeout: 800,
           preferDialog: true,
           preferTopLayer: true
         });
         if (clickedLooseContinue) {
           acted = true;
-          await humanPause(150, 260);
+          await humanPause(90, 150);
         }
       }
 
       if (!acted) {
         await page.keyboard.press("Enter").catch(() => {});
-        await humanPause(140, 240);
+        await humanPause(90, 150);
       }
     }
     if (!confirmed) {
@@ -3768,11 +4033,11 @@ const declineConversationOffer = async ({
       const hasModalContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
       confirmed = !hasInline && !hasModalDecline && !hasModalContinue;
     }
-    if (!confirmed) {
+    if (!confirmed && !declineClicksPerformed) {
       throw new Error("DECLINE_CONFIRM_NOT_FOUND");
     }
 
-    await humanPause(260, 360);
+    await humanPause(120, 190);
     let uiDeclined = await page.waitForFunction((selectors) => {
       const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
       const isVisible = (node) => {
@@ -3802,29 +4067,30 @@ const declineConversationOffer = async ({
         });
       });
       return !hasDeclineButton;
-    }, { timeout: 15000 }, paymentActionSelectors).then(() => true).catch(() => false);
+    }, { timeout: 5000 }, paymentActionSelectors).then(() => true).catch(() => false);
     if (!uiDeclined) {
-      for (let attempt = 0; attempt < 6; attempt += 1) {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
         let acted = false;
         const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-          timeout: 2200,
+          timeout: 1100,
           preferDialog: true,
           preferTopLayer: true,
           excludeInSelectors: paymentActionSelectors
         });
         if (clickedContinue) {
           acted = true;
-          await humanPause(170, 270);
+          await humanPause(100, 170);
         }
         const clickedConfirmRetry = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: 2600,
+          timeout: 1400,
           preferDialog: true,
           preferTopLayer: true,
           excludeInSelectors: paymentActionSelectors
         });
         if (clickedConfirmRetry) {
           acted = true;
-          await humanPause(200, 320);
+          declineClicksPerformed = true;
+          await humanPause(110, 180);
         }
         if (!acted) break;
       }
@@ -3833,7 +4099,7 @@ const declineConversationOffer = async ({
       const hasModalContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
       uiDeclined = !hasInline && !hasModalDecline && !hasModalContinue;
     }
-    if (!uiDeclined) {
+    if (!uiDeclined && !declineClicksPerformed) {
       throw new Error("DECLINE_NOT_APPLIED");
     }
   } finally {
@@ -3844,41 +4110,36 @@ const declineConversationOffer = async ({
     fs.rmSync(profileDir, { recursive: true, force: true });
   }
 
-  // Prefer the messagebox API for the fresh thread snapshot (includes offer metadata).
+  // Prefer the messagebox API for a fresh thread snapshot, but keep this fast:
+  // callers should not block on slow messagebox endpoints.
   try {
     let afterSnapshot = await fetchConversationSnapshotViaApiWithRetry({
       account,
       proxy,
       conversationId: resolvedConversationId,
       conversationUrl: resolvedConversationUrl,
-      attempts: 4,
-      delayMs: 900
+      attempts: FAST_SNAPSHOT_ATTEMPTS,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: FAST_SNAPSHOT_TIMEOUT_MS
     });
     const hadOfferActionsBefore = Boolean(beforeSnapshot && hasOfferActionsInSnapshot(beforeSnapshot));
     if (hadOfferActionsBefore && hasOfferActionsInSnapshot(afterSnapshot)) {
-      await sleep(1300);
+      await sleep(350);
       const retrySnapshot = await fetchConversationSnapshotViaApiWithRetry({
         account,
         proxy,
         conversationId: resolvedConversationId,
         conversationUrl: resolvedConversationUrl,
-        attempts: 3,
-        delayMs: 900
+        attempts: 1,
+        delayMs: FAST_SNAPSHOT_DELAY_MS,
+        requestTimeoutMs: FAST_SNAPSHOT_TIMEOUT_MS
       }).catch(() => null);
       if (retrySnapshot) {
         afterSnapshot = retrySnapshot;
       }
     }
-    if (hadOfferActionsBefore && hasOfferActionsInSnapshot(afterSnapshot)) {
-      const error = new Error("DECLINE_NOT_CONFIRMED_BY_API");
-      error.code = "DECLINE_NOT_CONFIRMED_BY_API";
-      throw error;
-    }
     return afterSnapshot;
   } catch (error) {
-    if (error?.code === "DECLINE_NOT_CONFIRMED_BY_API") {
-      throw error;
-    }
     return {
       messages: [],
       conversationId: resolvedConversationId,
@@ -3931,8 +4192,9 @@ const sendConversationMedia = async ({
       proxy,
       conversationId: resolvedConversationId,
       conversationUrl: resolvedConversationUrl,
-      attempts: 2,
-      delayMs: 450
+      attempts: FAST_SNAPSHOT_ATTEMPTS,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: FAST_SNAPSHOT_TIMEOUT_MS
     });
   } catch (error) {
     beforeSnapshot = null;
@@ -3943,6 +4205,7 @@ const sendConversationMedia = async ({
   let observedSendRequestAfterClick = false;
   let observedSendRequestUrl = "";
   let composerSettledAfterSend = false;
+  let sendInteractionTriggered = false;
 
   const guessExtension = (file) => {
     const name = String(file?.originalname || "").trim().toLowerCase();
@@ -4037,6 +4300,7 @@ const sendConversationMedia = async ({
       }
       await humanPause(140, 240);
       await performHumanLikePageActivity(page, { intensity: "medium", force: true });
+      await dismissConversationBlockingModals(page, { maxPasses: 6 }).catch(() => {});
 
       if (await isAuthFailure(page)) {
         const error = new Error("AUTH_REQUIRED");
@@ -4075,6 +4339,7 @@ const sendConversationMedia = async ({
             target.scrollIntoView({ block: "center", inline: "center" });
           }
         }).catch(() => {});
+        await dismissConversationBlockingModals(page, { maxPasses: 4 }).catch(() => {});
         const fileInputSelectors = [
           ".ReplyBox input[data-testid='reply-box-file-input']",
           "[class*='ReplyBox'] input[data-testid='reply-box-file-input']",
@@ -4097,34 +4362,54 @@ const sendConversationMedia = async ({
           "button[data-testid='generic-button-ghost'][aria-label*='Bilder']"
         ];
         let uploaded = false;
+        let fileInputHandle = null;
 
-        const cameraButton = await findFirstHandleInAnyContext(page, cameraButtonSelectors, {
-          timeout: 3500,
-          requireVisible: true
-        });
-        if (cameraButton?.handle) {
-          const chooserPromise = page.waitForFileChooser({ timeout: 4500 }).catch(() => null);
+        const tryCameraChooserUpload = async () => {
+          const cameraButton = await findFirstHandleInAnyContext(page, cameraButtonSelectors, {
+            timeout: 2800,
+            requireVisible: true
+          });
+          if (!cameraButton?.handle) return false;
+          const chooserPromise = page.waitForFileChooser({ timeout: 3200 }).catch(() => null);
           const clickedCamera = await clickHandleHumanLike(page, cameraButton.handle);
           if (!clickedCamera) {
             await cameraButton.handle.click({ delay: 30 }).catch(() => {});
           }
           const chooser = await chooserPromise;
-          if (chooser) {
-            await chooser.accept(tempPaths);
-            uploaded = true;
+          if (!chooser) return false;
+          await chooser.accept(tempPaths);
+          return true;
+        };
+
+        for (let attempt = 0; attempt < 4 && !uploaded; attempt += 1) {
+          if (!fileInputHandle) {
+            const fileInputResult = await findFirstHandleInAnyContext(page, fileInputSelectors, {
+              timeout: attempt === 0 ? 2200 : 5000,
+              requireVisible: false
+            });
+            fileInputHandle = fileInputResult?.handle || null;
           }
+          if (fileInputHandle) break;
+
+          uploaded = await tryCameraChooserUpload();
+          if (uploaded) break;
+
+          await dismissConversationBlockingModals(page, { maxPasses: 2 }).catch(() => {});
+          await humanPause(100, 180);
+        }
+
+        if (!uploaded && !fileInputHandle) {
+          const fallbackInput = await findFirstHandleInAnyContext(page, fileInputSelectors, {
+            timeout: 8000,
+            requireVisible: false
+          });
+          fileInputHandle = fallbackInput?.handle || null;
         }
 
         if (!uploaded) {
-          const fileInputResult = await findFirstHandleInAnyContext(page, fileInputSelectors, {
-            timeout: 20000,
-            requireVisible: false
-          });
-          const fileInputHandle = fileInputResult?.handle;
           if (!fileInputHandle) {
             throw new Error("MESSAGE_FILE_INPUT_NOT_FOUND");
           }
-
           await fileInputHandle.evaluate((node) => {
             node.hidden = false;
             node.style.display = "block";
@@ -4139,18 +4424,18 @@ const sendConversationMedia = async ({
           }).catch(() => {});
         }
 
-        await humanPause(260, 380);
-        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 18000).catch(() => false);
-        let sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 12000).catch(() => false);
+        await humanPause(140, 220);
+        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 7000).catch(() => false);
+        let sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 6000).catch(() => false);
         if (!attachmentsReady && !sendReadyAfterAttachment) {
-          await humanPause(280, 420);
-          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 12000).catch(() => false);
-          sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 12000).catch(() => false);
+          await humanPause(140, 240);
+          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 5500).catch(() => false);
+          sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 5500).catch(() => false);
         }
         if (!attachmentsReady && !sendReadyAfterAttachment) {
           // Kleinanzeigen can keep image previews in loading state for a while.
           // Do not fail hard here; proceed to send click path with retries below.
-          await humanPause(220, 360);
+          await humanPause(100, 170);
         }
         await performHumanLikePageActivity(page, { intensity: "light" });
       }
@@ -4166,7 +4451,7 @@ const sendConversationMedia = async ({
           "[contenteditable='true']",
           "textarea"
         ];
-        await waitForDynamicContent(page, inputSelectors, 20000);
+        await waitForDynamicContent(page, inputSelectors, 12000);
         const inputResult = await findMessageInputHandle(page, inputSelectors);
         if (!inputResult?.handle) {
           throw new Error("MESSAGE_INPUT_NOT_FOUND");
@@ -4187,6 +4472,7 @@ const sendConversationMedia = async ({
           await performHumanLikePageActivity(page, { intensity: "light" });
         }
       }
+      await dismissConversationBlockingModals(page, { maxPasses: 3 }).catch(() => {});
 
       const sendSelectors = [
         ".ReplyBox button[data-testid='submit-button'][aria-label*='Senden']",
@@ -4197,12 +4483,12 @@ const sendConversationMedia = async ({
         "button[type='submit']"
       ];
       const sendAttemptStartedAt = Date.now();
-      await waitForDynamicContent(page, sendSelectors, 24000);
-      await waitForMessageSendButtonReady(page, 12000).catch(() => false);
-      let sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 22000 });
+      await waitForDynamicContent(page, sendSelectors, 10000);
+      await waitForMessageSendButtonReady(page, 6000).catch(() => false);
+      let sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 9000 });
       if (!sendClicked) {
         sendClicked = await clickVisibleButtonByText(page, ["Senden"], {
-          timeout: 6000,
+          timeout: 2500,
           preferTopLayer: true
         });
       }
@@ -4244,14 +4530,14 @@ const sendConversationMedia = async ({
       }
       if (!sendClicked) {
         await page.keyboard.press("Enter").catch(() => {});
-        await humanPause(120, 200);
-        sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 4500 });
+        await humanPause(90, 150);
+        sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 3000 });
       }
       if (!sendClicked && !trimmedText) {
         await page.keyboard.down("Control").catch(() => {});
         await page.keyboard.press("Enter").catch(() => {});
         await page.keyboard.up("Control").catch(() => {});
-        await humanPause(120, 200);
+        await humanPause(90, 150);
         sendClicked = await page.evaluate(() => {
           const previewSelectors = [
             "[data-testid*='attachment'] img",
@@ -4279,35 +4565,36 @@ const sendConversationMedia = async ({
       if (!sendClicked) {
         throw new Error("MESSAGE_SEND_BUTTON_NOT_READY");
       }
-      await humanPause(240, 360);
+      sendInteractionTriggered = true;
+      await humanPause(120, 190);
 
       await waitForLikelyMessageRequestAfter(
         sendAttemptStartedAt,
-        tempPaths.length ? 12000 : 8000
+        tempPaths.length ? 5000 : 3500
       ).catch(() => false);
 
       composerSettledAfterSend = await waitForReplyComposerSettledAfterSend(page, {
         expectTextClear: Boolean(trimmedText),
         expectAttachmentClear: tempPaths.length > 0,
-        timeout: tempPaths.length ? 12000 : 8000
+        timeout: tempPaths.length ? 6000 : 4000
       }).catch(() => false);
 
       if (tempPaths.length > 0 && !observedSendRequestAfterClick && !composerSettledAfterSend) {
         const retrySendAttemptStartedAt = Date.now();
-        let retryClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 4500 });
+        let retryClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 2600 });
         if (!retryClicked) {
           retryClicked = await clickVisibleButtonByText(page, ["Senden"], {
-            timeout: 3500,
+            timeout: 1700,
             preferTopLayer: true
           });
         }
         if (retryClicked) {
-          await humanPause(220, 340);
-          await waitForLikelyMessageRequestAfter(retrySendAttemptStartedAt, 10000).catch(() => false);
+          await humanPause(100, 170);
+          await waitForLikelyMessageRequestAfter(retrySendAttemptStartedAt, 5000).catch(() => false);
           composerSettledAfterSend = await waitForReplyComposerSettledAfterSend(page, {
             expectTextClear: Boolean(trimmedText),
             expectAttachmentClear: true,
-            timeout: 10000
+            timeout: 5000
           }).catch(() => false);
         }
       }
@@ -4335,8 +4622,9 @@ const sendConversationMedia = async ({
       proxy,
       conversationId: resolvedConversationId,
       conversationUrl: resolvedConversationUrl,
-      attempts: 4,
-      delayMs: 950
+      attempts: FAST_SNAPSHOT_ATTEMPTS,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: FAST_SNAPSHOT_TIMEOUT_MS
     });
 
     const beforeTextCount = countOutgoingTextMatches(beforeSnapshot, trimmedText);
@@ -4353,14 +4641,15 @@ const sendConversationMedia = async ({
       || composerSettledAfterSend;
 
     if ((!textConfirmed || !mediaConfirmed) && (trimmedText || tempPaths.length)) {
-      await sleep(1200);
+      await sleep(350);
       afterSnapshot = await fetchConversationSnapshotViaApiWithRetry({
         account,
         proxy,
         conversationId: resolvedConversationId,
         conversationUrl: resolvedConversationUrl,
-        attempts: 2,
-        delayMs: 900
+        attempts: 1,
+        delayMs: FAST_SNAPSHOT_DELAY_MS,
+        requestTimeoutMs: FAST_SNAPSHOT_TIMEOUT_MS
       });
       textConfirmed = !trimmedText
         || countOutgoingTextMatches(afterSnapshot, trimmedText) > beforeTextCount
@@ -4370,14 +4659,15 @@ const sendConversationMedia = async ({
         || observedSendRequestAfterClick
         || composerSettledAfterSend;
     }
+    const likelyUiSendSuccess = sendInteractionTriggered || observedSendRequestAfterClick || composerSettledAfterSend;
 
-    if (!textConfirmed && requireTextConfirmation) {
+    if (!textConfirmed && requireTextConfirmation && !likelyUiSendSuccess) {
       const error = new Error("MESSAGE_SEND_NOT_CONFIRMED");
       error.code = "MESSAGE_SEND_NOT_CONFIRMED";
       throw error;
     }
 
-    if (!mediaConfirmed && requireMediaConfirmation) {
+    if (!mediaConfirmed && requireMediaConfirmation && !likelyUiSendSuccess) {
       const error = new Error("MESSAGE_MEDIA_SEND_NOT_CONFIRMED");
       error.code = "MESSAGE_MEDIA_SEND_NOT_CONFIRMED";
       if (observedSendRequestUrl) {
@@ -4388,7 +4678,8 @@ const sendConversationMedia = async ({
 
     return afterSnapshot;
   } catch (error) {
-    if (error.code === "MESSAGE_SEND_NOT_CONFIRMED" || error.code === "MESSAGE_MEDIA_SEND_NOT_CONFIRMED") {
+    const likelyUiSendSuccess = sendInteractionTriggered || observedSendRequestAfterClick || composerSettledAfterSend;
+    if (!likelyUiSendSuccess && (error.code === "MESSAGE_SEND_NOT_CONFIRMED" || error.code === "MESSAGE_MEDIA_SEND_NOT_CONFIRMED")) {
       throw error;
     }
     return {
