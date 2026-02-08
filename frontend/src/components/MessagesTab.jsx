@@ -712,7 +712,7 @@ const MessagesTab = () => {
       });
       setReplyText(textToSend);
       setReplyImages(imagesToSend);
-      alert("Ошибка при отправке сообщения");
+      alert(err?.message || "Ошибка при отправке сообщения");
     } finally {
       setSending(false);
     }

@@ -852,7 +852,9 @@ const clickVisibleButtonByText = async (
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeout) {
-    const clicked = await page.evaluate(
+    const contexts = getPageContexts(page);
+    for (const context of contexts) {
+      const clicked = await context.evaluate(
       (labels, useDialog, useTopLayer, includeSelectors, skipSelectors) => {
         const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
         const parseZ = (value) => {
@@ -1037,14 +1039,15 @@ const clickVisibleButtonByText = async (
           return false;
         }
       },
-      wanted,
-      preferDialog,
-      preferTopLayer,
-      requireInSelectors,
-      excludeInSelectors
-    );
+        wanted,
+        preferDialog,
+        preferTopLayer,
+        requireInSelectors,
+        excludeInSelectors
+      ).catch(() => false);
 
-    if (clicked) return true;
+      if (clicked) return true;
+    }
     await sleep(220);
   }
 
@@ -1177,6 +1180,134 @@ const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
       return false;
     }).catch(() => false);
     if (ready) return true;
+    await sleep(180);
+  }
+  return false;
+};
+
+const isLikelyMessagingMutationRequest = (requestUrl, method = "", postData = "") => {
+  const normalizedMethod = String(method || "").toUpperCase();
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(normalizedMethod)) return false;
+  const href = String(requestUrl || "").trim().toLowerCase();
+  if (!href || !href.includes("kleinanzeigen")) return false;
+  const payload = String(postData || "").toLowerCase();
+
+  const blockedFragments = [
+    "doubleclick",
+    "googlesyndication",
+    "google-analytics",
+    "/analytics",
+    "gtm.js",
+    "hotjar",
+    "clarity",
+    "facebook",
+    "fbevents",
+    "pubmatic",
+    "criteo",
+    "teads",
+    "xplosion",
+    "pixel",
+    "adserver",
+    "adsm.",
+    "measurement",
+    "logger",
+    "tracking",
+    "bat.bing"
+  ];
+  if (blockedFragments.some((fragment) => href.includes(fragment))) {
+    return false;
+  }
+
+  const payloadHintsMutation = /(mutation|send|reply|upload|attachment|image|media|picture|photo)/i.test(payload);
+  if (payload) {
+    return payloadHintsMutation;
+  }
+
+  return /(\/send|\/reply|\/upload|\/attachment|\/media|bilder|photos?)/i.test(href);
+};
+
+const waitForReplyComposerSettledAfterSend = async (
+  page,
+  { expectTextClear = false, expectAttachmentClear = false, timeout = 10000 } = {}
+) => {
+  if (!page) return false;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const contexts = getPageContexts(page);
+    let hasComposer = false;
+    for (const context of contexts) {
+      const state = await context.evaluate((requireText, requireAttachments) => {
+        const composerRoot = document.querySelector(
+          ".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht'], button[data-testid='submit-button'], input[data-testid='reply-box-file-input']"
+        );
+        if (!composerRoot) {
+          return { hasComposer: false, settled: true };
+        }
+
+        let textEmpty = true;
+        if (requireText) {
+          const textNode = document.querySelector(
+            "textarea#nachricht, .ReplyBox textarea, [class*='ReplyBox'] textarea, textarea[placeholder*='Nachricht'], [role='textbox'][contenteditable='true'], [contenteditable='true']"
+          );
+          if (textNode) {
+            const raw = textNode.isContentEditable
+              ? (textNode.textContent || "")
+              : (textNode.value || textNode.textContent || "");
+            textEmpty = String(raw || "").trim().length === 0;
+          }
+        }
+
+        let attachmentCount = 0;
+        const attachmentSelectors = [
+          "[data-testid*='attachment'] img",
+          "[class*='Attachment'] img",
+          "[class*='attachment'] img",
+          ".ReplyBox img[src^='blob:']",
+          ".ReplyBox img[src*='img.kleinanzeigen.de']"
+        ];
+        for (const selector of attachmentSelectors) {
+          try {
+            attachmentCount += document.querySelectorAll(selector).length;
+          } catch (error) {
+            // ignore invalid selector in this context
+          }
+        }
+
+        let fileCount = 0;
+        const fileInputSelectors = [
+          "input[data-testid='reply-box-file-input']",
+          ".ReplyBox input[type='file']",
+          "input[type='file'][accept*='image']"
+        ];
+        for (const selector of fileInputSelectors) {
+          let nodes = [];
+          try {
+            nodes = Array.from(document.querySelectorAll(selector));
+          } catch (error) {
+            nodes = [];
+          }
+          for (const node of nodes) {
+            const count = Number(node?.files?.length || 0);
+            if (count > fileCount) fileCount = count;
+          }
+        }
+
+        const attachmentsCleared = attachmentCount === 0 && fileCount === 0;
+        const settled = (!requireText || textEmpty) && (!requireAttachments || attachmentsCleared);
+        return { hasComposer: true, settled };
+      }, expectTextClear, expectAttachmentClear).catch(() => null);
+
+      if (!state) continue;
+      if (!state.hasComposer) continue;
+      hasComposer = true;
+      if (state.settled) return true;
+    }
+
+    if (!hasComposer) {
+      // Composer is no longer present (e.g. rerender completed) and we have no
+      // evidence of pending inputs/attachments in visible contexts.
+      return true;
+    }
     await sleep(180);
   }
   return false;
@@ -3394,9 +3525,12 @@ const declineConversationOffer = async ({
     const declineLabels = [
       "Anfrage ablehnen",
       "Angebot ablehnen",
+      "Anfrage jetzt ablehnen",
+      "Anfrage wirklich ablehnen",
       "Ja, ablehnen",
       "Ja ablehnen",
       "Jetzt ablehnen",
+      "Ablehnen bestätigen",
       "Ablehnen"
     ];
     const modalContinueLabels = [
@@ -3407,38 +3541,107 @@ const declineConversationOffer = async ({
       "Ok",
       "Okay",
       "Schliessen",
-      "Schließen"
+      "Schließen",
+      "Weiterlesen"
     ];
 
-    const hasInlineDeclineButtons = async () => page.evaluate((selectors) => {
-      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-      const isVisible = (node) => {
-        if (!node) return false;
-        const style = window.getComputedStyle(node);
-        if (!style) return false;
-        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-          return false;
-        }
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      };
-      return selectors.some((selector) => {
-        let roots = [];
-        try {
-          roots = Array.from(document.querySelectorAll(selector));
-        } catch (error) {
-          roots = [];
-        }
-        return roots.some((root) => {
-          const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
-          return buttons.some((button) => {
-            if (!isVisible(button)) return false;
-            const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
-            return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+    const hasVisibleButtonsOutsidePayment = async (labels) => {
+      const contexts = getPageContexts(page);
+      for (const context of contexts) {
+        const hasVisible = await context.evaluate((needles, excludeSelectors) => {
+          const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+          const preparedNeedles = (Array.isArray(needles) ? needles : [])
+            .map((value) => normalize(value))
+            .filter(Boolean);
+          if (!preparedNeedles.length) return false;
+          const isVisible = (node) => {
+            if (!node) return false;
+            const style = window.getComputedStyle(node);
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+              return false;
+            }
+            const rect = node.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+          const getComposedParent = (node) => {
+            if (!node) return null;
+            if (node.parentElement) return node.parentElement;
+            const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+            return root && root.host ? root.host : null;
+          };
+          const isInsideSelectors = (node, selectors) => {
+            if (!node || !Array.isArray(selectors) || !selectors.length) return false;
+            return selectors.some((selector) => {
+              if (!selector) return false;
+              let current = node;
+              while (current) {
+                try {
+                  if (typeof current.matches === "function" && current.matches(selector)) return true;
+                } catch (error) {
+                  return false;
+                }
+                current = getComposedParent(current);
+              }
+              return false;
+            });
+          };
+
+          const nodes = Array.from(document.querySelectorAll("button, [role='button'], a"));
+          return nodes.some((node) => {
+            if (!isVisible(node)) return false;
+            if (isInsideSelectors(node, excludeSelectors)) return false;
+            const text = normalize(
+              node.textContent
+              || node.getAttribute("aria-label")
+              || node.getAttribute("title")
+              || node.getAttribute("value")
+            );
+            if (!text) return false;
+            return preparedNeedles.some((label) => text === label || text.includes(label));
           });
-        });
-      });
-    }, paymentActionSelectors).catch(() => false);
+        }, labels, paymentActionSelectors).catch(() => false);
+        if (hasVisible) return true;
+      }
+      return false;
+    };
+
+    const hasInlineDeclineButtons = async () => {
+      const contexts = getPageContexts(page);
+      for (const context of contexts) {
+        const hasInline = await context.evaluate((selectors) => {
+          const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+          const isVisible = (node) => {
+            if (!node) return false;
+            const style = window.getComputedStyle(node);
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+              return false;
+            }
+            const rect = node.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+          return selectors.some((selector) => {
+            let roots = [];
+            try {
+              roots = Array.from(document.querySelectorAll(selector));
+            } catch (error) {
+              roots = [];
+            }
+            return roots.some((root) => {
+              const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
+              return buttons.some((button) => {
+                if (!isVisible(button)) return false;
+                const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
+                return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+              });
+            });
+          });
+        }, paymentActionSelectors).catch(() => false);
+        if (hasInline) return true;
+      }
+      return false;
+    };
 
     await page.waitForFunction((selectors) => {
       const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -3484,42 +3687,88 @@ const declineConversationOffer = async ({
     await performHumanLikePageActivity(page, { intensity: "light" });
 
     let confirmed = false;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
       const inlineStillVisible = await hasInlineDeclineButtons();
-      if (!inlineStillVisible) {
+      const modalHasContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
+      const modalHasDecline = await hasVisibleButtonsOutsidePayment(declineLabels);
+
+      if (!inlineStillVisible && !modalHasContinue && !modalHasDecline) {
         confirmed = true;
         break;
       }
 
-      const clickedConfirm = await clickVisibleButtonByText(page, declineLabels, {
-        timeout: attempt === 0 ? 12000 : 5000,
-        preferDialog: true,
-        preferTopLayer: true,
-        excludeInSelectors: paymentActionSelectors
-      });
-      if (clickedConfirm) {
-        confirmed = true;
-        await humanPause(220, 340);
-        break;
+      let acted = false;
+      for (let continueAttempt = 0; continueAttempt < 3; continueAttempt += 1) {
+        const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
+          timeout: modalHasContinue ? 5500 : 1800,
+          preferDialog: true,
+          preferTopLayer: true,
+          excludeInSelectors: paymentActionSelectors
+        });
+        if (!clickedContinue) break;
+        acted = true;
+        await humanPause(170, 300);
       }
 
-      const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-        timeout: 4500,
-        preferDialog: true,
-        preferTopLayer: true,
-        excludeInSelectors: paymentActionSelectors
-      });
-      if (clickedContinue) {
-        await humanPause(180, 300);
-        continue;
+      for (let declineAttempt = 0; declineAttempt < 4; declineAttempt += 1) {
+        const clickedConfirm = await clickVisibleButtonByText(page, declineLabels, {
+          timeout: modalHasDecline ? 6500 : 2200,
+          preferDialog: true,
+          preferTopLayer: true,
+          excludeInSelectors: paymentActionSelectors
+        });
+        if (!clickedConfirm) break;
+        acted = true;
+        await humanPause(190, 330);
       }
 
-      if (attempt === 0) {
+      if (inlineStillVisible) {
+        const clickedInlineAgain = await clickVisibleButtonByText(page, ["Anfrage ablehnen", "Angebot ablehnen"], {
+          timeout: 2800,
+          requireInSelectors: paymentActionSelectors
+        });
+        if (clickedInlineAgain) {
+          acted = true;
+          await humanPause(180, 300);
+        }
+      }
+
+      if (!acted) {
+        const clickedLooseDecline = await clickVisibleButtonByText(page, declineLabels, {
+          timeout: 1800,
+          preferDialog: true,
+          preferTopLayer: true
+        });
+        if (clickedLooseDecline) {
+          acted = true;
+          await humanPause(190, 300);
+        }
+      }
+
+      if (!acted) {
+        const clickedLooseContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
+          timeout: 1500,
+          preferDialog: true,
+          preferTopLayer: true
+        });
+        if (clickedLooseContinue) {
+          acted = true;
+          await humanPause(150, 260);
+        }
+      }
+
+      if (!acted) {
         await page.keyboard.press("Enter").catch(() => {});
+        await humanPause(140, 240);
       }
-      await humanPause(140, 220);
     }
-    if (!confirmed && await hasInlineDeclineButtons()) {
+    if (!confirmed) {
+      const hasInline = await hasInlineDeclineButtons();
+      const hasModalDecline = await hasVisibleButtonsOutsidePayment(declineLabels);
+      const hasModalContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
+      confirmed = !hasInline && !hasModalDecline && !hasModalContinue;
+    }
+    if (!confirmed) {
       throw new Error("DECLINE_CONFIRM_NOT_FOUND");
     }
 
@@ -3555,25 +3804,34 @@ const declineConversationOffer = async ({
       return !hasDeclineButton;
     }, { timeout: 15000 }, paymentActionSelectors).then(() => true).catch(() => false);
     if (!uiDeclined) {
-      const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-        timeout: 2500,
-        preferDialog: true,
-        preferTopLayer: true,
-        excludeInSelectors: paymentActionSelectors
-      });
-      if (clickedContinue) {
-        await humanPause(180, 280);
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        let acted = false;
+        const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
+          timeout: 2200,
+          preferDialog: true,
+          preferTopLayer: true,
+          excludeInSelectors: paymentActionSelectors
+        });
+        if (clickedContinue) {
+          acted = true;
+          await humanPause(170, 270);
+        }
+        const clickedConfirmRetry = await clickVisibleButtonByText(page, declineLabels, {
+          timeout: 2600,
+          preferDialog: true,
+          preferTopLayer: true,
+          excludeInSelectors: paymentActionSelectors
+        });
+        if (clickedConfirmRetry) {
+          acted = true;
+          await humanPause(200, 320);
+        }
+        if (!acted) break;
       }
-      const clickedConfirmRetry = await clickVisibleButtonByText(page, declineLabels, {
-        timeout: 3500,
-        preferDialog: true,
-        preferTopLayer: true,
-        excludeInSelectors: paymentActionSelectors
-      });
-      if (clickedConfirmRetry) {
-        await humanPause(220, 320);
-      }
-      uiDeclined = !(await hasInlineDeclineButtons());
+      const hasInline = await hasInlineDeclineButtons();
+      const hasModalDecline = await hasVisibleButtonsOutsidePayment(declineLabels);
+      const hasModalContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
+      uiDeclined = !hasInline && !hasModalDecline && !hasModalContinue;
     }
     if (!uiDeclined) {
       throw new Error("DECLINE_NOT_APPLIED");
@@ -3596,24 +3854,31 @@ const declineConversationOffer = async ({
       attempts: 4,
       delayMs: 900
     });
-    if (beforeSnapshot && hasOfferActionsInSnapshot(beforeSnapshot) && hasOfferActionsInSnapshot(afterSnapshot)) {
+    const hadOfferActionsBefore = Boolean(beforeSnapshot && hasOfferActionsInSnapshot(beforeSnapshot));
+    if (hadOfferActionsBefore && hasOfferActionsInSnapshot(afterSnapshot)) {
       await sleep(1300);
       const retrySnapshot = await fetchConversationSnapshotViaApiWithRetry({
         account,
         proxy,
         conversationId: resolvedConversationId,
         conversationUrl: resolvedConversationUrl,
-        attempts: 2,
+        attempts: 3,
         delayMs: 900
       }).catch(() => null);
-      if (retrySnapshot && !hasOfferActionsInSnapshot(retrySnapshot)) {
+      if (retrySnapshot) {
         afterSnapshot = retrySnapshot;
-      } else {
-        console.log("[messageService] Decline API snapshot still contains offer actions; returning latest snapshot without hard failure.");
       }
+    }
+    if (hadOfferActionsBefore && hasOfferActionsInSnapshot(afterSnapshot)) {
+      const error = new Error("DECLINE_NOT_CONFIRMED_BY_API");
+      error.code = "DECLINE_NOT_CONFIRMED_BY_API";
+      throw error;
     }
     return afterSnapshot;
   } catch (error) {
+    if (error?.code === "DECLINE_NOT_CONFIRMED_BY_API") {
+      throw error;
+    }
     return {
       messages: [],
       conversationId: resolvedConversationId,
@@ -3675,6 +3940,9 @@ const sendConversationMedia = async ({
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-media-"));
   const tempPaths = [];
+  let observedSendRequestAfterClick = false;
+  let observedSendRequestUrl = "";
+  let composerSettledAfterSend = false;
 
   const guessExtension = (file) => {
     const name = String(file?.originalname || "").trim().toLowerCase();
@@ -3729,8 +3997,11 @@ const sendConversationMedia = async ({
       protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
     });
 
+    let page = null;
+    let requestListener = null;
+    let waitForLikelyMessageRequestAfter = async () => false;
     try {
-      const page = await browser.newPage();
+      page = await browser.newPage();
       page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
       page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
       if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
@@ -3773,6 +4044,30 @@ const sendConversationMedia = async ({
         throw error;
       }
 
+      let lastLikelyMessageRequestAt = 0;
+      let lastLikelyMessageRequestUrl = "";
+      requestListener = (request) => {
+        const requestUrl = typeof request?.url === "function" ? request.url() : "";
+        const requestMethod = typeof request?.method === "function" ? request.method() : "";
+        const requestBody = typeof request?.postData === "function" ? request.postData() : "";
+        if (!isLikelyMessagingMutationRequest(requestUrl, requestMethod, requestBody)) return;
+        lastLikelyMessageRequestAt = Date.now();
+        lastLikelyMessageRequestUrl = requestUrl;
+      };
+      page.on("request", requestListener);
+      waitForLikelyMessageRequestAfter = async (minTimestamp, timeoutMs = 9000) => {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (lastLikelyMessageRequestAt >= minTimestamp) {
+            observedSendRequestAfterClick = true;
+            observedSendRequestUrl = lastLikelyMessageRequestUrl;
+            return true;
+          }
+          await sleep(180);
+        }
+        return false;
+      };
+
       if (tempPaths.length) {
         await page.evaluate(() => {
           const target = document.querySelector(".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht']");
@@ -3783,11 +4078,14 @@ const sendConversationMedia = async ({
         const fileInputSelectors = [
           ".ReplyBox input[data-testid='reply-box-file-input']",
           "[class*='ReplyBox'] input[data-testid='reply-box-file-input']",
+          ".ReplyBox input[type='file'][accept*='image']",
+          "[class*='ReplyBox'] input[type='file'][accept*='image']",
+          ".ReplyBox input[type='file']",
+          "[class*='ReplyBox'] input[type='file']",
           "input[data-testid='reply-box-file-input']",
           "input[data-qa*='reply-box-file-input']",
           "input[type='file'][accept*='image']",
-          "input[type='file'][accept*='image/*']",
-          "input[type='file']"
+          "input[type='file'][accept*='image/*']"
         ];
         const cameraButtonSelectors = [
           ".ReplyBox button[data-testid='generic-button-ghost'][aria-label*='Bilder hochladen']",
@@ -3842,8 +4140,13 @@ const sendConversationMedia = async ({
         }
 
         await humanPause(260, 380);
-        const attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 14000).catch(() => false);
-        const sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 9000).catch(() => false);
+        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 18000).catch(() => false);
+        let sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 12000).catch(() => false);
+        if (!attachmentsReady && !sendReadyAfterAttachment) {
+          await humanPause(280, 420);
+          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 12000).catch(() => false);
+          sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 12000).catch(() => false);
+        }
         if (!attachmentsReady && !sendReadyAfterAttachment) {
           // Kleinanzeigen can keep image previews in loading state for a while.
           // Do not fail hard here; proceed to send click path with retries below.
@@ -3893,6 +4196,7 @@ const sendConversationMedia = async ({
         "button[aria-label*='Senden']",
         "button[type='submit']"
       ];
+      const sendAttemptStartedAt = Date.now();
       await waitForDynamicContent(page, sendSelectors, 24000);
       await waitForMessageSendButtonReady(page, 12000).catch(() => false);
       let sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 22000 });
@@ -3975,8 +4279,46 @@ const sendConversationMedia = async ({
       if (!sendClicked) {
         throw new Error("MESSAGE_SEND_BUTTON_NOT_READY");
       }
-      await humanPause(260, 360);
+      await humanPause(240, 360);
+
+      await waitForLikelyMessageRequestAfter(
+        sendAttemptStartedAt,
+        tempPaths.length ? 12000 : 8000
+      ).catch(() => false);
+
+      composerSettledAfterSend = await waitForReplyComposerSettledAfterSend(page, {
+        expectTextClear: Boolean(trimmedText),
+        expectAttachmentClear: tempPaths.length > 0,
+        timeout: tempPaths.length ? 12000 : 8000
+      }).catch(() => false);
+
+      if (tempPaths.length > 0 && !observedSendRequestAfterClick && !composerSettledAfterSend) {
+        const retrySendAttemptStartedAt = Date.now();
+        let retryClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, { timeout: 4500 });
+        if (!retryClicked) {
+          retryClicked = await clickVisibleButtonByText(page, ["Senden"], {
+            timeout: 3500,
+            preferTopLayer: true
+          });
+        }
+        if (retryClicked) {
+          await humanPause(220, 340);
+          await waitForLikelyMessageRequestAfter(retrySendAttemptStartedAt, 10000).catch(() => false);
+          composerSettledAfterSend = await waitForReplyComposerSettledAfterSend(page, {
+            expectTextClear: Boolean(trimmedText),
+            expectAttachmentClear: true,
+            timeout: 10000
+          }).catch(() => false);
+        }
+      }
     } finally {
+      if (page && requestListener) {
+        if (typeof page.off === "function") {
+          page.off("request", requestListener);
+        } else if (typeof page.removeListener === "function") {
+          page.removeListener("request", requestListener);
+        }
+      }
       await browser.close();
       if (anonymizedProxyUrl) {
         await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
@@ -4000,12 +4342,15 @@ const sendConversationMedia = async ({
     const beforeTextCount = countOutgoingTextMatches(beforeSnapshot, trimmedText);
     const beforeAttachmentUnits = countOutgoingAttachmentUnits(beforeSnapshot);
     const requireTextConfirmation = Boolean(trimmedText);
-    const requireMediaConfirmation = false;
+    const requireMediaConfirmation = tempPaths.length > 0;
 
     let textConfirmed = !trimmedText
       || countOutgoingTextMatches(afterSnapshot, trimmedText) > beforeTextCount
       || (beforeTextCount === 0 && hasOutgoingTextInSnapshot(afterSnapshot, trimmedText));
-    let mediaConfirmed = !requireMediaConfirmation || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits;
+    let mediaConfirmed = !requireMediaConfirmation
+      || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits
+      || observedSendRequestAfterClick
+      || composerSettledAfterSend;
 
     if ((!textConfirmed || !mediaConfirmed) && (trimmedText || tempPaths.length)) {
       await sleep(1200);
@@ -4020,7 +4365,10 @@ const sendConversationMedia = async ({
       textConfirmed = !trimmedText
         || countOutgoingTextMatches(afterSnapshot, trimmedText) > beforeTextCount
         || (beforeTextCount === 0 && hasOutgoingTextInSnapshot(afterSnapshot, trimmedText));
-      mediaConfirmed = !requireMediaConfirmation || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits;
+      mediaConfirmed = !requireMediaConfirmation
+        || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits
+        || observedSendRequestAfterClick
+        || composerSettledAfterSend;
     }
 
     if (!textConfirmed && requireTextConfirmation) {
@@ -4029,13 +4377,18 @@ const sendConversationMedia = async ({
       throw error;
     }
 
-    if (!mediaConfirmed && tempPaths.length > 0) {
-      console.log("[messageService] Media send confirmation is not present in API snapshot yet; returning latest snapshot without hard failure.");
+    if (!mediaConfirmed && requireMediaConfirmation) {
+      const error = new Error("MESSAGE_MEDIA_SEND_NOT_CONFIRMED");
+      error.code = "MESSAGE_MEDIA_SEND_NOT_CONFIRMED";
+      if (observedSendRequestUrl) {
+        error.details = observedSendRequestUrl;
+      }
+      throw error;
     }
 
     return afterSnapshot;
   } catch (error) {
-    if (error.code === "MESSAGE_SEND_NOT_CONFIRMED" && trimmedText) {
+    if (error.code === "MESSAGE_SEND_NOT_CONFIRMED" || error.code === "MESSAGE_MEDIA_SEND_NOT_CONFIRMED") {
       throw error;
     }
     return {
