@@ -3892,6 +3892,20 @@ const declineConversationOffer = async ({
   }
   const resolvedConversationUrl = buildConversationUrl(resolvedConversationId, conversationUrl);
   const beforeSnapshot = null;
+  const fetchAfterSnapshotIfAvailable = async () => {
+    if (!hasTimeLeft(2200)) return null;
+    const timeoutForSnapshot = Math.max(1200, Math.min(snapshotTimeoutMs, Math.max(1400, remainingMs() - 1200)));
+    if (timeoutForSnapshot < 1200) return null;
+    return fetchConversationSnapshotViaApiWithRetry({
+      account,
+      proxy,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl,
+      attempts: 1,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: timeoutForSnapshot
+    }).catch(() => null);
+  };
 
   const proxyServer = buildProxyServer(proxy);
   const proxyUrl = buildProxyUrl(proxy);
@@ -4217,6 +4231,10 @@ const declineConversationOffer = async ({
           preferTopLayer: true
         });
         if (!finalTry) {
+          const maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
+          if (maybeAlreadyDeclined && !hasOfferActionsInSnapshot(maybeAlreadyDeclined)) {
+            return maybeAlreadyDeclined;
+          }
           throw new Error("DECLINE_BUTTON_NOT_FOUND");
         }
         declineClicksPerformed = true;
@@ -4320,6 +4338,10 @@ const declineConversationOffer = async ({
     }
 
     if (!confirmed && !declineClicksPerformed) {
+      const maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
+      if (maybeAlreadyDeclined && !hasOfferActionsInSnapshot(maybeAlreadyDeclined)) {
+        return maybeAlreadyDeclined;
+      }
       throw new Error("DECLINE_BUTTON_NOT_FOUND");
     }
     if (!confirmed && hasTimeLeft(1000)) {
@@ -4634,6 +4656,14 @@ const sendConversationMedia = async ({
             target.scrollIntoView({ block: "center", inline: "center" });
           }
         }).catch(() => {});
+        await waitForDynamicContent(page, [
+          ".ReplyBox",
+          "[class*='ReplyBox']",
+          "textarea#nachricht",
+          "button[aria-label*='Bilder hochladen']",
+          "input[data-testid='reply-box-file-input']",
+          "input[type='file']"
+        ], 6500);
         await dismissConversationBlockingModals(page, { maxPasses: 4 }).catch(() => {});
         const fileInputSelectors = [
           ".ReplyBox input[data-testid='reply-box-file-input']",
@@ -4645,7 +4675,12 @@ const sendConversationMedia = async ({
           "input[data-testid='reply-box-file-input']",
           "input[data-qa*='reply-box-file-input']",
           "input[type='file'][accept*='image']",
-          "input[type='file'][accept*='image/*']"
+          "input[type='file'][accept*='image/*']",
+          ".Reply--Actions input[type='file']",
+          "[class*='Reply'] input[type='file'][multiple]",
+          "[class*='Reply'] input[type='file']",
+          "input[type='file'][multiple]",
+          "input[type='file']"
         ];
         const cameraButtonSelectors = [
           ".ReplyBox button[data-testid='generic-button-ghost'][aria-label*='Bilder hochladen']",
@@ -4654,18 +4689,50 @@ const sendConversationMedia = async ({
           "button[aria-label*='Bilder hochladen']",
           "button[aria-label*='Foto']",
           "button[aria-label*='Bild']",
-          "button[data-testid='generic-button-ghost'][aria-label*='Bilder']"
+          "button[data-testid='generic-button-ghost'][aria-label*='Bilder']",
+          ".ReplyBox button[data-testid='generic-button-ghost']",
+          "[class*='ReplyBox'] button[data-testid='generic-button-ghost']"
         ];
         let uploaded = false;
         let fileInputHandle = null;
 
         const tryCameraChooserUpload = async () => {
-          const cameraButton = await findFirstHandleInAnyContext(page, cameraButtonSelectors, {
+          let cameraButton = await findFirstHandleInAnyContext(page, cameraButtonSelectors, {
             timeout: 1200,
             requireVisible: true
           });
+          if (!cameraButton?.handle) {
+            const cameraSvgHost = await findFirstHandleInAnyContext(page, ["svg[data-title*='camera']"], {
+              timeout: 1000,
+              requireVisible: true
+            });
+            if (cameraSvgHost?.handle) {
+              const maybeButton = await cameraSvgHost.handle.evaluateHandle((node) => {
+                if (!node) return null;
+                let current = node;
+                while (current) {
+                  if (current.tagName === "BUTTON") return current;
+                  const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+                  if (current.parentElement) {
+                    current = current.parentElement;
+                  } else if (root && root.host) {
+                    current = root.host;
+                  } else {
+                    current = null;
+                  }
+                }
+                return null;
+              }).catch(() => null);
+              const buttonElement = typeof maybeButton?.asElement === "function" ? maybeButton.asElement() : null;
+              if (buttonElement) {
+                cameraButton = { handle: buttonElement };
+              } else if (maybeButton) {
+                await maybeButton.dispose().catch(() => {});
+              }
+            }
+          }
           if (!cameraButton?.handle) return false;
-          const chooserPromise = page.waitForFileChooser({ timeout: 1800 }).catch(() => null);
+          const chooserPromise = page.waitForFileChooser({ timeout: 2600 }).catch(() => null);
           const clickedCamera = await clickHandleHumanLike(page, cameraButton.handle);
           if (!clickedCamera) {
             await cameraButton.handle.click({ delay: 30 }).catch(() => {});
@@ -4676,27 +4743,32 @@ const sendConversationMedia = async ({
           return true;
         };
 
-        for (let attempt = 0; attempt < 2 && !uploaded && hasTimeLeft(9000); attempt += 1) {
+        for (let attempt = 0; attempt < 3 && !uploaded && hasTimeLeft(11000); attempt += 1) {
           ensureDeadline("send-media-find-file-input");
+          if (attempt === 0 || randomChance(0.35)) {
+            uploaded = await tryCameraChooserUpload();
+            if (uploaded) break;
+          }
           if (!fileInputHandle) {
             const fileInputResult = await findFirstHandleInAnyContext(page, fileInputSelectors, {
-              timeout: attempt === 0 ? 1200 : 2200,
+              timeout: attempt === 0 ? 1800 : 3600,
               requireVisible: false
             });
             fileInputHandle = fileInputResult?.handle || null;
           }
           if (fileInputHandle) break;
 
-          uploaded = await tryCameraChooserUpload();
-          if (uploaded) break;
-
           await dismissConversationBlockingModals(page, { maxPasses: 2 }).catch(() => {});
           await humanPause(100, 180);
         }
 
         if (!uploaded && !fileInputHandle) {
+          uploaded = await tryCameraChooserUpload();
+        }
+
+        if (!uploaded && !fileInputHandle) {
           const fallbackInput = await findFirstHandleInAnyContext(page, fileInputSelectors, {
-            timeout: 2400,
+            timeout: 5200,
             requireVisible: false
           });
           fileInputHandle = fallbackInput?.handle || null;
