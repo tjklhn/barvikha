@@ -169,6 +169,7 @@ const ensureDebugDir = () => {
 const getPublishRequestLogPath = () => path.join(ensureDebugDir(), "publish-requests.log");
 const getServerErrorLogPath = () => path.join(ensureDebugDir(), "server-errors.log");
 const getFieldsRequestLogPath = () => path.join(ensureDebugDir(), "fields-requests.log");
+const getMessageActionsLogPath = () => path.join(ensureDebugDir(), "message-actions.log");
 
 const normalizeTokenValue = (value) => String(value || "").trim();
 const parseEnvTokenList = (value) => String(value || "")
@@ -1553,48 +1554,171 @@ app.post("/api/messages/send", async (req, res) => {
 });
 
 app.post("/api/messages/offer/decline", async (req, res) => {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+  }
+  const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "start",
+    route: "offer-decline",
+    debugId,
+    ip: req.ip,
+    bodyKeys: Object.keys(req.body || {})
+  });
+  req.on("aborted", () => {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "request-aborted",
+      route: "offer-decline",
+      debugId,
+      elapsedMs: Date.now() - startedAt
+    });
+  });
+  res.on("close", () => {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "response-close",
+      route: "offer-decline",
+      debugId,
+      elapsedMs: Date.now() - startedAt,
+      statusCode: res.statusCode,
+      writableEnded: res.writableEnded,
+      headersSent: res.headersSent
+    });
+  });
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
     const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "payload",
+      route: "offer-decline",
+      debugId,
+      accountId,
+      hasConversationId: Boolean(conversationId),
+      hasConversationUrl: Boolean(conversationUrl)
+    });
 
     if (!accountId || (!conversationId && !conversationUrl)) {
-      res.status(400).json({ success: false, error: "Недостаточно данных для отклонения заявки." });
+      res.status(400).json({
+        success: false,
+        error: "Недостаточно данных для отклонения заявки.",
+        debugId
+      });
       return;
     }
 
     const account = getAccountForRequest(accountId, req, res);
-    if (!account) return;
+    if (!account) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-not-found",
+        route: "offer-decline",
+        debugId,
+        accountId
+      });
+      return;
+    }
 
     const proxy = requireAccountProxy(account, res, "отклонения заявки", getOwnerContext(req));
-    if (!proxy) return;
+    if (!proxy) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "proxy-required",
+        route: "offer-decline",
+        debugId,
+        accountId,
+        proxyId: account?.proxyId || null
+      });
+      return;
+    }
 
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-start",
+      route: "offer-decline",
+      debugId
+    });
     const result = await declineConversationOffer({
       account,
       proxy,
       conversationId,
       conversationUrl
     });
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-success",
+      route: "offer-decline",
+      debugId,
+      elapsedMs: Date.now() - startedAt,
+      messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
+    });
 
     res.json({
       success: true,
       messages: result.messages || [],
       conversationId: result.conversationId || conversationId,
-      conversationUrl: result.conversationUrl || conversationUrl
+      conversationUrl: result.conversationUrl || conversationUrl,
+      debugId
     });
   } catch (error) {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-error",
+      route: "offer-decline",
+      debugId,
+      elapsedMs: Date.now() - startedAt,
+      code: error?.code || "",
+      message: error?.message || String(error),
+      stack: error?.stack || ""
+    });
     if (error.code === "AUTH_REQUIRED") {
       res.status(401).json({
         success: false,
-        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId
       });
       return;
     }
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error?.message || "Не удалось отклонить предложение",
+      code: error?.code || "",
+      debugId
+    });
   }
 });
 
 app.post("/api/messages/send-media", messageUpload.array("images", 10), async (req, res) => {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+  }
+  const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "start",
+    route: "send-media",
+    debugId,
+    ip: req.ip,
+    bodyKeys: Object.keys(req.body || {})
+  });
+  req.on("aborted", () => {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "request-aborted",
+      route: "send-media",
+      debugId,
+      elapsedMs: Date.now() - startedAt
+    });
+  });
+  res.on("close", () => {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "response-close",
+      route: "send-media",
+      debugId,
+      elapsedMs: Date.now() - startedAt,
+      statusCode: res.statusCode,
+      writableEnded: res.writableEnded,
+      headersSent: res.headersSent
+    });
+  });
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
@@ -1602,23 +1726,64 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     const text = req.body?.text ? String(req.body.text) : "";
     const files = Array.isArray(req.files) ? req.files : [];
     const imageFiles = files.filter((file) => String(file?.mimetype || "").toLowerCase().startsWith("image/"));
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "payload",
+      route: "send-media",
+      debugId,
+      accountId,
+      hasConversationId: Boolean(conversationId),
+      hasConversationUrl: Boolean(conversationUrl),
+      textLength: text.trim().length,
+      filesCount: files.length,
+      imageFilesCount: imageFiles.length
+    });
 
     if (!accountId || (!conversationId && !conversationUrl) || (!text.trim() && !imageFiles.length)) {
-      res.status(400).json({ success: false, error: "Недостаточно данных для отправки." });
+      res.status(400).json({
+        success: false,
+        error: "Недостаточно данных для отправки.",
+        debugId
+      });
       return;
     }
 
     if (files.length && !imageFiles.length) {
-      res.status(400).json({ success: false, error: "Разрешены только изображения." });
+      res.status(400).json({
+        success: false,
+        error: "Разрешены только изображения.",
+        debugId
+      });
       return;
     }
 
     const account = getAccountForRequest(accountId, req, res);
-    if (!account) return;
+    if (!account) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-not-found",
+        route: "send-media",
+        debugId,
+        accountId
+      });
+      return;
+    }
 
     const proxy = requireAccountProxy(account, res, "отправки фотографий", getOwnerContext(req));
-    if (!proxy) return;
+    if (!proxy) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "proxy-required",
+        route: "send-media",
+        debugId,
+        accountId,
+        proxyId: account?.proxyId || null
+      });
+      return;
+    }
 
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-start",
+      route: "send-media",
+      debugId
+    });
     const result = await sendConversationMedia({
       account,
       proxy,
@@ -1627,22 +1792,47 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       text: text.trim(),
       files: imageFiles
     });
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-success",
+      route: "send-media",
+      debugId,
+      elapsedMs: Date.now() - startedAt,
+      messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
+    });
 
     res.json({
       success: true,
       messages: result.messages || [],
       conversationId: result.conversationId || conversationId,
-      conversationUrl: result.conversationUrl || conversationUrl
+      conversationUrl: result.conversationUrl || conversationUrl,
+      debugId
     });
   } catch (error) {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-error",
+      route: "send-media",
+      debugId,
+      elapsedMs: Date.now() - startedAt,
+      code: error?.code || "",
+      message: error?.message || String(error),
+      details: error?.details || "",
+      stack: error?.stack || ""
+    });
     if (error.code === "AUTH_REQUIRED") {
       res.status(401).json({
         success: false,
-        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId
       });
       return;
     }
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error?.message || "Не удалось отправить фото",
+      code: error?.code || "",
+      details: error?.details || "",
+      debugId
+    });
   }
 });
 

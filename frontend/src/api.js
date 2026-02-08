@@ -95,9 +95,13 @@ export const apiFetch = async (path, options = {}) => {
   for (let index = 0; index < uniqueCandidates.length; index += 1) {
     const base = uniqueCandidates[index];
     const url = buildApiUrl(path, base);
+    let timedOut = false;
     const controller = !fetchOptions.signal && shouldTimeout ? new AbortController() : null;
     const timerId = controller
-      ? setTimeout(() => controller.abort(), Math.max(5000, timeoutValue))
+      ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, Math.max(5000, timeoutValue))
       : null;
 
     try {
@@ -113,10 +117,22 @@ export const apiFetch = async (path, options = {}) => {
       }
       return response;
     } catch (error) {
-      lastError = error;
+      if (timedOut && error?.name === "AbortError") {
+        const timeoutError = new Error(`Request timeout after ${Math.max(5000, timeoutValue)}ms (${method} ${path})`);
+        timeoutError.name = "AbortError";
+        timeoutError.code = "REQUEST_TIMEOUT";
+        timeoutError.method = method;
+        timeoutError.path = path;
+        timeoutError.url = url;
+        timeoutError.timeoutMs = Math.max(5000, timeoutValue);
+        timeoutError.originalError = error;
+        lastError = timeoutError;
+      } else {
+        lastError = error;
+      }
       const hasAnotherBase = index < uniqueCandidates.length - 1;
       if (!hasAnotherBase) break;
-      if (!isRetryableNetworkError(error)) break;
+      if (!isRetryableNetworkError(lastError)) break;
     } finally {
       if (timerId) clearTimeout(timerId);
     }

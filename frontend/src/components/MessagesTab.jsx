@@ -460,6 +460,15 @@ const MessagesTab = () => {
     });
   };
 
+  const formatRequestError = (error, fallbackText) => {
+    const baseMessage = String(error?.message || fallbackText || "Ошибка запроса").trim();
+    const debugId = error?.data?.debugId || error?.debugId || "";
+    if (debugId) {
+      return `${baseMessage} (debugId: ${debugId})`;
+    }
+    return baseMessage;
+  };
+
   const confirmDeclineOffer = async () => {
     if (!selectedMessage || decliningOffer) return;
     if (!selectedMessage.conversationId && !selectedMessage.conversationUrl) {
@@ -470,6 +479,7 @@ const MessagesTab = () => {
     try {
       const result = await apiFetchJson("/api/messages/offer/decline", {
         method: "POST",
+        timeoutMs: 240000,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId: selectedMessage.accountId,
@@ -516,8 +526,12 @@ const MessagesTab = () => {
       }
       setDeclineConfirmOpen(false);
     } catch (error) {
-      console.error("Ошибка отклонения заявки:", error);
-      alert(error?.message || "Не удалось отклонить заявку");
+      console.error("Ошибка отклонения заявки:", error, {
+        status: error?.status,
+        code: error?.code,
+        data: error?.data || null
+      });
+      alert(formatRequestError(error, "Не удалось отклонить заявку"));
     } finally {
       setDecliningOffer(false);
     }
@@ -607,11 +621,13 @@ const MessagesTab = () => {
           });
           return apiFetchJson("/api/messages/send-media", {
             method: "POST",
+            timeoutMs: 240000,
             body: form
           });
         })()
         : await apiFetchJson("/api/messages/send", {
           method: "POST",
+          timeoutMs: 180000,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             accountId: selectedMessage.accountId,
@@ -701,10 +717,15 @@ const MessagesTab = () => {
         });
         setReplyText(textToSend);
         setReplyImages(imagesToSend);
-        alert("Ошибка: " + (result.error || "Не удалось отправить"));
+        const debugId = result?.debugId ? ` (debugId: ${result.debugId})` : "";
+        alert("Ошибка: " + (result.error || "Не удалось отправить") + debugId);
       }
     } catch (err) {
-      console.error("Ошибка отправки:", err);
+      console.error("Ошибка отправки:", err, {
+        status: err?.status,
+        code: err?.code,
+        data: err?.data || null
+      });
       setSelectedMessage((prev) => {
         if (!prev) return prev;
         const updated = Array.isArray(prev.messages) ? prev.messages : [];
@@ -712,7 +733,7 @@ const MessagesTab = () => {
       });
       setReplyText(textToSend);
       setReplyImages(imagesToSend);
-      alert(err?.message || "Ошибка при отправке сообщения");
+      alert(formatRequestError(err, "Ошибка при отправке сообщения"));
     } finally {
       setSending(false);
     }
