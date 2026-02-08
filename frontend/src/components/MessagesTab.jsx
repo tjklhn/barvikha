@@ -108,6 +108,50 @@ const getMessagePreviewImage = (message) =>
 
 const hasMessagePreviewImage = (message) => Boolean(getRawMessagePreviewImage(message));
 
+const isPaymentAndShippingMessage = (message) => {
+  if (!message || typeof message !== "object") return false;
+  const type = String(message.type || "").toUpperCase();
+  return type === "PAYMENT_AND_SHIPPING_MESSAGE" || Boolean(message.paymentAndShippingMessageType);
+};
+
+const formatEuroFromCents = (value) => {
+  const cents = Number(value);
+  if (!Number.isFinite(cents)) return "";
+  return (cents / 100).toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+};
+
+const pickOfferField = (message, key) => {
+  if (!message || typeof message !== "object") return null;
+  const direct = message[key];
+  if (direct !== undefined && direct !== null) return direct;
+  const actions = Array.isArray(message.actions) ? message.actions : [];
+  const withKey = actions.find((action) => action && action[key] !== undefined && action[key] !== null);
+  return withKey ? withKey[key] : null;
+};
+
+const getOfferActionText = (message, actionType, fallback = "") => {
+  const actions = Array.isArray(message?.actions) ? message.actions : [];
+  const action = actions.find((item) => item?.actionType === actionType);
+  return action?.ctaText || fallback;
+};
+
+const extractAttachmentUrls = (message) => {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const urls = [];
+  for (const item of attachments) {
+    if (!item) continue;
+    if (typeof item === "string") {
+      urls.push(item);
+      continue;
+    }
+    if (typeof item === "object") {
+      const candidate = item.url || item.href || item.src || item.imageUrl || item.thumbnailUrl;
+      if (candidate) urls.push(candidate);
+    }
+  }
+  return urls.filter(Boolean);
+};
+
 const getConversationKey = (message) => {
   if (!message || typeof message !== "object") return "";
   const accountId = message.accountId != null ? String(message.accountId) : "";
@@ -150,16 +194,32 @@ const MessagesTab = () => {
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [replyText, setReplyText] = useState("");
+  const [replyImages, setReplyImages] = useState([]);
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
   const [error, setError] = useState(null);
   const [isMobileView, setIsMobileView] = useState(() => detectMobileView());
   const [translationByMessageId, setTranslationByMessageId] = useState({});
+  const [declineConfirmOpen, setDeclineConfirmOpen] = useState(false);
+  const [decliningOffer, setDecliningOffer] = useState(false);
   const chatScrollRef = useRef(null);
+  const fileInputRef = useRef(null);
   const previewHydrationInFlight = useRef(new Set());
   const messagesRefreshInFlight = useRef(false);
   const translateInFlight = useRef(new Set());
+
+  const clearComposerImages = () => {
+    setReplyImages((prev) => {
+      const existing = Array.isArray(prev) ? prev : [];
+      existing.forEach((item) => {
+        if (item?.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+      return [];
+    });
+  };
 
   useEffect(() => {
     loadMessages();
@@ -181,6 +241,14 @@ const MessagesTab = () => {
     if (!container) return;
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [selectedMessage?.id, selectedMessage?.messages]);
+
+  useEffect(() => {
+    // Reset composer state when switching conversations.
+    setReplyText("");
+    clearComposerImages();
+    setDeclineConfirmOpen(false);
+    setDecliningOffer(false);
+  }, [selectedMessage?.id]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -310,8 +378,93 @@ const MessagesTab = () => {
   // We persist "seen" locally so a refresh won't resurrect the "new" badge.
   const markAsRead = (message) => rememberConversationSeen(message);
 
+  const handleReplyImageSelect = (event) => {
+    const files = Array.from(event?.target?.files || []);
+    if (event?.target) event.target.value = "";
+    if (!files.length) return;
+
+    const nextItems = files
+      .filter((file) => String(file?.type || "").toLowerCase().startsWith("image/"))
+      .slice(0, 10)
+      .map((file) => ({
+        id: `img-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        file,
+        previewUrl: URL.createObjectURL(file)
+      }));
+
+    if (!nextItems.length) return;
+    setReplyImages((prev) => {
+      const existing = Array.isArray(prev) ? prev : [];
+      return [...existing, ...nextItems].slice(0, 10);
+    });
+  };
+
+  const removeReplyImage = (id) => {
+    setReplyImages((prev) => {
+      const existing = Array.isArray(prev) ? prev : [];
+      const target = existing.find((item) => item?.id === id);
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return existing.filter((item) => item?.id !== id);
+    });
+  };
+
+  const confirmDeclineOffer = async () => {
+    if (!selectedMessage || decliningOffer) return;
+    if (!selectedMessage.conversationId && !selectedMessage.conversationUrl) {
+      alert("Не найден идентификатор диалога.");
+      return;
+    }
+    setDecliningOffer(true);
+    try {
+      const result = await apiFetchJson("/api/messages/offer/decline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: selectedMessage.accountId,
+          conversationId: selectedMessage.conversationId,
+          conversationUrl: selectedMessage.conversationUrl
+        })
+      });
+
+      const serverMessages = Array.isArray(result.messages) ? result.messages : [];
+      if (serverMessages.length) {
+        const lastMessage = serverMessages[serverMessages.length - 1];
+        setMessages((prev) => prev.map((msg) => (
+          msg.id === selectedMessage.id
+            ? {
+              ...msg,
+              message: lastMessage?.text || msg.message,
+              date: lastMessage?.date || msg.date,
+              time: lastMessage?.time || msg.time,
+              conversationId: result.conversationId || msg.conversationId,
+              conversationUrl: result.conversationUrl || msg.conversationUrl,
+              unread: false
+            }
+            : msg
+        )));
+        setSelectedMessage((prev) => ({
+          ...prev,
+          messages: serverMessages,
+          conversationId: result.conversationId || prev.conversationId,
+          conversationUrl: result.conversationUrl || prev.conversationUrl
+        }));
+      } else {
+        // Fallback: refresh thread when backend doesn't return messages.
+        fetchThread(selectedMessage);
+      }
+      setDeclineConfirmOpen(false);
+    } catch (error) {
+      console.error("Ошибка отклонения заявки:", error);
+      alert(error?.message || "Не удалось отклонить заявку");
+    } finally {
+      setDecliningOffer(false);
+    }
+  };
+
   const sendReply = async () => {
-    if (!replyText.trim() || !selectedMessage) return;
+    if (!selectedMessage) return;
     if (!selectedMessage.conversationId && !selectedMessage.conversationUrl
       && !selectedMessage.sender && !selectedMessage.adTitle) {
       alert("Не найден идентификатор диалога.");
@@ -319,8 +472,21 @@ const MessagesTab = () => {
     }
 
     const textToSend = replyText.trim();
+    const imagesToSend = Array.isArray(replyImages) ? replyImages : [];
+    if (imagesToSend.length && !selectedMessage.conversationId && !selectedMessage.conversationUrl) {
+      alert("Для отправки фото нужен conversationId диалога. Откройте диалог и попробуйте снова.");
+      return;
+    }
+    if (!textToSend && imagesToSend.length === 0) return;
     const now = new Date();
     const optimisticId = `local-${now.getTime()}-${Math.random().toString(16).slice(2)}`;
+    const optimisticAttachments = imagesToSend.map((item) => ({
+      url: item?.previewUrl || "",
+      name: item?.file?.name || "",
+      type: item?.file?.type || "",
+      local: true
+    })).filter((item) => item?.url);
+    const previewText = textToSend || (optimisticAttachments.length ? "Фото" : "");
     const optimisticMessage = {
       id: optimisticId,
       text: textToSend,
@@ -328,11 +494,13 @@ const MessagesTab = () => {
       time: now.toTimeString().slice(0, 5),
       direction: "outgoing",
       sender: "Вы",
-      pending: true
+      pending: true,
+      ...(optimisticAttachments.length ? { attachments: optimisticAttachments } : {})
     };
 
     // Optimistic UI: show message immediately in the thread and conversation list.
     setReplyText("");
+    setReplyImages([]);
     setSelectedMessage((prev) => {
       if (!prev) return prev;
       const existing = Array.isArray(prev.messages) && prev.messages.length
@@ -356,7 +524,7 @@ const MessagesTab = () => {
       msg.id === selectedMessage.id
         ? {
           ...msg,
-          message: textToSend,
+          message: previewText,
           date: optimisticMessage.date,
           time: optimisticMessage.time,
           unread: false
@@ -366,26 +534,50 @@ const MessagesTab = () => {
 
     setSending(true);
     try {
-      const result = await apiFetchJson("/api/messages/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId: selectedMessage.accountId,
-          conversationId: selectedMessage.conversationId,
-          conversationUrl: selectedMessage.conversationUrl,
-          participant: selectedMessage.sender,
-          adTitle: selectedMessage.adTitle,
-          text: textToSend
-        })
-      });
+      const result = optimisticAttachments.length
+        ? await (() => {
+          const form = new FormData();
+          form.append("accountId", String(selectedMessage.accountId));
+          if (selectedMessage.conversationId) form.append("conversationId", String(selectedMessage.conversationId));
+          if (selectedMessage.conversationUrl) form.append("conversationUrl", String(selectedMessage.conversationUrl));
+          if (textToSend) form.append("text", textToSend);
+          imagesToSend.forEach((item) => {
+            if (!item?.file) return;
+            form.append("images", item.file, item.file.name || "image.jpg");
+          });
+          return apiFetchJson("/api/messages/send-media", {
+            method: "POST",
+            body: form
+          });
+        })()
+        : await apiFetchJson("/api/messages/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            accountId: selectedMessage.accountId,
+            conversationId: selectedMessage.conversationId,
+            conversationUrl: selectedMessage.conversationUrl,
+            participant: selectedMessage.sender,
+            adTitle: selectedMessage.adTitle,
+            text: textToSend
+          })
+        });
       if (result.success) {
         const resolvedConversationId = result.conversationId || selectedMessage.conversationId;
         const resolvedConversationUrl = result.conversationUrl || selectedMessage.conversationUrl;
         const serverMessages = Array.isArray(result.messages) ? result.messages : [];
-        const hasSameOutgoing = serverMessages.some((m) => (
-          String(m?.direction || "").toLowerCase() === "outgoing"
-          && String(m?.text || "") === textToSend
-        ));
+        const hasSameOutgoing = optimisticAttachments.length
+          ? serverMessages.some((m) => (
+            String(m?.direction || "").toLowerCase() === "outgoing"
+            && (
+              (Array.isArray(m?.attachments) && m.attachments.length > 0)
+              || (textToSend && String(m?.text || "") === textToSend)
+            )
+          ))
+          : serverMessages.some((m) => (
+            String(m?.direction || "").toLowerCase() === "outgoing"
+            && String(m?.text || "") === textToSend
+          ));
         const nextMessages = serverMessages.length
           ? (hasSameOutgoing ? serverMessages : [...serverMessages, { ...optimisticMessage, pending: false }])
           : null;
@@ -440,6 +632,7 @@ const MessagesTab = () => {
           return { ...prev, messages: updated.filter((m) => m?.id !== optimisticId) };
         });
         setReplyText(textToSend);
+        setReplyImages(imagesToSend);
         alert("Ошибка: " + (result.error || "Не удалось отправить"));
       }
     } catch (err) {
@@ -450,6 +643,7 @@ const MessagesTab = () => {
         return { ...prev, messages: updated.filter((m) => m?.id !== optimisticId) };
       });
       setReplyText(textToSend);
+      setReplyImages(imagesToSend);
       alert("Ошибка при отправке сообщения");
     } finally {
       setSending(false);
@@ -562,6 +756,8 @@ const MessagesTab = () => {
   const showConversationList = !isMobileView || !selectedMessage;
   const showChatPanel = !isMobileView || Boolean(selectedMessage);
   const selectedPreviewImage = selectedMessage ? getMessagePreviewImage(selectedMessage) : "";
+  const hasReplyPayload = Boolean(replyText.trim()) || replyImages.length > 0;
+  const canSendReply = !sending && hasReplyPayload;
 
   // Spinner SVG for loading states
   const Spinner = ({ size = 20, color = "#7dd3fc" }) => (
@@ -975,6 +1171,7 @@ const MessagesTab = () => {
         {/* Chat Panel */}
         {showChatPanel && <div className="messages-chat" style={{
           flex: 1,
+          position: "relative",
           background: "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.95) 100%)",
           borderRadius: "20px",
           overflow: "hidden",
@@ -1116,15 +1313,20 @@ const MessagesTab = () => {
                   </div>
                 ) : (
                   <>
-                    {threadMessages.map((messageItem, idx) => {
-                      const isOutgoing = messageItem.direction === "outgoing";
-                      const isPending = Boolean(messageItem.pending);
-                      const messageKey = String(messageItem.id || `idx-${idx}`);
-                      const translation = translationByMessageId[messageKey] || null;
-                      const canTranslate = !isOutgoing && Boolean(String(messageItem.text || "").trim());
+	                    {threadMessages.map((messageItem, idx) => {
+	                      const isOutgoing = messageItem.direction === "outgoing";
+	                      const isPending = Boolean(messageItem.pending);
+	                      const isOffer = isPaymentAndShippingMessage(messageItem);
+	                      const messageKey = String(messageItem.id || `idx-${idx}`);
+	                      const translation = translationByMessageId[messageKey] || null;
+	                      const hasText = Boolean(String(messageItem.text || "").trim());
+	                      const attachmentSrcs = extractAttachmentUrls(messageItem)
+	                        .map((url) => toMessageImageSrc(url, selectedMessage?.accountId))
+	                        .filter(Boolean);
+	                      const canTranslate = !isOffer && !isOutgoing && hasText;
 
-                      const toggleTranslate = async () => {
-                        if (!canTranslate) return;
+	                      const toggleTranslate = async () => {
+	                        if (!canTranslate) return;
 
                         // Toggle off when already shown.
                         if (translation?.shown && translation?.translatedText) {
@@ -1189,130 +1391,369 @@ const MessagesTab = () => {
                         } finally {
                           translateInFlight.current.delete(messageKey);
                         }
-                      };
-                      return (
-                        <div
-                          key={messageItem.id || idx}
-                          style={{
+	                      };
+	                      const offerTitle = String(messageItem?.title || "Anfrage erhalten").trim() || "Anfrage erhalten";
+	                      const offerItemCents = pickOfferField(messageItem, "itemPriceInEuroCent");
+	                      const offerShippingCents = pickOfferField(messageItem, "shippingCostInEuroCent");
+	                      const offerTotalCents = pickOfferField(messageItem, "sellerTotalInEuroCent");
+	                      const offerCarrierName = pickOfferField(messageItem, "carrierName");
+	                      const offerOptionName = pickOfferField(messageItem, "shippingOptionName");
+	                      const offerOptionDesc = pickOfferField(messageItem, "shippingOptionDescription");
+	                      const offerLiabilityCents = pickOfferField(messageItem, "liabilityLimitInEuroCent");
+
+	                      const acceptCta = getOfferActionText(
+	                        messageItem,
+	                        "ACCEPT_BUYER_OFFER_LEARN_MORE_ACTION",
+	                        "Anfrage akzeptieren"
+	                      );
+	                      const declineCta = getOfferActionText(
+	                        messageItem,
+	                        "CANCEL_OFFER_ACTION",
+	                        "Anfrage ablehnen"
+	                      );
+	                      const counterCta = getOfferActionText(
+	                        messageItem,
+	                        "MAKE_COUNTER_OFFER_ACTION",
+	                        "Gegenangebot machen"
+	                      );
+	                      return (
+	                        <div
+	                          key={messageItem.id || idx}
+	                          style={{
                             marginBottom: "12px",
                             display: "flex",
                             justifyContent: isOutgoing ? "flex-end" : "flex-start",
                             animation: "fadeIn 0.2s ease"
                           }}
-                        >
-                          <div style={{
-                            maxWidth: "70%",
-                            minWidth: "120px"
-                          }}>
-                            {/* Sender name */}
-                            <div style={{
-                              fontSize: "11px",
-                              color: isOutgoing ? "#86efac" : "#7dd3fc",
+	                        >
+	                          <div style={{
+	                            maxWidth: isOffer ? "520px" : "70%",
+	                            minWidth: isOffer ? "240px" : "120px"
+	                          }}>
+	                            {/* Sender name */}
+	                            <div style={{
+	                              fontSize: "11px",
+	                              color: isOutgoing ? "#86efac" : "#7dd3fc",
                               fontWeight: 600,
                               marginBottom: "4px",
                               paddingLeft: isOutgoing ? "0" : "12px",
                               paddingRight: isOutgoing ? "12px" : "0",
                               textAlign: isOutgoing ? "right" : "left"
                             }}>
-                              {messageItem.sender || (isOutgoing ? "Вы" : selectedMessage.sender || "")}
-                            </div>
+	                              {messageItem.sender || (isOutgoing ? "Вы" : selectedMessage.sender || "")}
+	                            </div>
 
-                            {/* Message bubble */}
-                            <div style={{
-                              position: "relative",
-                              padding: canTranslate ? "10px 14px 18px 14px" : "10px 14px",
-                              borderRadius: isOutgoing ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                              background: isOutgoing
-                                ? "linear-gradient(135deg, #1a4731, #14532d)"
-                                : "rgba(15,23,42,0.8)",
-                              border: isOutgoing
-                                ? "1px solid rgba(34,197,94,0.25)"
-                                : "1px solid rgba(148,163,184,0.15)"
-                            }}>
-                              <div style={{
-                                fontSize: "14px",
-                                lineHeight: "1.5",
-                                whiteSpace: "pre-wrap",
-                                wordBreak: "break-word",
-                                color: "#e2e8f0"
-                              }}>
-                                {messageItem.text}
-                              </div>
+	                            {isOffer ? (
+	                              <div style={{
+	                                borderRadius: "18px",
+	                                padding: "14px 14px 12px 14px",
+	                                background: "linear-gradient(145deg, rgba(2,6,23,0.55) 0%, rgba(15,23,42,0.95) 58%, rgba(6,78,59,0.22) 100%)",
+	                                border: "1px solid rgba(34,197,94,0.22)",
+	                                boxShadow: "0 18px 40px rgba(0,0,0,0.45)"
+	                              }}>
+	                                <div style={{
+	                                  display: "flex",
+	                                  justifyContent: "space-between",
+	                                  alignItems: "flex-start",
+	                                  gap: "12px",
+	                                  marginBottom: "12px"
+	                                }}>
+	                                  <div style={{ display: "flex", gap: "10px", alignItems: "center", minWidth: 0 }}>
+	                                    <div style={{
+	                                      width: "36px",
+	                                      height: "36px",
+	                                      borderRadius: "12px",
+	                                      background: "rgba(34,197,94,0.18)",
+	                                      border: "1px solid rgba(34,197,94,0.25)",
+	                                      display: "flex",
+	                                      alignItems: "center",
+	                                      justifyContent: "center",
+	                                      flexShrink: 0
+	                                    }}>
+	                                      <span style={{ color: "#4ade80", fontWeight: 900, fontSize: "16px" }}>€</span>
+	                                    </div>
+	                                    <div style={{ minWidth: 0 }}>
+	                                      <div style={{
+	                                        fontSize: "14px",
+	                                        fontWeight: 800,
+	                                        color: "#bbf7d0",
+	                                        overflow: "hidden",
+	                                        textOverflow: "ellipsis",
+	                                        whiteSpace: "nowrap"
+	                                      }}>
+	                                        {offerTitle}
+	                                      </div>
+	                                      <div style={{
+	                                        fontSize: "12px",
+	                                        color: "rgba(148,163,184,0.9)",
+	                                        marginTop: "1px"
+	                                      }}>
+	                                        Sicher bezahlen
+	                                      </div>
+	                                    </div>
+	                                  </div>
+	                                  <div style={{
+	                                    fontSize: "20px",
+	                                    fontWeight: 900,
+	                                    color: "#4ade80",
+	                                    whiteSpace: "nowrap"
+	                                  }}>
+	                                    {formatEuroFromCents(offerTotalCents)}
+	                                  </div>
+	                                </div>
 
-                              {/* Translate button */}
-                              {canTranslate && (
-                                <button
-                                  type="button"
-                                  className="msg-translate-btn"
-                                  onClick={toggleTranslate}
-                                  title="Перевести на русский"
-                                  style={{
-                                    position: "absolute",
-                                    left: "8px",
-                                    bottom: "6px",
-                                    width: "22px",
-                                    height: "22px",
-                                    borderRadius: "8px",
-                                    border: "1px solid rgba(148,163,184,0.18)",
-                                    background: "rgba(2,6,23,0.25)",
-                                    color: "#94a3b8",
-                                    display: "inline-flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor: "pointer",
-                                    opacity: 0.75,
-                                    transition: "transform 0.12s ease, opacity 0.12s ease, background 0.12s ease"
-                                  }}
-                                >
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M5 5h6" />
-                                    <path d="M8 5c0 6-3 10-6 12" />
-                                    <path d="M7 13c2 2 4 4 7 6" />
-                                    <path d="M14 19h7" />
-                                    <path d="M17 4l4 15" />
-                                    <path d="M20 19l-3-9-3 9" />
-                                  </svg>
-                                </button>
-                              )}
+	                                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+	                                  <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(226,232,240,0.92)", fontSize: "13px" }}>
+	                                    <span style={{ color: "rgba(148,163,184,0.95)" }}>Betrag</span>
+	                                    <span style={{ fontWeight: 700 }}>{formatEuroFromCents(offerItemCents)}</span>
+	                                  </div>
+	                                  <div style={{ display: "flex", justifyContent: "space-between", color: "rgba(226,232,240,0.92)", fontSize: "13px" }}>
+	                                    <span style={{ color: "rgba(148,163,184,0.95)" }}>Versand</span>
+	                                    <span style={{ fontWeight: 700 }}>{formatEuroFromCents(offerShippingCents)}</span>
+	                                  </div>
+	                                  <div style={{
+	                                    display: "flex",
+	                                    justifyContent: "space-between",
+	                                    fontSize: "13px",
+	                                    paddingTop: "6px",
+	                                    borderTop: "1px solid rgba(148,163,184,0.12)"
+	                                  }}>
+	                                    <span style={{ color: "rgba(148,163,184,0.95)", fontWeight: 800 }}>Gesamt</span>
+	                                    <span style={{ fontWeight: 900, color: "#e2e8f0" }}>{formatEuroFromCents(offerTotalCents)}</span>
+	                                  </div>
+	                                </div>
 
-                              {/* Translation result */}
-                              {translation?.shown && (
-                                <div style={{
-                                  marginTop: "10px",
-                                  paddingTop: "8px",
-                                  borderTop: "1px dashed rgba(148,163,184,0.18)",
-                                  fontSize: "13px",
-                                  lineHeight: "1.45",
-                                  color: translation?.error ? "#fb7185" : "#cbd5e1",
-                                  opacity: 0.95
-                                }}>
-                                  {translation?.loading ? (
-                                    <span style={{ color: "#94a3b8" }}>Перевод...</span>
-                                  ) : translation?.error ? (
-                                    <span>{translation.error}</span>
-                                  ) : (
-                                    <span>{translation.translatedText}</span>
-                                  )}
-                                </div>
-                              )}
+	                                {(offerCarrierName || offerOptionName || offerOptionDesc) ? (
+	                                  <div style={{
+	                                    marginTop: "12px",
+	                                    padding: "12px",
+	                                    borderRadius: "14px",
+	                                    background: "rgba(2,6,23,0.25)",
+	                                    border: "1px solid rgba(148,163,184,0.14)"
+	                                  }}>
+	                                    <div style={{ fontSize: "13px", fontWeight: 800, color: "#e2e8f0" }}>
+	                                      Inkl. {offerCarrierName || "Versand"} {offerOptionName || ""}
+	                                    </div>
+	                                    {offerOptionDesc ? (
+	                                      <div style={{ marginTop: "4px", fontSize: "12px", color: "rgba(148,163,184,0.95)" }}>
+	                                        {offerOptionDesc}
+	                                      </div>
+	                                    ) : null}
+	                                    {offerLiabilityCents ? (
+	                                      <div style={{ marginTop: "6px", fontSize: "12px", color: "rgba(148,163,184,0.95)" }}>
+	                                        Mit Sendungsverfolgung und Haftung bis {formatEuroFromCents(offerLiabilityCents)}
+	                                      </div>
+	                                    ) : null}
+	                                  </div>
+	                                ) : null}
 
-                              {/* Timestamp */}
-                              <div style={{
-                                fontSize: "10px",
-                                color: "#64748b",
-                                marginTop: "6px",
-                                textAlign: "right"
-                              }}>
-                                {isPending ? "Отправка..." : formatMessageDate(
-                                  messageItem.date || selectedMessage.date,
-                                  messageItem.time || selectedMessage.time
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+	                                {hasText ? (
+	                                  <div style={{
+	                                    marginTop: "12px",
+	                                    fontSize: "13px",
+	                                    lineHeight: "1.5",
+	                                    color: "rgba(226,232,240,0.92)"
+	                                  }}>
+	                                    {messageItem.text}
+	                                  </div>
+	                                ) : null}
+
+	                                <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px" }}>
+	                                  <button
+	                                    type="button"
+	                                    disabled
+	                                    style={{
+	                                      width: "100%",
+	                                      padding: "10px 14px",
+	                                      borderRadius: "9999px",
+	                                      border: "1px solid rgba(34,197,94,0.32)",
+	                                      background: "linear-gradient(135deg, rgba(34,197,94,0.55), rgba(22,163,74,0.45))",
+	                                      color: "rgba(255,255,255,0.95)",
+	                                      fontWeight: 900,
+	                                      cursor: "not-allowed",
+	                                      opacity: 0.75
+	                                    }}
+	                                    title="Скоро"
+	                                  >
+	                                    {acceptCta}
+	                                  </button>
+	                                  <div style={{ display: "flex", gap: "10px" }}>
+	                                    <button
+	                                      type="button"
+	                                      onClick={() => setDeclineConfirmOpen(true)}
+	                                      disabled={decliningOffer}
+	                                      style={{
+	                                        flex: 1,
+	                                        padding: "10px 14px",
+	                                        borderRadius: "9999px",
+	                                        border: "1px solid rgba(148,163,184,0.28)",
+	                                        background: "rgba(2,6,23,0.35)",
+	                                        color: "rgba(226,232,240,0.95)",
+	                                        fontWeight: 800,
+	                                        cursor: decliningOffer ? "not-allowed" : "pointer",
+	                                        opacity: decliningOffer ? 0.7 : 1
+	                                      }}
+	                                    >
+	                                      {declineCta}
+	                                    </button>
+	                                    <button
+	                                      type="button"
+	                                      disabled
+	                                      style={{
+	                                        flex: 1,
+	                                        padding: "10px 14px",
+	                                        borderRadius: "9999px",
+	                                        border: "1px solid rgba(148,163,184,0.22)",
+	                                        background: "rgba(2,6,23,0.25)",
+	                                        color: "rgba(148,163,184,0.95)",
+	                                        fontWeight: 800,
+	                                        cursor: "not-allowed",
+	                                        opacity: 0.75
+	                                      }}
+	                                      title="Скоро"
+	                                    >
+	                                      {counterCta}
+	                                    </button>
+	                                  </div>
+	                                </div>
+
+	                                <div style={{
+	                                  fontSize: "10px",
+	                                  color: "rgba(148,163,184,0.8)",
+	                                  marginTop: "10px",
+	                                  textAlign: "right"
+	                                }}>
+	                                  {isPending ? "Отправка..." : formatMessageDate(
+	                                    messageItem.date || selectedMessage.date,
+	                                    messageItem.time || selectedMessage.time
+	                                  )}
+	                                </div>
+	                              </div>
+	                            ) : (
+	                              <div style={{
+	                                position: "relative",
+	                                padding: canTranslate ? "10px 14px 18px 14px" : "10px 14px",
+	                                borderRadius: isOutgoing ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+	                                background: isOutgoing
+	                                  ? "linear-gradient(135deg, #1a4731, #14532d)"
+	                                  : "rgba(15,23,42,0.8)",
+	                                border: isOutgoing
+	                                  ? "1px solid rgba(34,197,94,0.25)"
+	                                  : "1px solid rgba(148,163,184,0.15)"
+	                              }}>
+	                                {attachmentSrcs.length > 0 && (
+	                                  <div style={{
+	                                    display: "grid",
+	                                    gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+	                                    gap: "8px",
+	                                    marginBottom: hasText ? "8px" : "0"
+	                                  }}>
+	                                    {attachmentSrcs.map((src, imageIdx) => (
+	                                      <img
+	                                        key={`${messageKey}-img-${imageIdx}`}
+	                                        src={src}
+	                                        alt=""
+	                                        loading="lazy"
+	                                        referrerPolicy="no-referrer"
+	                                        style={{
+	                                          width: "100%",
+	                                          maxHeight: "220px",
+	                                          objectFit: "cover",
+	                                          borderRadius: "12px",
+	                                          border: "1px solid rgba(148,163,184,0.14)"
+	                                        }}
+	                                      />
+	                                    ))}
+	                                  </div>
+	                                )}
+
+	                                {hasText ? (
+	                                  <div style={{
+	                                    fontSize: "14px",
+	                                    lineHeight: "1.5",
+	                                    whiteSpace: "pre-wrap",
+	                                    wordBreak: "break-word",
+	                                    color: "#e2e8f0"
+	                                  }}>
+	                                    {messageItem.text}
+	                                  </div>
+	                                ) : null}
+
+	                                {/* Translate button */}
+	                                {canTranslate && (
+	                                  <button
+	                                    type="button"
+	                                    className="msg-translate-btn"
+	                                    onClick={toggleTranslate}
+	                                    title="Перевести на русский"
+	                                    style={{
+	                                      position: "absolute",
+	                                      left: "8px",
+	                                      bottom: "6px",
+	                                      width: "22px",
+	                                      height: "22px",
+	                                      borderRadius: "8px",
+	                                      border: "1px solid rgba(148,163,184,0.18)",
+	                                      background: "rgba(2,6,23,0.25)",
+	                                      color: "#94a3b8",
+	                                      display: "inline-flex",
+	                                      alignItems: "center",
+	                                      justifyContent: "center",
+	                                      cursor: "pointer",
+	                                      opacity: 0.75,
+	                                      transition: "transform 0.12s ease, opacity 0.12s ease, background 0.12s ease"
+	                                    }}
+	                                  >
+	                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+	                                      <path d="M5 5h6" />
+	                                      <path d="M8 5c0 6-3 10-6 12" />
+	                                      <path d="M7 13c2 2 4 4 7 6" />
+	                                      <path d="M14 19h7" />
+	                                      <path d="M17 4l4 15" />
+	                                      <path d="M20 19l-3-9-3 9" />
+	                                    </svg>
+	                                  </button>
+	                                )}
+
+	                                {/* Translation result */}
+	                                {translation?.shown && (
+	                                  <div style={{
+	                                    marginTop: "10px",
+	                                    paddingTop: "8px",
+	                                    borderTop: "1px dashed rgba(148,163,184,0.18)",
+	                                    fontSize: "13px",
+	                                    lineHeight: "1.45",
+	                                    color: translation?.error ? "#fb7185" : "#cbd5e1",
+	                                    opacity: 0.95
+	                                  }}>
+	                                    {translation?.loading ? (
+	                                      <span style={{ color: "#94a3b8" }}>Перевод...</span>
+	                                    ) : translation?.error ? (
+	                                      <span>{translation.error}</span>
+	                                    ) : (
+	                                      <span>{translation.translatedText}</span>
+	                                    )}
+	                                  </div>
+	                                )}
+
+	                                {/* Timestamp */}
+	                                <div style={{
+	                                  fontSize: "10px",
+	                                  color: "#64748b",
+	                                  marginTop: "6px",
+	                                  textAlign: "right"
+	                                }}>
+	                                  {isPending ? "Отправка..." : formatMessageDate(
+	                                    messageItem.date || selectedMessage.date,
+	                                    messageItem.time || selectedMessage.time
+	                                  )}
+	                                </div>
+	                              </div>
+	                            )}
+	                          </div>
+	                        </div>
+	                      );
+	                    })}
                   </>
                 )}
               </div>
@@ -1323,12 +1764,100 @@ const MessagesTab = () => {
                 borderTop: "1px solid rgba(148,163,184,0.15)",
                 background: "rgba(15,23,42,0.6)"
               }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleReplyImageSelect}
+                  style={{ display: "none" }}
+                />
+
+                {replyImages.length > 0 && (
+                  <div style={{
+                    marginBottom: "10px",
+                    display: "flex",
+                    gap: "8px",
+                    overflowX: "auto",
+                    paddingBottom: "2px"
+                  }}>
+                    {replyImages.map((item) => (
+                      <div
+                        key={item.id}
+                        style={{
+                          position: "relative",
+                          width: "72px",
+                          height: "72px",
+                          borderRadius: "10px",
+                          border: "1px solid rgba(148,163,184,0.2)",
+                          overflow: "hidden",
+                          flexShrink: 0
+                        }}
+                      >
+                        <img
+                          src={item.previewUrl}
+                          alt=""
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeReplyImage(item.id)}
+                          style={{
+                            position: "absolute",
+                            top: "4px",
+                            right: "4px",
+                            width: "20px",
+                            height: "20px",
+                            borderRadius: "9999px",
+                            border: "none",
+                            background: "rgba(2,6,23,0.72)",
+                            color: "#f8fafc",
+                            fontSize: "12px",
+                            cursor: "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center"
+                          }}
+                          title="Удалить"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div style={{ display: "flex", gap: "10px", alignItems: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sending}
+                    aria-label="Bilder hochladen"
+                    style={{
+                      width: "42px",
+                      height: "42px",
+                      borderRadius: "12px",
+                      border: "1px solid rgba(148,163,184,0.25)",
+                      background: "rgba(15,23,42,0.7)",
+                      color: "#cbd5e1",
+                      cursor: sending ? "not-allowed" : "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+                      <path d="M12.0004 8.54376C9.72753 8.54376 7.88501 10.4042 7.88501 12.6991C7.88501 14.994 9.72753 16.8544 12.0004 16.8544C14.2733 16.8544 16.1158 14.994 16.1158 12.6991C16.1158 10.4042 14.2733 8.54376 12.0004 8.54376ZM9.88501 12.6991C9.88501 11.5195 10.8321 10.5632 12.0004 10.5632C13.1687 10.5632 14.1158 11.5195 14.1158 12.6991C14.1158 13.8787 13.1687 14.835 12.0004 14.835C10.8321 14.835 9.88501 13.8787 9.88501 12.6991Z" />
+                      <path d="M9.23077 4C8.91601 4 8.61962 4.14963 8.43077 4.40388L6.65385 6.79612H4.38462C3.75218 6.79612 3.14564 7.04979 2.69844 7.50134C2.25124 7.95288 2 8.5653 2 9.20388V17.5922C2 18.2308 2.25124 18.8432 2.69844 19.2948C3.14564 19.7463 3.75218 20 4.38462 20H19.6154C20.2478 20 20.8544 19.7463 21.3016 19.2948C21.7488 18.8432 22 18.2308 22 17.5922V9.20388C22 8.5653 21.7488 7.95288 21.3016 7.50134C20.8544 7.04979 20.2478 6.79612 19.6154 6.79612H17.3462L15.5692 4.40388C15.3804 4.14963 15.084 4 14.7692 4H9.23077ZM7.95385 8.41165L9.73077 6.01942H14.2692L16.0462 8.41165C16.235 8.6659 16.5314 8.81553 16.8462 8.81553H19.6154C19.7179 8.81553 19.8163 8.85665 19.8888 8.9292C19.9614 9.00175 20.0025 9.10014 20.0025 9.20263V17.5909C20.0025 17.6934 19.9614 17.7918 19.8888 17.8644C19.8163 17.9369 19.7179 17.978 19.6154 17.978H4.38462C4.28208 17.978 4.1837 17.9369 4.11115 17.8644C4.0386 17.7918 3.99748 17.6934 3.99748 17.5909V9.20263C3.99748 9.10014 4.0386 9.00175 4.11115 8.9292C4.1837 8.85665 4.28208 8.81553 4.38462 8.81553H7.15385C7.4686 8.81553 7.765 8.6659 7.95385 8.41165Z" />
+                    </svg>
+                  </button>
+
                   <textarea
                     value={replyText}
                     onChange={(e) => setReplyText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Введите сообщение..."
+                    placeholder="Nachricht schreiben..."
                     rows={1}
                     style={{
                       flex: 1,
@@ -1350,21 +1879,22 @@ const MessagesTab = () => {
                       e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
                     }}
                   />
+
                   <button
                     className="msg-send-btn"
                     onClick={sendReply}
-                    disabled={sending || !replyText.trim()}
+                    disabled={!canSendReply}
                     style={{
                       padding: "10px 20px",
                       background: sending
                         ? "rgba(34,197,94,0.4)"
-                        : !replyText.trim()
+                        : !hasReplyPayload
                           ? "rgba(148,163,184,0.15)"
                           : "linear-gradient(135deg, #22c55e, #16a34a)",
-                      color: !replyText.trim() ? "#64748b" : "white",
+                      color: !hasReplyPayload ? "#64748b" : "white",
                       border: "none",
                       borderRadius: "12px",
-                      cursor: sending || !replyText.trim() ? "not-allowed" : "pointer",
+                      cursor: !canSendReply ? "not-allowed" : "pointer",
                       whiteSpace: "nowrap",
                       fontSize: "14px",
                       fontWeight: 600,
@@ -1395,6 +1925,82 @@ const MessagesTab = () => {
                   Enter для отправки, Shift+Enter для новой строки
                 </div>
               </div>
+
+              {declineConfirmOpen && (
+                <div style={{
+                  position: "absolute",
+                  inset: 0,
+                  background: "rgba(2,6,23,0.65)",
+                  backdropFilter: "blur(2px)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  zIndex: 40,
+                  padding: "16px"
+                }}>
+                  <div style={{
+                    width: "100%",
+                    maxWidth: "420px",
+                    borderRadius: "16px",
+                    border: "1px solid rgba(148,163,184,0.2)",
+                    background: "linear-gradient(145deg, rgba(15,23,42,0.96), rgba(2,6,23,0.98))",
+                    boxShadow: "0 18px 60px rgba(0,0,0,0.5)",
+                    padding: "18px"
+                  }}>
+                    <div style={{ fontSize: "16px", fontWeight: 700, color: "#f8fafc", marginBottom: "8px" }}>
+                      Anfrage ablehnen
+                    </div>
+                    <div style={{ fontSize: "13px", lineHeight: "1.5", color: "#94a3b8", marginBottom: "16px" }}>
+                      Möchtest du diese Anfrage wirklich ablehnen?
+                    </div>
+                    <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                      <button
+                        type="button"
+                        onClick={() => setDeclineConfirmOpen(false)}
+                        disabled={decliningOffer}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: "10px",
+                          border: "1px solid rgba(148,163,184,0.22)",
+                          background: "rgba(15,23,42,0.65)",
+                          color: "#cbd5e1",
+                          cursor: decliningOffer ? "not-allowed" : "pointer"
+                        }}
+                      >
+                        Abbrechen
+                      </button>
+                      <button
+                        type="button"
+                        onClick={confirmDeclineOffer}
+                        disabled={decliningOffer}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: "10px",
+                          border: "1px solid rgba(239,68,68,0.35)",
+                          background: "linear-gradient(135deg, rgba(239,68,68,0.78), rgba(185,28,28,0.82))",
+                          color: "#fff",
+                          fontWeight: 700,
+                          cursor: decliningOffer ? "not-allowed" : "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          minWidth: "158px",
+                          justifyContent: "center"
+                        }}
+                      >
+                        {decliningOffer ? (
+                          <>
+                            <Spinner size={14} color="#fff" />
+                            <span>Bitte warten</span>
+                          </>
+                        ) : (
+                          "Anfrage ablehnen"
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           ) : (
             // Empty state

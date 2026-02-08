@@ -37,7 +37,9 @@ const {
   fetchMessages,
   fetchThreadMessages,
   summarizeConversations,
-  sendConversationMessage
+  sendConversationMessage,
+  declineConversationOffer,
+  sendConversationMedia
 } = require("./messageService");
 const { translateText } = require("./translateService");
 
@@ -653,6 +655,14 @@ const getAccountForRequest = (accountId, req, res) => {
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 }
+});
+
+const messageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 10
+  }
 });
 
 const adUploadDir = path.join(__dirname, "..", "data", "ad-uploads");
@@ -1389,6 +1399,100 @@ app.post("/api/messages/send", async (req, res) => {
       participant,
       adTitle,
       text: text.trim()
+    });
+
+    res.json({
+      success: true,
+      messages: result.messages || [],
+      conversationId: result.conversationId || conversationId,
+      conversationUrl: result.conversationUrl || conversationUrl
+    });
+  } catch (error) {
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/messages/offer/decline", async (req, res) => {
+  try {
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
+    const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
+
+    if (!accountId || (!conversationId && !conversationUrl)) {
+      res.status(400).json({ success: false, error: "Недостаточно данных для отклонения заявки." });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const proxy = requireAccountProxy(account, res, "отклонения заявки", getOwnerContext(req));
+    if (!proxy) return;
+
+    const result = await declineConversationOffer({
+      account,
+      proxy,
+      conversationId,
+      conversationUrl
+    });
+
+    res.json({
+      success: true,
+      messages: result.messages || [],
+      conversationId: result.conversationId || conversationId,
+      conversationUrl: result.conversationUrl || conversationUrl
+    });
+  } catch (error) {
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/messages/send-media", messageUpload.array("images", 10), async (req, res) => {
+  try {
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
+    const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
+    const text = req.body?.text ? String(req.body.text) : "";
+    const files = Array.isArray(req.files) ? req.files : [];
+    const imageFiles = files.filter((file) => String(file?.mimetype || "").toLowerCase().startsWith("image/"));
+
+    if (!accountId || (!conversationId && !conversationUrl) || (!text.trim() && !imageFiles.length)) {
+      res.status(400).json({ success: false, error: "Недостаточно данных для отправки." });
+      return;
+    }
+
+    if (files.length && !imageFiles.length) {
+      res.status(400).json({ success: false, error: "Разрешены только изображения." });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const proxy = requireAccountProxy(account, res, "отправки фотографий", getOwnerContext(req));
+    if (!proxy) return;
+
+    const result = await sendConversationMedia({
+      account,
+      proxy,
+      conversationId,
+      conversationUrl,
+      text: text.trim(),
+      files: imageFiles
     });
 
     res.json({

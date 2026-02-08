@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { apiFetchJson } from "../api";
-import { XIcon, ChevronRightIcon, RefreshIcon, LoadingIcon } from "./Icons";
+import { XIcon, ChevronRightIcon, RefreshIcon, LoadingIcon, FileIcon } from "./Icons";
 
 const AdModal = ({
   isOpen,
@@ -28,14 +28,18 @@ const AdModal = ({
   const [localCategories, setLocalCategories] = useState([]);
   const [didRestorePath, setDidRestorePath] = useState(false);
   const [imagePreviews, setImagePreviews] = useState([]);
+  const [rightDragActive, setRightDragActive] = useState(false);
+  const [rightDragIndex, setRightDragIndex] = useState(null);
   const [loadingPlz, setLoadingPlz] = useState(false);
   const [categoryChildrenError, setCategoryChildrenError] = useState("");
   const categoryListRef = useRef(null);
+  const imageInputRef = useRef(null);
   const pendingChildrenRef = useRef(new Map());
   const prefetchRootRef = useRef("");
   const prefetchInFlightRef = useRef(false);
   const prefetchedTargetsRef = useRef(new Set());
   const prefetchTokenRef = useRef(0);
+  const rightDragRef = useRef({ active: false, index: -1 });
 
   const inputStyle = {
     width: "100%",
@@ -244,6 +248,86 @@ const AdModal = ({
       previews.forEach((preview) => URL.revokeObjectURL(preview.url));
     };
   }, [adImages]);
+
+  const stopRightDrag = () => {
+    if (!rightDragRef.current.active) return;
+    rightDragRef.current = { active: false, index: -1 };
+    setRightDragActive(false);
+    setRightDragIndex(null);
+  };
+
+  useEffect(() => {
+    const handleMouseUp = () => stopRightDrag();
+    const handleWindowBlur = () => stopRightDrag();
+    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      window.removeEventListener("mouseup", handleMouseUp);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
+  }, []);
+
+  const handleImageInputChange = (event) => {
+    const selected = Array.from(event?.target?.files || []).filter((file) =>
+      String(file?.type || "").toLowerCase().startsWith("image/")
+    );
+    if (event?.target) event.target.value = "";
+    if (!selected.length) return;
+    setAdImages(selected);
+  };
+
+  const handleImageDrop = (event) => {
+    event.preventDefault();
+    const selected = Array.from(event?.dataTransfer?.files || []).filter((file) =>
+      String(file?.type || "").toLowerCase().startsWith("image/")
+    );
+    if (!selected.length) return;
+    setAdImages(selected);
+  };
+
+  const removeAdImage = (indexToRemove) => {
+    stopRightDrag();
+    setAdImages((prev) => {
+      const list = Array.isArray(prev) ? prev : [];
+      return list.filter((_, idx) => idx !== indexToRemove);
+    });
+    if (imageInputRef.current) {
+      imageInputRef.current.value = "";
+    }
+  };
+
+  const startRightDrag = (event, index) => {
+    if (event.button !== 2) return;
+    event.preventDefault();
+    rightDragRef.current = { active: true, index };
+    setRightDragActive(true);
+    setRightDragIndex(index);
+  };
+
+  const moveRightDragTo = (targetIndex) => {
+    const current = rightDragRef.current;
+    if (!current.active) return;
+    if (!Number.isInteger(targetIndex)) return;
+    if (current.index === targetIndex) return;
+
+    setAdImages((prev) => {
+      const list = Array.isArray(prev) ? [...prev] : [];
+      if (
+        current.index < 0 ||
+        current.index >= list.length ||
+        targetIndex < 0 ||
+        targetIndex >= list.length
+      ) {
+        return prev;
+      }
+      const [moved] = list.splice(current.index, 1);
+      list.splice(targetIndex, 0, moved);
+      return list;
+    });
+
+    rightDragRef.current = { active: true, index: targetIndex };
+    setRightDragIndex(targetIndex);
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -988,25 +1072,64 @@ const AdModal = ({
 
           <div>
             <label style={labelStyle}>Изображения:</label>
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={(e) => setAdImages(Array.from(e.target.files || []))}
+            <div
               style={{
-                width: "100%",
-                padding: "12px",
-                border: "1px dashed rgba(148,163,184,0.4)",
-                borderRadius: "12px",
-                background: "rgba(15,23,42,0.7)",
-                color: "#e2e8f0",
+                padding: "28px 24px",
+                border: "2px dashed rgba(148,163,184,0.3)",
+                borderRadius: "16px",
+                background: "rgba(15,23,42,0.6)",
+                textAlign: "center",
                 cursor: "pointer",
-                transition: "all 0.3s ease"
+                transition: "all 0.2s ease",
+                position: "relative"
               }}
-            />
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.currentTarget.style.borderColor = "rgba(59,130,246,0.5)";
+                event.currentTarget.style.background = "rgba(59,130,246,0.06)";
+              }}
+              onDragLeave={(event) => {
+                event.currentTarget.style.borderColor = "rgba(148,163,184,0.3)";
+                event.currentTarget.style.background = "rgba(15,23,42,0.6)";
+              }}
+              onDrop={(event) => {
+                handleImageDrop(event);
+                event.currentTarget.style.borderColor = "rgba(148,163,184,0.3)";
+                event.currentTarget.style.background = "rgba(15,23,42,0.6)";
+              }}
+              onClick={() => imageInputRef.current?.click()}
+            >
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageInputChange}
+                style={{ display: "none" }}
+              />
+              <div style={{
+                width: "56px",
+                height: "56px",
+                borderRadius: "16px",
+                background: "linear-gradient(135deg, rgba(59,130,246,0.2), rgba(59,130,246,0.1))",
+                border: "1px solid rgba(59,130,246,0.3)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 16px"
+              }}>
+                <FileIcon size={28} color="#60a5fa" />
+              </div>
+              <p style={{ margin: 0, color: "#94a3b8", fontSize: "14px" }}>
+                Перетащите фото сюда или <span style={{ color: "#60a5fa", fontWeight: "600" }}>выберите</span>
+              </p>
+              <p style={{ margin: "8px 0 0", color: "#64748b", fontSize: "12px" }}>
+                Поддерживаются: JPG, PNG, WEBP, GIF
+              </p>
+            </div>
             {adImages.length > 0 && (
               <div style={{ marginTop: "8px", fontSize: "12px", color: "#94a3b8" }}>
-                Загружено файлов: {adImages.length}
+                Загружено файлов: {adImages.length}. Правой кнопкой мыши зажмите и перетащите для смены порядка.
               </div>
             )}
             {imagePreviews.length > 0 && (
@@ -1015,28 +1138,88 @@ const AdModal = ({
                   marginTop: "12px",
                   display: "grid",
                   gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-                  gap: "8px"
+                  gap: "10px"
                 }}
               >
                 {imagePreviews.map((preview, index) => (
                   <div
                     key={preview.url}
+                    onContextMenu={(event) => event.preventDefault()}
+                    onMouseDown={(event) => startRightDrag(event, index)}
+                    onMouseEnter={() => moveRightDragTo(index)}
+                    onMouseUp={() => stopRightDrag()}
                     style={{
+                      position: "relative",
                       borderRadius: "10px",
                       overflow: "hidden",
                       background: "#0b1220",
-                      border: "1px solid rgba(148,163,184,0.2)",
+                      border: rightDragIndex === index
+                        ? "1px solid rgba(34,197,94,0.75)"
+                        : "1px solid rgba(148,163,184,0.2)",
                       aspectRatio: "1 / 1",
                       display: "flex",
                       alignItems: "center",
-                      justifyContent: "center"
+                      justifyContent: "center",
+                      boxShadow: rightDragIndex === index
+                        ? "0 0 0 2px rgba(34,197,94,0.25)"
+                        : "none",
+                      cursor: rightDragActive ? "grabbing" : "default",
+                      userSelect: "none"
                     }}
                   >
                     <img
                       src={preview.url}
                       alt={`preview-${index + 1}`}
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      draggable={false}
+                      style={{ width: "100%", height: "100%", objectFit: "cover", pointerEvents: "none" }}
                     />
+                    <div style={{
+                      position: "absolute",
+                      left: "6px",
+                      bottom: "6px",
+                      minWidth: "22px",
+                      height: "22px",
+                      padding: "0 6px",
+                      borderRadius: "999px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      color: "#e2e8f0",
+                      background: "rgba(2,6,23,0.7)",
+                      border: "1px solid rgba(148,163,184,0.25)"
+                    }}>
+                      {index + 1}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        removeAdImage(index);
+                      }}
+                      style={{
+                        position: "absolute",
+                        top: "6px",
+                        right: "6px",
+                        width: "24px",
+                        height: "24px",
+                        borderRadius: "999px",
+                        border: "1px solid rgba(239,68,68,0.4)",
+                        background: "rgba(127,29,29,0.85)",
+                        color: "#fecaca",
+                        fontSize: "14px",
+                        lineHeight: 1,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center"
+                      }}
+                      title="Удалить фото"
+                    >
+                      ×
+                    </button>
                   </div>
                 ))}
               </div>

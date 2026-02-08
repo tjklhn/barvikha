@@ -8,6 +8,7 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
 const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
+const { acceptCookieModal, acceptGdprConsent, isGdprPage } = require("./adPublisher");
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
@@ -550,6 +551,122 @@ const parseTimestamp = (value) => {
   }
 
   return { date: "", time, iso: "" };
+};
+
+const pickApiMessageText = (message) => {
+  if (!message || typeof message !== "object") return "";
+  return message.text || message.textShort || message.textShortTrimmed || message.title || "";
+};
+
+const pickApiMessageAttachments = (message) =>
+  (message && typeof message === "object" && Array.isArray(message.attachments))
+    ? message.attachments
+    : [];
+
+const isPaymentAndShippingMessage = (message) => (
+  String(message?.type || "").toUpperCase() === "PAYMENT_AND_SHIPPING_MESSAGE"
+  || Boolean(message?.paymentAndShippingMessageType)
+);
+
+const mapApiThreadMessage = (message, index, participantName) => {
+  const text = pickApiMessageText(message);
+  const attachments = pickApiMessageAttachments(message);
+  const hasContent = Boolean(String(text || "").trim()) || attachments.length > 0 || isPaymentAndShippingMessage(message);
+  if (!hasContent) return null;
+
+  const direction = message?.boundness === "OUTBOUND" ? "outgoing" : "incoming";
+  const mapped = {
+    id: message?.messageId || `message-${index}`,
+    text,
+    timeLabel: message?.receivedDate || "",
+    dateTime: message?.receivedDate || "",
+    direction,
+    sender: direction === "outgoing" ? "Вы" : (participantName || "")
+  };
+
+  if (attachments.length) {
+    mapped.attachments = attachments;
+  }
+
+  const passthroughKeys = [
+    "type",
+    "title",
+    "active",
+    "actions",
+    "paymentAndShippingMessageType",
+    "itemPriceInEuroCent",
+    "shippingCostInEuroCent",
+    "sellerTotalInEuroCent",
+    "offerId",
+    "negotiationId",
+    "offeredPriceInEuroCent",
+    "shippingType",
+    "carrierId",
+    "carrierName",
+    "shippingOptionName",
+    "shippingOptionDescription",
+    "liabilityLimitInEuroCent",
+    "oppTermsAndConditionsVersion",
+    "termsAndConditionsChangeInfo"
+  ];
+
+  for (const key of passthroughKeys) {
+    if (message?.[key] !== undefined) {
+      mapped[key] = message[key];
+    }
+  }
+
+  return mapped;
+};
+
+const clickVisibleButtonByText = async (page, needle, { timeout = 15000, preferDialog = false } = {}) => {
+  if (!page) return false;
+  const wanted = normalizeMatch(needle);
+  if (!wanted) return false;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeout) {
+    const clicked = await page.evaluate((label, useDialog) => {
+      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const isVisible = (node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        if (!style) return false;
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+
+      const collectRoots = () => {
+        if (!useDialog) return [document];
+        const dialogs = Array.from(document.querySelectorAll(
+          "[role='dialog'], [data-testid*='modal'], [class*='Modal'], [class*='modal']"
+        )).filter(isVisible);
+        return dialogs.length ? dialogs : [document];
+      };
+
+      const roots = collectRoots();
+      for (const root of roots) {
+        const candidates = Array.from(root.querySelectorAll("button, a, [role='button']"));
+        for (const candidate of candidates) {
+          if (!isVisible(candidate)) continue;
+          if (candidate.hasAttribute("disabled") || candidate.getAttribute("aria-disabled") === "true") continue;
+          const text = normalize(candidate.textContent);
+          if (!text) continue;
+          if (text === label || text.includes(label)) {
+            candidate.click();
+            return true;
+          }
+        }
+      }
+      return false;
+    }, wanted, preferDialog);
+
+    if (clicked) return true;
+    await sleep(220);
+  }
+
+  return false;
 };
 
 const extractConversationId = (href) => {
@@ -1737,19 +1854,7 @@ const sendConversationMessage = async ({
 
         const participantName = pickParticipantFromApi(detail, userId);
         const apiMessages = (detail.messages || [])
-          .map((message, index) => {
-            const text = message.text || message.textShort || message.title || "";
-            if (!text) return null;
-            const direction = message.boundness === "OUTBOUND" ? "outgoing" : "incoming";
-            return {
-              id: message.messageId || `message-${index}`,
-              text,
-              timeLabel: message.receivedDate || "",
-              dateTime: message.receivedDate || "",
-              direction,
-              sender: direction === "outgoing" ? "Вы" : (participantName || "")
-            };
-          })
+          .map((message, index) => mapApiThreadMessage(message, index, participantName))
           .filter(Boolean);
 
         const normalizedMessages = apiMessages.map((message) => {
@@ -2345,19 +2450,7 @@ const fetchThreadMessages = async ({
 
       const participantName = pickParticipantFromApi(detail, userId);
       const apiMessages = (detail.messages || [])
-        .map((message, index) => {
-          const text = message.text || message.textShort || message.title || "";
-          if (!text) return null;
-          const direction = message.boundness === "OUTBOUND" ? "outgoing" : "incoming";
-          return {
-            id: message.messageId || `message-${index}`,
-            text,
-            timeLabel: message.receivedDate || "",
-            dateTime: message.receivedDate || "",
-            direction,
-            sender: direction === "outgoing" ? "Вы" : (participantName || "")
-          };
-        })
+        .map((message, index) => mapApiThreadMessage(message, index, participantName))
         .filter(Boolean);
 
       const normalizedMessages = apiMessages.map((message) => {
@@ -2487,6 +2580,450 @@ const fetchThreadMessages = async ({
   }
 };
 
+const fetchConversationSnapshotViaApi = async ({
+  account,
+  proxy,
+  conversationId,
+  conversationUrl
+}) => {
+  const deviceProfile = getDeviceProfile(account);
+  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  if (!cookies.length) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  const resolvedConversationId = conversationId || extractConversationId(conversationUrl);
+  if (!resolvedConversationId) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+
+  let userId = getUserIdFromCookies(cookies);
+  let accessTokenInfo = null;
+  if (!userId) {
+    accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+    userId = getUserIdFromAccessToken(accessTokenInfo.token);
+  }
+
+  if (!userId) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  if (!accessTokenInfo) {
+    accessTokenInfo = await fetchMessageboxAccessToken({ cookies, proxy, deviceProfile });
+  }
+
+  const detail = await fetchConversationDetailViaApi({
+    userId,
+    conversationId: resolvedConversationId,
+    accessToken: accessTokenInfo.token,
+    cookies,
+    proxy,
+    deviceProfile
+  });
+
+  const participantName = pickParticipantFromApi(detail, userId);
+  const apiMessages = (detail.messages || [])
+    .map((message, index) => mapApiThreadMessage(message, index, participantName))
+    .filter(Boolean);
+  const normalizedMessages = apiMessages.map((message) => {
+    const parsed = parseTimestamp(message.dateTime || message.timeLabel || "");
+    return {
+      ...message,
+      date: parsed.date,
+      time: parsed.time
+    };
+  });
+
+  return {
+    messages: normalizedMessages,
+    adTitle: detail.adTitle || "",
+    adImage: detail.adImage || "",
+    participant: participantName || "",
+    conversationId: resolvedConversationId,
+    conversationUrl: buildConversationUrl(resolvedConversationId, conversationUrl)
+  };
+};
+
+const declineConversationOffer = async ({
+  account,
+  proxy,
+  conversationId,
+  conversationUrl
+}) => {
+  if (!conversationId && !conversationUrl) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+
+  const deviceProfile = getDeviceProfile(account);
+  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  if (!cookies.length) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  const resolvedConversationId = conversationId || extractConversationId(conversationUrl);
+  if (!resolvedConversationId) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+  const resolvedConversationUrl = buildConversationUrl(resolvedConversationId, conversationUrl);
+
+  const proxyServer = buildProxyServer(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
+  const needsProxyChain = Boolean(
+    proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+  );
+  let anonymizedProxyUrl;
+
+  const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+  if (proxyServer) {
+    if (needsProxyChain) {
+      anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+      launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+    } else {
+      launchArgs.push(`--proxy-server=${proxyServer}`);
+    }
+  }
+
+  const profileDir = createTempProfileDir();
+  const browser = await puppeteer.launch({
+    headless: "new",
+    args: launchArgs,
+    userDataDir: profileDir,
+    timeout: PUPPETEER_LAUNCH_TIMEOUT,
+    protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+  });
+
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+    page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+    if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+      await page.authenticate({
+        username: proxy.username || "",
+        password: proxy.password || ""
+      });
+    }
+
+    await page.setUserAgent(deviceProfile.userAgent);
+    await page.setViewport(deviceProfile.viewport);
+    await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    await page.emulateTimezone(deviceProfile.timezone);
+    await page.evaluateOnNewDocument((platform) => {
+      Object.defineProperty(navigator, "platform", {
+        get: () => platform
+      });
+    }, deviceProfile.platform);
+
+    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await acceptCookieModal(page).catch(() => {});
+    if (isGdprPage(page.url())) {
+      await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+    }
+    await humanPause();
+    await page.setCookie(...cookies);
+    await humanPause();
+    await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
+    await acceptCookieModal(page).catch(() => {});
+    if (isGdprPage(page.url())) {
+      await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+    }
+    await humanPause(140, 260);
+
+    if (await isAuthFailure(page)) {
+      const error = new Error("AUTH_REQUIRED");
+      error.code = "AUTH_REQUIRED";
+      throw error;
+    }
+
+    const clicked = await clickVisibleButtonByText(page, "Anfrage ablehnen", { timeout: 20000 });
+    if (!clicked) {
+      throw new Error("DECLINE_BUTTON_NOT_FOUND");
+    }
+    await humanPause(100, 160);
+
+    const confirmed = await clickVisibleButtonByText(page, "Anfrage ablehnen", { timeout: 20000, preferDialog: true });
+    if (!confirmed) {
+      throw new Error("DECLINE_CONFIRM_NOT_FOUND");
+    }
+    await humanPause(260, 360);
+  } finally {
+    await browser.close();
+    if (anonymizedProxyUrl) {
+      await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+    }
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+
+  // Prefer the messagebox API for the fresh thread snapshot (includes offer metadata).
+  try {
+    return await fetchConversationSnapshotViaApi({
+      account,
+      proxy,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl
+    });
+  } catch (error) {
+    return {
+      messages: [],
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl
+    };
+  }
+};
+
+const sendConversationMedia = async ({
+  account,
+  proxy,
+  conversationId,
+  conversationUrl,
+  text,
+  files
+}) => {
+  if (!conversationId && !conversationUrl) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+
+  const trimmedText = String(text || "").trim();
+  const fileList = Array.isArray(files) ? files : [];
+  if (!trimmedText && !fileList.length) {
+    const error = new Error("MESSAGE_EMPTY");
+    error.code = "MESSAGE_EMPTY";
+    throw error;
+  }
+
+  const deviceProfile = getDeviceProfile(account);
+  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  if (!cookies.length) {
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    throw error;
+  }
+
+  const resolvedConversationId = conversationId || extractConversationId(conversationUrl);
+  if (!resolvedConversationId) {
+    const error = new Error("CONVERSATION_ID_REQUIRED");
+    error.code = "CONVERSATION_ID_REQUIRED";
+    throw error;
+  }
+  const resolvedConversationUrl = buildConversationUrl(resolvedConversationId, conversationUrl);
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-media-"));
+  const tempPaths = [];
+
+  const guessExtension = (file) => {
+    const name = String(file?.originalname || "").trim().toLowerCase();
+    const match = name.match(/\\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i);
+    if (match) return match[0];
+    const mime = String(file?.mimetype || "").toLowerCase();
+    if (mime.includes("png")) return ".png";
+    if (mime.includes("webp")) return ".webp";
+    if (mime.includes("gif")) return ".gif";
+    if (mime.includes("bmp")) return ".bmp";
+    if (mime.includes("heic")) return ".heic";
+    if (mime.includes("heif")) return ".heif";
+    return ".jpg";
+  };
+
+  try {
+    for (let index = 0; index < fileList.length; index += 1) {
+      const file = fileList[index];
+      const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.from(file?.buffer || "");
+      if (!buffer.length) continue;
+      const base = sanitizeFilename(file?.originalname || `image-${index + 1}`);
+      const ext = guessExtension(file);
+      const safeName = base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`;
+      const targetPath = path.join(tmpDir, safeName);
+      fs.writeFileSync(targetPath, buffer);
+      tempPaths.push(targetPath);
+    }
+
+    const proxyServer = buildProxyServer(proxy);
+    const proxyUrl = buildProxyUrl(proxy);
+    const needsProxyChain = Boolean(
+      proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+    );
+    let anonymizedProxyUrl;
+
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+    if (proxyServer) {
+      if (needsProxyChain) {
+        anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+        launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+      } else {
+        launchArgs.push(`--proxy-server=${proxyServer}`);
+      }
+    }
+
+    const profileDir = createTempProfileDir();
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: launchArgs,
+      userDataDir: profileDir,
+      timeout: PUPPETEER_LAUNCH_TIMEOUT,
+      protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+    });
+
+    try {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+      if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+        await page.authenticate({
+          username: proxy.username || "",
+          password: proxy.password || ""
+        });
+      }
+
+      await page.setUserAgent(deviceProfile.userAgent);
+      await page.setViewport(deviceProfile.viewport);
+      await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+      await page.emulateTimezone(deviceProfile.timezone);
+      await page.evaluateOnNewDocument((platform) => {
+        Object.defineProperty(navigator, "platform", {
+          get: () => platform
+        });
+      }, deviceProfile.platform);
+
+      await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+      await acceptCookieModal(page).catch(() => {});
+      if (isGdprPage(page.url())) {
+        await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+      }
+      await humanPause();
+      await page.setCookie(...cookies);
+      await humanPause();
+      await page.goto(resolvedConversationUrl, { waitUntil: "domcontentloaded" });
+      await acceptCookieModal(page).catch(() => {});
+      if (isGdprPage(page.url())) {
+        await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+      }
+      await humanPause(140, 240);
+
+      if (await isAuthFailure(page)) {
+        const error = new Error("AUTH_REQUIRED");
+        error.code = "AUTH_REQUIRED";
+        throw error;
+      }
+
+      if (tempPaths.length) {
+        const fileInputSelectors = [
+          "input[data-testid='reply-box-file-input']",
+          "input[type='file'][accept*='image']",
+          "input[type='file']"
+        ];
+        await waitForDynamicContent(page, fileInputSelectors, 20000);
+        let fileInputHandle = null;
+        for (const selector of fileInputSelectors) {
+          fileInputHandle = await page.$(selector);
+          if (fileInputHandle) break;
+        }
+        if (!fileInputHandle) {
+          throw new Error("MESSAGE_FILE_INPUT_NOT_FOUND");
+        }
+
+        await fileInputHandle.evaluate((node) => {
+          node.hidden = false;
+          node.style.display = "block";
+          node.style.visibility = "visible";
+          node.style.opacity = "1";
+        }).catch(() => {});
+
+        await fileInputHandle.uploadFile(...tempPaths);
+        await humanPause(220, 320);
+      }
+
+      if (trimmedText) {
+        const inputSelectors = [
+          "textarea#nachricht",
+          "textarea[name='message']",
+          "textarea[name='text']",
+          "textarea[placeholder*='Nachricht']",
+          "textarea[aria-label*='Nachricht']",
+          "[role='textbox'][contenteditable='true']",
+          "[contenteditable='true']",
+          "textarea"
+        ];
+        await waitForDynamicContent(page, inputSelectors, 20000);
+        const inputResult = await findMessageInputHandle(page, inputSelectors);
+        if (!inputResult?.handle) {
+          throw new Error("MESSAGE_INPUT_NOT_FOUND");
+        }
+        const inputHandle = inputResult.handle;
+        await inputHandle.evaluate((input) => {
+          input.scrollIntoView({ block: "center", inline: "center" });
+          if (input.tagName === "TEXTAREA" || input.tagName === "INPUT") {
+            input.value = "";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          } else if (input.isContentEditable) {
+            input.textContent = "";
+          }
+        }).catch(() => {});
+        await inputHandle.focus();
+        await inputHandle.type(trimmedText, { delay: 20 });
+      }
+
+      const sendSelectors = [
+        "button[data-testid='submit-button']",
+        "button[aria-label*='Senden']",
+        "button[type='submit']"
+      ];
+      await waitForDynamicContent(page, sendSelectors, 20000);
+      let sendClicked = false;
+      for (const selector of sendSelectors) {
+        try {
+          const handle = await page.$(selector);
+          if (!handle) continue;
+          await handle.click({ delay: 40 });
+          sendClicked = true;
+          break;
+        } catch (error) {
+          // keep trying selectors
+        }
+      }
+      if (!sendClicked) {
+        await page.keyboard.press("Enter");
+      }
+      await humanPause(260, 360);
+    } finally {
+      await browser.close();
+      if (anonymizedProxyUrl) {
+        await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+      }
+      fs.rmSync(profileDir, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  try {
+    return await fetchConversationSnapshotViaApi({
+      account,
+      proxy,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl
+    });
+  } catch (error) {
+    return {
+      messages: [],
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl
+    };
+  }
+};
+
 const summarizeConversations = (conversations) => {
   const summaries = [];
   const deduped = dedupeConversationList(conversations || []);
@@ -2531,5 +3068,7 @@ module.exports = {
   fetchMessages,
   fetchThreadMessages,
   summarizeConversations,
-  sendConversationMessage
+  sendConversationMessage,
+  declineConversationOffer,
+  sendConversationMedia
 };
