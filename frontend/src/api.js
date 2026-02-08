@@ -21,6 +21,17 @@ const resolveApiBases = () => {
 const API_BASES = resolveApiBases();
 let preferredBaseIndex = 0;
 
+const getRuntimeOrigin = () => {
+  if (typeof window === "undefined" || !window.location) return "";
+  return normalizeBase(window.location.origin || "");
+};
+
+const getCandidateKey = (base) => {
+  const normalized = normalizeBase(base);
+  if (normalized) return normalized;
+  return getRuntimeOrigin() || "__relative__";
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const makeRequestId = () => `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -54,12 +65,14 @@ export const apiFetch = async (path, options = {}) => {
   const {
     timeoutMs = 45000,
     retry,
+    allowBaseFallback,
     _retried = false,
     ...fetchOptions
   } = options || {};
 
   const method = String(fetchOptions.method || "GET").toUpperCase();
   const allowRetry = typeof retry === "boolean" ? retry : (method === "GET" || method === "HEAD");
+  const shouldFallbackBetweenBases = typeof allowBaseFallback === "boolean" ? allowBaseFallback : allowRetry;
   const timeoutValue = Number(timeoutMs);
   const shouldTimeout = Number.isFinite(timeoutValue) && timeoutValue > 0;
   const requestId = String(fetchOptions.requestId || makeRequestId());
@@ -94,11 +107,20 @@ export const apiFetch = async (path, options = {}) => {
       ...API_BASES.slice(preferredBaseIndex),
       ...API_BASES.slice(0, preferredBaseIndex)
     ];
-  const uniqueCandidates = candidates.filter((item, index, arr) => arr.indexOf(item) === index);
+  const seenCandidateKeys = new Set();
+  const uniqueCandidates = candidates.filter((item) => {
+    const key = getCandidateKey(item);
+    if (seenCandidateKeys.has(key)) return false;
+    seenCandidateKeys.add(key);
+    return true;
+  });
+  const activeCandidates = shouldFallbackBetweenBases
+    ? uniqueCandidates
+    : uniqueCandidates.slice(0, 1);
 
   let lastError = null;
-  for (let index = 0; index < uniqueCandidates.length; index += 1) {
-    const base = uniqueCandidates[index];
+  for (let index = 0; index < activeCandidates.length; index += 1) {
+    const base = activeCandidates[index];
     const url = buildApiUrl(path, base);
     let timedOut = false;
     const controller = !fetchOptions.signal && shouldTimeout ? new AbortController() : null;
@@ -140,7 +162,7 @@ export const apiFetch = async (path, options = {}) => {
         }
         lastError = error;
       }
-      const hasAnotherBase = index < uniqueCandidates.length - 1;
+      const hasAnotherBase = shouldFallbackBetweenBases && index < activeCandidates.length - 1;
       if (!hasAnotherBase) break;
       if (!isRetryableNetworkError(lastError)) break;
     } finally {

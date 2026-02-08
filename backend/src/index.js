@@ -1561,6 +1561,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   }
   const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const clientRequestId = String(req.get("x-client-request-id") || "");
+  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 55000));
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
@@ -1575,6 +1576,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       event: "request-aborted",
       route: "offer-decline",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt
     });
   });
@@ -1639,14 +1641,57 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
       route: "offer-decline",
-      debugId
+      debugId,
+      clientRequestId,
+      routeDeadlineMs
     });
-    const result = await declineConversationOffer({
+    let serviceTimer = null;
+    let timedOut = false;
+    const servicePromise = declineConversationOffer({
       account,
       proxy,
       conversationId,
       conversationUrl
     });
+    const timeoutPromise = new Promise((_, reject) => {
+      serviceTimer = setTimeout(() => {
+        timedOut = true;
+        const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
+        timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
+        timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
+        reject(timeoutError);
+      }, routeDeadlineMs);
+    });
+
+    let result;
+    try {
+      result = await Promise.race([servicePromise, timeoutPromise]);
+    } finally {
+      if (serviceTimer) clearTimeout(serviceTimer);
+      if (timedOut) {
+        servicePromise
+          .then(() => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-success",
+              route: "offer-decline",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt
+            });
+          })
+          .catch((lateError) => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-error",
+              route: "offer-decline",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt,
+              code: lateError?.code || "",
+              message: lateError?.message || String(lateError)
+            });
+          });
+      }
+    }
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-success",
       route: "offer-decline",
@@ -1724,6 +1769,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
   }
   const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const clientRequestId = String(req.get("x-client-request-id") || "");
+  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 55000));
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
@@ -1738,6 +1784,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       event: "request-aborted",
       route: "send-media",
       debugId,
+      clientRequestId,
       elapsedMs: Date.now() - startedAt
     });
   });
@@ -1817,9 +1864,13 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
       route: "send-media",
-      debugId
+      debugId,
+      clientRequestId,
+      routeDeadlineMs
     });
-    const result = await sendConversationMedia({
+    let serviceTimer = null;
+    let timedOut = false;
+    const servicePromise = sendConversationMedia({
       account,
       proxy,
       conversationId,
@@ -1827,6 +1878,45 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       text: text.trim(),
       files: imageFiles
     });
+    const timeoutPromise = new Promise((_, reject) => {
+      serviceTimer = setTimeout(() => {
+        timedOut = true;
+        const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
+        timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
+        timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
+        reject(timeoutError);
+      }, routeDeadlineMs);
+    });
+
+    let result;
+    try {
+      result = await Promise.race([servicePromise, timeoutPromise]);
+    } finally {
+      if (serviceTimer) clearTimeout(serviceTimer);
+      if (timedOut) {
+        servicePromise
+          .then(() => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-success",
+              route: "send-media",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt
+            });
+          })
+          .catch((lateError) => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-error",
+              route: "send-media",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt,
+              code: lateError?.code || "",
+              message: lateError?.message || String(lateError)
+            });
+          });
+      }
+    }
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-success",
       route: "send-media",

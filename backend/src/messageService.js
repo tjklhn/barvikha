@@ -3808,12 +3808,22 @@ const declineConversationOffer = async ({
   const actionStartedAt = Date.now();
   const actionDeadlineMs = MESSAGE_ACTION_DEADLINE_MS;
   const snapshotTimeoutMs = Math.max(1500, Math.min(3000, FAST_SNAPSHOT_TIMEOUT_MS));
+  const remainingMs = () => actionDeadlineMs - (Date.now() - actionStartedAt);
   const ensureDeadline = (context = "") => {
     if (Date.now() - actionStartedAt >= actionDeadlineMs) {
       throw buildActionTimeoutError(context || "offer-decline");
     }
   };
   const hasTimeLeft = (reserveMs = 0) => Date.now() - actionStartedAt < (actionDeadlineMs - Math.max(0, reserveMs));
+  const getStepTimeout = (desiredMs, minMs = 1200, reserveMs = 2500, context = "") => {
+    const normalizedMin = Math.max(500, Number(minMs) || 500);
+    const desired = Math.max(normalizedMin, Number(desiredMs) || normalizedMin);
+    const remainingBudget = remainingMs() - Math.max(0, reserveMs);
+    if (remainingBudget <= normalizedMin) {
+      throw buildActionTimeoutError(context || "offer-decline-time-budget");
+    }
+    return Math.max(normalizedMin, Math.min(desired, remainingBudget));
+  };
   if (!conversationId && !conversationUrl) {
     const error = new Error("CONVERSATION_ID_REQUIRED");
     error.code = "CONVERSATION_ID_REQUIRED";
@@ -3851,7 +3861,10 @@ const declineConversationOffer = async ({
   }
 
   ensureDeadline("offer-decline-before-proxy-check");
-  await ensureProxyCanReachKleinanzeigen(proxy, 12000);
+  await ensureProxyCanReachKleinanzeigen(
+    proxy,
+    getStepTimeout(12000, 4500, 9000, "offer-decline-proxy-check")
+  );
   ensureDeadline("offer-decline-after-proxy-check");
 
   const proxyServer = buildProxyServer(proxy);
@@ -3882,7 +3895,12 @@ const declineConversationOffer = async ({
 
   try {
     const page = await browser.newPage();
-    const localTimeout = Math.min(PUPPETEER_NAV_TIMEOUT, 25000);
+    const localTimeout = getStepTimeout(
+      Math.min(PUPPETEER_NAV_TIMEOUT, 20000),
+      4500,
+      9000,
+      "offer-decline-navigation-budget"
+    );
     page.setDefaultTimeout(localTimeout);
     page.setDefaultNavigationTimeout(localTimeout);
     if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
@@ -3902,24 +3920,19 @@ const declineConversationOffer = async ({
       });
     }, deviceProfile.platform);
 
-    await gotoWithProxyHandling(
-      page,
-      "https://www.kleinanzeigen.de/",
-      { waitUntil: "domcontentloaded", timeout: localTimeout },
-      "DECLINE_HOME_GOTO"
-    );
-    await acceptCookieModal(page).catch(() => {});
-    if (isGdprPage(page.url())) {
-      await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
-    }
-    await humanPause();
-    await performHumanLikePageActivity(page, { intensity: "light" });
+    ensureDeadline("offer-decline-before-set-cookie");
     await page.setCookie(...cookies);
-    await humanPause();
+    await humanPause(90, 160);
+    const conversationGotoTimeout = getStepTimeout(
+      localTimeout,
+      4500,
+      6000,
+      "offer-decline-conversation-goto"
+    );
     await gotoWithProxyHandling(
       page,
       resolvedConversationUrl,
-      { waitUntil: "domcontentloaded", timeout: localTimeout },
+      { waitUntil: "domcontentloaded", timeout: conversationGotoTimeout },
       "DECLINE_CONVERSATION_GOTO"
     );
     await acceptCookieModal(page).catch(() => {});
@@ -4336,12 +4349,22 @@ const sendConversationMedia = async ({
   const actionStartedAt = Date.now();
   const actionDeadlineMs = MESSAGE_ACTION_DEADLINE_MS;
   const snapshotTimeoutMs = Math.max(1500, Math.min(3000, FAST_SNAPSHOT_TIMEOUT_MS));
+  const remainingMs = () => actionDeadlineMs - (Date.now() - actionStartedAt);
   const ensureDeadline = (context = "") => {
     if (Date.now() - actionStartedAt >= actionDeadlineMs) {
       throw buildActionTimeoutError(context || "send-media");
     }
   };
   const hasTimeLeft = (reserveMs = 0) => Date.now() - actionStartedAt < (actionDeadlineMs - Math.max(0, reserveMs));
+  const getStepTimeout = (desiredMs, minMs = 1200, reserveMs = 2500, context = "") => {
+    const normalizedMin = Math.max(500, Number(minMs) || 500);
+    const desired = Math.max(normalizedMin, Number(desiredMs) || normalizedMin);
+    const remainingBudget = remainingMs() - Math.max(0, reserveMs);
+    if (remainingBudget <= normalizedMin) {
+      throw buildActionTimeoutError(context || "send-media-time-budget");
+    }
+    return Math.max(normalizedMin, Math.min(desired, remainingBudget));
+  };
   if (!conversationId && !conversationUrl) {
     const error = new Error("CONVERSATION_ID_REQUIRED");
     error.code = "CONVERSATION_ID_REQUIRED";
@@ -4421,7 +4444,10 @@ const sendConversationMedia = async ({
     }
 
     ensureDeadline("send-media-before-proxy-check");
-    await ensureProxyCanReachKleinanzeigen(proxy, 12000);
+    await ensureProxyCanReachKleinanzeigen(
+      proxy,
+      getStepTimeout(12000, 4500, 9000, "send-media-proxy-check")
+    );
     ensureDeadline("send-media-after-proxy-check");
 
     const proxyServer = buildProxyServer(proxy);
@@ -4455,7 +4481,12 @@ const sendConversationMedia = async ({
     let waitForLikelyMessageRequestAfter = async () => false;
     try {
       page = await browser.newPage();
-      const localTimeout = Math.min(PUPPETEER_NAV_TIMEOUT, 25000);
+      const localTimeout = getStepTimeout(
+        Math.min(PUPPETEER_NAV_TIMEOUT, 20000),
+        4500,
+        9000,
+        "send-media-navigation-budget"
+      );
       page.setDefaultTimeout(localTimeout);
       page.setDefaultNavigationTimeout(localTimeout);
       if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
@@ -4475,24 +4506,19 @@ const sendConversationMedia = async ({
         });
       }, deviceProfile.platform);
 
-      await gotoWithProxyHandling(
-        page,
-        "https://www.kleinanzeigen.de/",
-        { waitUntil: "domcontentloaded", timeout: localTimeout },
-        "MEDIA_HOME_GOTO"
-      );
-      await acceptCookieModal(page).catch(() => {});
-      if (isGdprPage(page.url())) {
-        await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
-      }
-      await humanPause();
-      await performHumanLikePageActivity(page, { intensity: "light" });
+      ensureDeadline("send-media-before-set-cookie");
       await page.setCookie(...cookies);
-      await humanPause();
+      await humanPause(90, 160);
+      const conversationGotoTimeout = getStepTimeout(
+        localTimeout,
+        4500,
+        6000,
+        "send-media-conversation-goto"
+      );
       await gotoWithProxyHandling(
         page,
         resolvedConversationUrl,
-        { waitUntil: "domcontentloaded", timeout: localTimeout },
+        { waitUntil: "domcontentloaded", timeout: conversationGotoTimeout },
         "MEDIA_CONVERSATION_GOTO"
       );
       await acceptCookieModal(page).catch(() => {});
@@ -4524,6 +4550,7 @@ const sendConversationMedia = async ({
       waitForLikelyMessageRequestAfter = async (minTimestamp, timeoutMs = 9000) => {
         const startedAt = Date.now();
         while (Date.now() - startedAt < timeoutMs) {
+          ensureDeadline("send-media-wait-network-request");
           if (!hasTimeLeft(2500)) return false;
           if (lastLikelyMessageRequestAt >= minTimestamp) {
             observedSendRequestAfterClick = true;
