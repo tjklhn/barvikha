@@ -4269,8 +4269,7 @@ const declineConversationOffer = async ({
       const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
         timeout: state.hasModalContinue ? 1300 : 650,
         preferDialog: true,
-        preferTopLayer: true,
-        excludeInSelectors: paymentActionSelectors
+        preferTopLayer: true
       });
       if (clickedContinue) {
         acted = true;
@@ -4279,8 +4278,7 @@ const declineConversationOffer = async ({
       const clickedDecline = await clickVisibleButtonByText(page, declineLabels, {
         timeout: state.hasModalDecline ? 1700 : 750,
         preferDialog: true,
-        preferTopLayer: true,
-        excludeInSelectors: paymentActionSelectors
+        preferTopLayer: true
       });
       if (clickedDecline) {
         acted = true;
@@ -4288,7 +4286,7 @@ const declineConversationOffer = async ({
       }
 
       if (state.hasInline) {
-        const clickedInline = await clickVisibleButtonByText(page, ["Anfrage ablehnen", "Angebot ablehnen"], {
+        const clickedInline = await clickVisibleButtonByText(page, declineLabels, {
           timeout: 900,
           requireInSelectors: paymentActionSelectors
         });
@@ -4316,15 +4314,13 @@ const declineConversationOffer = async ({
         const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
           timeout: 900,
           preferDialog: true,
-          preferTopLayer: true,
-          excludeInSelectors: paymentActionSelectors
+          preferTopLayer: true
         });
         if (clickedContinue) acted = true;
         const clickedDecline = await clickVisibleButtonByText(page, declineLabels, {
           timeout: 1000,
           preferDialog: true,
-          preferTopLayer: true,
-          excludeInSelectors: paymentActionSelectors
+          preferTopLayer: true
         });
         if (clickedDecline) {
           acted = true;
@@ -4347,6 +4343,14 @@ const declineConversationOffer = async ({
     if (!confirmed && hasTimeLeft(1000)) {
       const state = await declineFlowState();
       if (state.visible) {
+        let maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
+        if (maybeAlreadyDeclined && hasOfferActionsInSnapshot(maybeAlreadyDeclined) && hasTimeLeft(700)) {
+          await sleep(320);
+          maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
+        }
+        if (maybeAlreadyDeclined && !hasOfferActionsInSnapshot(maybeAlreadyDeclined)) {
+          return maybeAlreadyDeclined;
+        }
         throw new Error("DECLINE_NOT_APPLIED");
       }
     }
@@ -4650,12 +4654,21 @@ const sendConversationMedia = async ({
       };
 
       if (tempPaths.length) {
-        await page.evaluate(() => {
-          const target = document.querySelector(".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht']");
-          if (target && typeof target.scrollIntoView === "function") {
-            target.scrollIntoView({ block: "center", inline: "center" });
-          }
-        }).catch(() => {});
+        const bringComposerIntoView = async () => {
+          await page.evaluate(() => {
+            const target = document.querySelector(
+              ".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht'], input[data-testid='reply-box-file-input'], button[aria-label*='Bilder hochladen']"
+            );
+            if (target && typeof target.scrollIntoView === "function") {
+              target.scrollIntoView({ block: "center", inline: "center" });
+              return;
+            }
+            if (document.body && typeof window.scrollTo === "function") {
+              window.scrollTo({ top: document.body.scrollHeight, left: 0, behavior: "auto" });
+            }
+          }).catch(() => {});
+        };
+        await bringComposerIntoView();
         await waitForDynamicContent(page, [
           ".ReplyBox",
           "[class*='ReplyBox']",
@@ -4687,6 +4700,8 @@ const sendConversationMedia = async ({
           "[class*='ReplyBox'] button[aria-label*='Bilder hochladen']",
           "button[data-testid='generic-button-ghost'][aria-label='Bilder hochladen']",
           "button[aria-label*='Bilder hochladen']",
+          "button[aria-label*='hochladen']",
+          "button[aria-label*='Upload']",
           "button[aria-label*='Foto']",
           "button[aria-label*='Bild']",
           "button[data-testid='generic-button-ghost'][aria-label*='Bilder']",
@@ -4732,7 +4747,7 @@ const sendConversationMedia = async ({
             }
           }
           if (!cameraButton?.handle) return false;
-          const chooserPromise = page.waitForFileChooser({ timeout: 2600 }).catch(() => null);
+          const chooserPromise = page.waitForFileChooser({ timeout: 4200 }).catch(() => null);
           const clickedCamera = await clickHandleHumanLike(page, cameraButton.handle);
           if (!clickedCamera) {
             await cameraButton.handle.click({ delay: 30 }).catch(() => {});
@@ -4772,6 +4787,56 @@ const sendConversationMedia = async ({
             requireVisible: false
           });
           fileInputHandle = fallbackInput?.handle || null;
+        }
+
+        if (!uploaded && !fileInputHandle && hasTimeLeft(14000)) {
+          // Hard fallback for flaky conversation rendering:
+          // reopen the same thread once and re-scan upload controls.
+          const retryGotoTimeout = getStepTimeout(
+            localTimeout,
+            3500,
+            7000,
+            "send-media-conversation-goto-retry"
+          );
+          await gotoWithProxyHandling(
+            page,
+            resolvedConversationUrl,
+            { waitUntil: "domcontentloaded", timeout: retryGotoTimeout },
+            "MEDIA_CONVERSATION_GOTO_RETRY"
+          );
+          throwIfAborted("send-media-after-conversation-goto-retry");
+          if (await isAuthFailure(page)) {
+            const error = new Error("AUTH_REQUIRED");
+            error.code = "AUTH_REQUIRED";
+            throw error;
+          }
+          await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+          if (isGdprPage(page.url())) {
+            await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+          }
+          await humanPause(40, 90);
+          await dismissConversationBlockingModals(page, { maxPasses: 4 }).catch(() => {});
+          await bringComposerIntoView();
+          await waitForDynamicContent(page, [
+            ".ReplyBox",
+            "[class*='ReplyBox']",
+            "textarea#nachricht",
+            "button[aria-label*='Bilder hochladen']",
+            "input[data-testid='reply-box-file-input']",
+            "input[type='file']"
+          ], 5200);
+
+          for (let retryAttempt = 0; retryAttempt < 3 && !uploaded && hasTimeLeft(7000); retryAttempt += 1) {
+            uploaded = await tryCameraChooserUpload();
+            if (uploaded) break;
+            const retriedInput = await findFirstHandleInAnyContext(page, fileInputSelectors, {
+              timeout: retryAttempt === 0 ? 2200 : 3800,
+              requireVisible: false
+            });
+            fileInputHandle = retriedInput?.handle || null;
+            if (fileInputHandle) break;
+            await humanPause(110, 190);
+          }
         }
 
         if (!uploaded) {
