@@ -2,6 +2,9 @@ import React, { useEffect, useState } from "react";
 import { apiFetchJson } from "../api";
 import { PackageIcon, RefreshIcon } from "./Icons";
 
+const ACTIVE_ADS_CACHE_KEY = "kl_active_ads_cache_v1";
+const ACTIVE_ADS_CACHE_TTL_MS = 90 * 1000;
+
 const ActiveAdsTab = () => {
   const [ads, setAds] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -57,10 +60,45 @@ const ActiveAdsTab = () => {
     };
   };
 
-  const loadAds = async () => {
+  const readCachedAds = () => {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    try {
+      const raw = window.localStorage.getItem(ACTIVE_ADS_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return null;
+      const savedAt = Number(parsed.savedAt || 0);
+      const list = Array.isArray(parsed.ads) ? parsed.ads : [];
+      if (!savedAt || Date.now() - savedAt > ACTIVE_ADS_CACHE_TTL_MS) return null;
+      return list;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeCachedAds = (list) => {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    try {
+      window.localStorage.setItem(ACTIVE_ADS_CACHE_KEY, JSON.stringify({
+        savedAt: Date.now(),
+        ads: Array.isArray(list) ? list : []
+      }));
+    } catch {
+      // ignore cache write issues
+    }
+  };
+
+  const loadAds = async ({ force = false, useLocalCache = true } = {}) => {
+    if (useLocalCache && !force) {
+      const cached = readCachedAds();
+      if (cached && cached.length) {
+        setAds(cached);
+      }
+    }
     setLoading(true);
     try {
-      const data = await apiFetchJson("/api/ads/active");
+      const suffix = force ? "?force=1" : "";
+      const data = await apiFetchJson(`/api/ads/active${suffix}`);
       const list = Array.isArray(data?.ads) ? data.ads : [];
       const seen = new Set();
       const deduped = [];
@@ -72,6 +110,7 @@ const ActiveAdsTab = () => {
         deduped.push(ad);
       }
       setAds(deduped);
+      writeCachedAds(deduped);
     } catch (error) {
       console.error("Ошибка загрузки активных объявлений:", error);
       setAds([]);
@@ -81,7 +120,7 @@ const ActiveAdsTab = () => {
   };
 
   useEffect(() => {
-    loadAds();
+    loadAds({ force: false, useLocalCache: true });
   }, []);
 
   const updateActionBusy = (key, value) => {
@@ -108,7 +147,7 @@ const ActiveAdsTab = () => {
       if (!result?.success) {
         alert("Ошибка резерва: " + (result?.error || "Не удалось зарезервировать"));
       } else {
-        await loadAds();
+        await loadAds({ force: true, useLocalCache: false });
       }
     } catch (error) {
       console.error("Ошибка резерва:", error);
@@ -138,7 +177,7 @@ const ActiveAdsTab = () => {
       if (!result?.success) {
         alert("Ошибка активации: " + (result?.error || "Не удалось активировать"));
       } else {
-        await loadAds();
+        await loadAds({ force: true, useLocalCache: false });
       }
     } catch (error) {
       console.error("Ошибка активации:", error);
@@ -169,7 +208,7 @@ const ActiveAdsTab = () => {
       if (!result?.success) {
         alert("Ошибка удаления: " + (result?.error || "Не удалось удалить"));
       } else {
-        await loadAds();
+        await loadAds({ force: true, useLocalCache: false });
       }
     } catch (error) {
       console.error("Ошибка удаления:", error);
@@ -213,7 +252,7 @@ const ActiveAdsTab = () => {
         </h2>
         <button
           className="primary-button"
-          onClick={loadAds}
+          onClick={() => loadAds({ force: true, useLocalCache: false })}
           disabled={loading}
           style={{
             padding: "12px 24px",

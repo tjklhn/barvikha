@@ -68,6 +68,8 @@ const subscriptionTokens = { items: [] };
 const activePublishByAccount = new Map();
 const recentSuccessfulPublishes = new Map();
 const RECENT_PUBLISH_TTL_MS = 30 * 60 * 1000;
+const ADS_ACTIVE_CACHE_TTL_MS = Number(process.env.KL_ACTIVE_ADS_CACHE_TTL_MS || 90 * 1000);
+const activeAdsCache = new Map();
 
 const getPuppeteer = () => {
   if (!puppeteerStealthReady) {
@@ -581,6 +583,89 @@ const isOwnerMatch = (item, ownerContext = {}) => {
 
 const normalizeEntityId = (value) => String(value ?? "").trim();
 
+const getActiveAdsCacheScope = (ownerContext = {}) => {
+  if (ownerContext?.isAdmin) return "admin";
+  const ownerId = String(ownerContext?.ownerId || "").trim();
+  return `owner:${ownerId || "none"}`;
+};
+
+const buildActiveAdsCacheKey = ({ ownerContext = {}, accounts = [] } = {}) => {
+  const scope = getActiveAdsCacheScope(ownerContext);
+  const accountSignature = (Array.isArray(accounts) ? accounts : [])
+    .map((account) => `${normalizeEntityId(account?.id)}:${normalizeEntityId(account?.proxyId)}`)
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  return `${scope}|${accountSignature || "none"}`;
+};
+
+const pruneActiveAdsCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of activeAdsCache.entries()) {
+    if (!entry) {
+      activeAdsCache.delete(key);
+      continue;
+    }
+    if (entry.inFlight) continue;
+    if (entry.expiresAt && entry.expiresAt > now) continue;
+    activeAdsCache.delete(key);
+  }
+};
+
+const getCachedActiveAdsEntry = (cacheKey) => {
+  if (!cacheKey) return null;
+  pruneActiveAdsCache();
+  const entry = activeAdsCache.get(cacheKey);
+  if (!entry) return null;
+  if (entry.inFlight) return null;
+  if (!entry.expiresAt || entry.expiresAt < Date.now()) {
+    activeAdsCache.delete(cacheKey);
+    return null;
+  }
+  return entry;
+};
+
+const setCachedActiveAdsEntry = (cacheKey, ads) => {
+  if (!cacheKey) return;
+  const now = Date.now();
+  activeAdsCache.set(cacheKey, {
+    ads: Array.isArray(ads) ? ads : [],
+    cachedAt: now,
+    expiresAt: now + Math.max(5000, ADS_ACTIVE_CACHE_TTL_MS),
+    inFlight: null
+  });
+};
+
+const setActiveAdsInFlight = (cacheKey, inFlight) => {
+  if (!cacheKey) return;
+  const current = activeAdsCache.get(cacheKey) || {};
+  activeAdsCache.set(cacheKey, {
+    ...current,
+    inFlight
+  });
+};
+
+const clearActiveAdsInFlight = (cacheKey) => {
+  if (!cacheKey) return;
+  const current = activeAdsCache.get(cacheKey);
+  if (!current) return;
+  if (!current.ads || !current.expiresAt) {
+    activeAdsCache.delete(cacheKey);
+    return;
+  }
+  current.inFlight = null;
+  activeAdsCache.set(cacheKey, current);
+};
+
+const invalidateActiveAdsCacheForOwner = (ownerContext = {}) => {
+  const scopePrefix = `${getActiveAdsCacheScope(ownerContext)}|`;
+  for (const key of activeAdsCache.keys()) {
+    if (key.startsWith(scopePrefix)) {
+      activeAdsCache.delete(key);
+    }
+  }
+};
+
 const isSameEntityId = (left, right) => {
   const leftId = normalizeEntityId(left);
   const rightId = normalizeEntityId(right);
@@ -1037,8 +1122,36 @@ app.get("/api/ads/active", async (req, res) => {
       }
       return hasProxyWithId(scopedProxies, account.proxyId);
     });
-    const ads = await fetchActiveAds({ accounts, proxies: scopedProxies, ownerContext });
-    res.json({ ads });
+    const forceRefresh = ["1", "true", "yes"].includes(String(req.query.force || "").trim().toLowerCase());
+    const cacheKey = buildActiveAdsCacheKey({ ownerContext, accounts });
+
+    if (!forceRefresh) {
+      const cached = getCachedActiveAdsEntry(cacheKey);
+      if (cached) {
+        res.json({
+          ads: Array.isArray(cached.ads) ? cached.ads : [],
+          cached: true,
+          cachedAt: new Date(cached.cachedAt || Date.now()).toISOString()
+        });
+        return;
+      }
+      const inflightEntry = activeAdsCache.get(cacheKey);
+      if (inflightEntry?.inFlight) {
+        const ads = await inflightEntry.inFlight;
+        res.json({ ads, cached: false });
+        return;
+      }
+    }
+
+    const fetchPromise = (async () => {
+      const ads = await fetchActiveAds({ accounts, proxies: scopedProxies, ownerContext });
+      return Array.isArray(ads) ? ads : [];
+    })();
+    setActiveAdsInFlight(cacheKey, fetchPromise);
+
+    const ads = await fetchPromise;
+    setCachedActiveAdsEntry(cacheKey, ads);
+    res.json({ ads, cached: false });
   } catch (error) {
     dumpFieldsDebugMeta({
       accountLabel: "account",
@@ -1048,6 +1161,17 @@ app.get("/api/ads/active", async (req, res) => {
       force: req?.query?.debug === "true" || req?.query?.debug === "1"
     });
     res.status(500).json({ success: false, error: error.message });
+  } finally {
+    try {
+      const ownerContext = getOwnerContext(req);
+      const scopedAccounts = filterByOwner(listAccounts(), ownerContext);
+      const scopedProxies = filterByOwner(proxies, ownerContext);
+      const accounts = scopedAccounts.filter((account) => account?.proxyId && hasProxyWithId(scopedProxies, account.proxyId));
+      const cacheKey = buildActiveAdsCacheKey({ ownerContext, accounts });
+      clearActiveAdsInFlight(cacheKey);
+    } catch (error) {
+      // ignore cleanup failures
+    }
   }
 });
 
@@ -1082,6 +1206,9 @@ app.post("/api/ads/:adId/reserve", async (req, res) => {
       adHref,
       adTitle
     });
+    if (result?.success) {
+      invalidateActiveAdsCacheForOwner(ownerContext);
+    }
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -1119,6 +1246,9 @@ app.post("/api/ads/:adId/activate", async (req, res) => {
       adHref,
       adTitle
     });
+    if (result?.success) {
+      invalidateActiveAdsCacheForOwner(ownerContext);
+    }
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -1156,6 +1286,9 @@ app.post("/api/ads/:adId/delete", async (req, res) => {
       adHref,
       adTitle
     });
+    if (result?.success) {
+      invalidateActiveAdsCacheForOwner(ownerContext);
+    }
     res.json(result);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });

@@ -3,6 +3,7 @@ import { apiFetchJson, getAccessToken } from "../api";
 import { MessageIcon } from "./Icons";
 
 const SEEN_STORAGE_KEY = "kl_messages_seen_v1";
+const THREAD_CACHE_TTL_MS = 2 * 60 * 1000;
 
 const detectMobileView = () => {
   if (typeof window === "undefined") return false;
@@ -217,6 +218,7 @@ const MessagesTab = () => {
   const previewHydrationInFlight = useRef(new Set());
   const messagesRefreshInFlight = useRef(false);
   const translateInFlight = useRef(new Set());
+  const threadCacheRef = useRef(new Map());
 
   const clearComposerImages = () => {
     setReplyImages((prev) => {
@@ -227,6 +229,45 @@ const MessagesTab = () => {
         }
       });
       return [];
+    });
+  };
+
+  const getThreadCacheKeyForMessage = (message) => {
+    if (!message || typeof message !== "object") return "";
+    const accountId = message.accountId != null ? String(message.accountId) : "";
+    const conversationId = message.conversationId != null ? String(message.conversationId) : "";
+    const conversationUrl = message.conversationUrl != null ? String(message.conversationUrl) : "";
+    if (!accountId) return "";
+    if (conversationId) return `${accountId}|cid:${conversationId}`;
+    if (conversationUrl) return `${accountId}|url:${conversationUrl}`;
+    return "";
+  };
+
+  const readThreadCacheEntry = (message) => {
+    const key = getThreadCacheKeyForMessage(message);
+    if (!key) return null;
+    const entry = threadCacheRef.current.get(key);
+    if (!entry || typeof entry !== "object") return null;
+    if (!entry.expiresAt || entry.expiresAt < Date.now()) {
+      threadCacheRef.current.delete(key);
+      return null;
+    }
+    return entry;
+  };
+
+  const writeThreadCacheEntry = (message, payload) => {
+    const key = getThreadCacheKeyForMessage(message);
+    if (!key || !payload || typeof payload !== "object") return;
+    threadCacheRef.current.set(key, {
+      expiresAt: Date.now() + THREAD_CACHE_TTL_MS,
+      payload: {
+        adTitle: payload.adTitle || "",
+        adImage: payload.adImage || "",
+        sender: payload.sender || "",
+        messages: Array.isArray(payload.messages) ? payload.messages : [],
+        conversationId: payload.conversationId || message?.conversationId || "",
+        conversationUrl: payload.conversationUrl || message?.conversationUrl || ""
+      }
     });
   };
 
@@ -440,6 +481,8 @@ const MessagesTab = () => {
       const serverMessages = Array.isArray(result.messages) ? result.messages : [];
       if (serverMessages.length) {
         const lastMessage = serverMessages[serverMessages.length - 1];
+        const nextConversationId = result.conversationId || selectedMessage.conversationId;
+        const nextConversationUrl = result.conversationUrl || selectedMessage.conversationUrl;
         setMessages((prev) => prev.map((msg) => (
           msg.id === selectedMessage.id
             ? {
@@ -447,8 +490,8 @@ const MessagesTab = () => {
               message: lastMessage?.text || msg.message,
               date: lastMessage?.date || msg.date,
               time: lastMessage?.time || msg.time,
-              conversationId: result.conversationId || msg.conversationId,
-              conversationUrl: result.conversationUrl || msg.conversationUrl,
+              conversationId: nextConversationId || msg.conversationId,
+              conversationUrl: nextConversationUrl || msg.conversationUrl,
               unread: false
             }
             : msg
@@ -456,12 +499,20 @@ const MessagesTab = () => {
         setSelectedMessage((prev) => ({
           ...prev,
           messages: serverMessages,
-          conversationId: result.conversationId || prev.conversationId,
-          conversationUrl: result.conversationUrl || prev.conversationUrl
+          conversationId: nextConversationId || prev.conversationId,
+          conversationUrl: nextConversationUrl || prev.conversationUrl
         }));
+        writeThreadCacheEntry(selectedMessage, {
+          adTitle: selectedMessage.adTitle,
+          adImage: selectedMessage.adImage,
+          sender: selectedMessage.sender,
+          messages: serverMessages,
+          conversationId: nextConversationId,
+          conversationUrl: nextConversationUrl
+        });
       } else {
         // Fallback: refresh thread when backend doesn't return messages.
-        fetchThread(selectedMessage);
+        fetchThread(selectedMessage, { force: true });
       }
       setDeclineConfirmOpen(false);
     } catch (error) {
@@ -611,6 +662,14 @@ const MessagesTab = () => {
             conversationId: resolvedConversationId,
             conversationUrl: resolvedConversationUrl
           }));
+          writeThreadCacheEntry(selectedMessage, {
+            adTitle: selectedMessage.adTitle,
+            adImage: selectedMessage.adImage,
+            sender: selectedMessage.sender,
+            messages: nextMessages,
+            conversationId: resolvedConversationId,
+            conversationUrl: resolvedConversationUrl
+          });
         } else {
           // Backend may respond without thread messages. Keep optimistic entry and mark it as sent.
           setSelectedMessage((prev) => {
@@ -711,7 +770,34 @@ const MessagesTab = () => {
       }]
       : [];
 
-  const fetchThread = async (message) => {
+  const fetchThread = async (message, { force = false } = {}) => {
+    const cached = !force ? readThreadCacheEntry(message) : null;
+    if (cached?.payload) {
+      const cachedPayload = cached.payload;
+      const updatedFromCache = {
+        ...message,
+        adTitle: cachedPayload.adTitle || message.adTitle,
+        adImage: cachedPayload.adImage || message.adImage,
+        sender: message.sender || cachedPayload.sender || "",
+        messages: Array.isArray(cachedPayload.messages) ? cachedPayload.messages : [],
+        conversationId: cachedPayload.conversationId || message.conversationId,
+        conversationUrl: cachedPayload.conversationUrl || message.conversationUrl
+      };
+      setMessages((prev) => prev.map((msg) => (
+        String(msg.id) === String(message.id)
+          ? {
+            ...msg,
+            adTitle: updatedFromCache.adTitle,
+            adImage: updatedFromCache.adImage,
+            conversationId: updatedFromCache.conversationId,
+            conversationUrl: updatedFromCache.conversationUrl
+          }
+          : msg
+      )));
+      setSelectedMessage(updatedFromCache);
+      return;
+    }
+
     setLoadingThread(true);
     try {
       const params = new URLSearchParams();
@@ -746,6 +832,7 @@ const MessagesTab = () => {
             : msg
         )));
         setSelectedMessage(updated);
+        writeThreadCacheEntry(updated, updated);
       }
     } catch (err) {
       console.error("Ошибка загрузки диалога:", err);
@@ -828,7 +915,7 @@ const MessagesTab = () => {
 
       <div className="messages-layout" style={{ display: "flex", gap: "20px", height: "calc(100vh - 220px)", minHeight: "500px" }}>
         {/* Conversation List */}
-        {showConversationList && <div className="messages-list" style={{
+        <div className="messages-list" style={{
           width: "400px",
           minWidth: "340px",
           background: "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.95) 100%)",
@@ -839,7 +926,8 @@ const MessagesTab = () => {
           color: "#e2e8f0",
           display: "flex",
           flexDirection: "column",
-          backdropFilter: "blur(10px)"
+          backdropFilter: "blur(10px)",
+          ...(showConversationList ? {} : { display: "none" })
         }}>
           {/* Header */}
           <div style={{
@@ -1190,10 +1278,10 @@ const MessagesTab = () => {
               {messages.length} {messages.length === 1 ? "диалог" : messages.length < 5 ? "диалога" : "диалогов"}
             </div>
           )}
-        </div>}
+        </div>
 
         {/* Chat Panel */}
-        {showChatPanel && <div className="messages-chat" style={{
+        <div className="messages-chat" style={{
           flex: 1,
           position: "relative",
           background: "linear-gradient(145deg, rgba(30, 41, 59, 0.6) 0%, rgba(15, 23, 42, 0.95) 100%)",
@@ -1204,7 +1292,8 @@ const MessagesTab = () => {
           display: "flex",
           flexDirection: "column",
           color: "#e2e8f0",
-          backdropFilter: "blur(10px)"
+          backdropFilter: "blur(10px)",
+          ...(showChatPanel ? {} : { display: "none" })
         }}>
           {selectedMessage ? (
             <>
@@ -2058,7 +2147,7 @@ const MessagesTab = () => {
               </div>
             </div>
           )}
-        </div>}
+        </div>
       </div>
     </>
   );
