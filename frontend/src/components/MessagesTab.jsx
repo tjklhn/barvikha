@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { apiFetchJson, getAccessToken } from "../api";
 import { MessageIcon } from "./Icons";
 
+const SEEN_STORAGE_KEY = "kl_messages_seen_v1";
+
 const detectMobileView = () => {
   if (typeof window === "undefined") return false;
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -106,6 +108,44 @@ const getMessagePreviewImage = (message) =>
 
 const hasMessagePreviewImage = (message) => Boolean(getRawMessagePreviewImage(message));
 
+const getConversationKey = (message) => {
+  if (!message || typeof message !== "object") return "";
+  const accountId = message.accountId != null ? String(message.accountId) : "";
+  const convo = message.conversationId || message.conversationUrl || message.id || "";
+  const convoId = convo != null ? String(convo) : "";
+  if (!accountId || !convoId) return "";
+  return `${accountId}|${convoId}`;
+};
+
+const getConversationFingerprint = (message) => {
+  if (!message || typeof message !== "object") return "";
+  const date = String(message.date || "").trim();
+  const time = String(message.time || "").trim();
+  const text = String(message.message || "").trim();
+  return `${date}|${time}|${text}`;
+};
+
+const loadSeenMap = () => {
+  if (typeof window === "undefined" || !window.localStorage) return {};
+  try {
+    const raw = window.localStorage.getItem(SEEN_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveSeenMap = (next) => {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(next || {}));
+  } catch {
+    // ignore quota / serialization issues
+  }
+};
+
 const MessagesTab = () => {
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
@@ -201,6 +241,24 @@ const MessagesTab = () => {
     }
   };
 
+  const rememberConversationSeen = (message) => {
+    const key = getConversationKey(message);
+    if (!key) return;
+    const fingerprint = getConversationFingerprint(message);
+    if (!fingerprint) return;
+
+    const seen = loadSeenMap();
+    seen[key] = { fingerprint, seenAt: Date.now() };
+    saveSeenMap(seen);
+
+    // Immediately update UI so the badge doesn't come back on refresh.
+    setMessages((prev) => prev.map((msg) => {
+      const msgKey = getConversationKey(msg);
+      if (!msgKey || msgKey !== key) return msg;
+      return { ...msg, unread: false };
+    }));
+  };
+
   const loadMessages = async (opts = {}) => {
     const silent = Boolean(opts && typeof opts === "object" && opts.silent);
     if (messagesRefreshInFlight.current) return;
@@ -224,8 +282,21 @@ const MessagesTab = () => {
         seen.add(key);
         deduped.push(item);
       }
-      setMessages(deduped);
-      hydrateMissingPreviewImages(deduped);
+      const seenMap = loadSeenMap();
+      const merged = deduped.map((item) => {
+        const key = getConversationKey(item);
+        if (!key) return item;
+        const entry = seenMap[key];
+        if (!entry || typeof entry !== "object") return item;
+        const currentFingerprint = getConversationFingerprint(item);
+        if (entry.fingerprint && entry.fingerprint === currentFingerprint) {
+          return { ...item, unread: false };
+        }
+        return item;
+      });
+
+      setMessages(merged);
+      hydrateMissingPreviewImages(merged);
     } catch (err) {
       console.error("Ошибка загрузки сообщений:", err);
       if (!silent) setError(err.message || "Не удалось загрузить сообщения");
@@ -235,21 +306,9 @@ const MessagesTab = () => {
     }
   };
 
-  const markAsRead = async (messageId) => {
-    // Immediately update UI for better responsiveness
-    setMessages(prev => prev.map(msg =>
-      msg.id === messageId ? { ...msg, unread: false } : msg
-    ));
-
-    try {
-      await apiFetchJson(`/api/messages/${messageId}/read`, {
-        method: "PUT"
-      });
-    } catch (err) {
-      console.error("Ошибка при отметке сообщения как прочитанного:", err);
-      // Optionally revert on error
-    }
-  };
+  // NOTE: Backend does not guarantee a "mark read" API (and Kleinanzeigen state may lag).
+  // We persist "seen" locally so a refresh won't resurrect the "new" badge.
+  const markAsRead = (message) => rememberConversationSeen(message);
 
   const sendReply = async () => {
     if (!replyText.trim() || !selectedMessage) return;
@@ -739,9 +798,9 @@ const MessagesTab = () => {
                   key={message.id}
                   className="msg-conv-item"
                   onClick={() => {
+                    markAsRead(message);
                     setSelectedMessage(message);
                     fetchThread(message);
-                    if (message.unread) markAsRead(message.id);
                   }}
                   style={{
                     padding: "14px 20px",
