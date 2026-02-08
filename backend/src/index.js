@@ -1647,15 +1647,18 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     });
     let serviceTimer = null;
     let timedOut = false;
+    const abortController = new AbortController();
     const servicePromise = declineConversationOffer({
       account,
       proxy,
       conversationId,
-      conversationUrl
+      conversationUrl,
+      abortSignal: abortController.signal
     });
     const timeoutPromise = new Promise((_, reject) => {
       serviceTimer = setTimeout(() => {
         timedOut = true;
+        try { abortController.abort(); } catch (error) {}
         const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
         timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
         timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
@@ -1687,7 +1690,9 @@ app.post("/api/messages/offer/decline", async (req, res) => {
               clientRequestId,
               elapsedMs: Date.now() - startedAt,
               code: lateError?.code || "",
-              message: lateError?.message || String(lateError)
+              message: lateError?.message || String(lateError),
+              details: lateError?.details || "",
+              stack: lateError?.stack || ""
             });
           });
       }
@@ -1870,17 +1875,20 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     });
     let serviceTimer = null;
     let timedOut = false;
+    const abortController = new AbortController();
     const servicePromise = sendConversationMedia({
       account,
       proxy,
       conversationId,
       conversationUrl,
       text: text.trim(),
-      files: imageFiles
+      files: imageFiles,
+      abortSignal: abortController.signal
     });
     const timeoutPromise = new Promise((_, reject) => {
       serviceTimer = setTimeout(() => {
         timedOut = true;
+        try { abortController.abort(); } catch (error) {}
         const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
         timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
         timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
@@ -1912,7 +1920,9 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
               clientRequestId,
               elapsedMs: Date.now() - startedAt,
               code: lateError?.code || "",
-              message: lateError?.message || String(lateError)
+              message: lateError?.message || String(lateError),
+              details: lateError?.details || "",
+              stack: lateError?.stack || ""
             });
           });
       }
