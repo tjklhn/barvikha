@@ -251,15 +251,6 @@ const validateCookies = async (rawCookieText, options = {}) => {
         profileEmail: profile.profileEmail || ""
       };
     }
-    if (tokenCheck.reason === "AUTH_REQUIRED" && (tokenCheck.status === 401 || tokenCheck.status === 403)) {
-      return {
-        valid: false,
-        reason: "Kleinanzeigen отклонил cookies (401/403 на m-access-token.json). Частые причины: cookies устарели или получены не через тот же прокси/IP.",
-        deviceProfile,
-        profileName: "",
-        profileEmail: ""
-      };
-    }
   } catch (error) {
     // Fall back to Puppeteer validation below when the token endpoint is unreachable.
   }
