@@ -20,6 +20,18 @@ const sanitizeProfileName = (value) => {
   return normalized;
 };
 
+const normalizeEntityId = (value) => String(value ?? "").trim();
+const isSameEntityId = (left, right) => {
+  const leftId = normalizeEntityId(left);
+  const rightId = normalizeEntityId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+};
+const findProxyById = (proxyList, proxyId) => {
+  const list = Array.isArray(proxyList) ? proxyList : [];
+  if (!proxyId) return null;
+  return list.find((proxy) => isSameEntityId(proxy?.id, proxyId)) || null;
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 240) => sleep(Math.floor(min + Math.random() * (max - min)));
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
@@ -350,9 +362,7 @@ const fetchActiveAds = async ({ accounts, proxies, ownerContext = {} }) => {
   const results = [];
   for (const account of accounts) {
     if (!account.cookie) continue;
-    const proxy = account.proxyId
-      ? proxies.find((item) => item.id === account.proxyId)
-      : null;
+    const proxy = findProxyById(proxies, account.proxyId);
     const profileName = account.profileName || account.username || "Аккаунт";
     const profileEmail = account.profileEmail || "";
     const accountLabel = profileEmail ? `${profileName} (${profileEmail})` : profileName;

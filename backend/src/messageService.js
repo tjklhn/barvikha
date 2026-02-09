@@ -69,6 +69,17 @@ const buildConversationUrl = (conversationId, conversationUrl) => {
 const normalizeMatch = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
 const normalizeErrorMessage = (error) => String(error?.message || error || "").trim();
 const normalizeErrorCode = (error) => String(error?.code || "").trim().toUpperCase();
+const normalizeEntityId = (value) => String(value ?? "").trim();
+const isSameEntityId = (left, right) => {
+  const leftId = normalizeEntityId(left);
+  const rightId = normalizeEntityId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+};
+const findProxyById = (proxyList, proxyId) => {
+  const list = Array.isArray(proxyList) ? proxyList : [];
+  if (!proxyId) return null;
+  return list.find((proxy) => isSameEntityId(proxy?.id, proxyId)) || null;
+};
 
 const matchesAnyPattern = (value, patterns = []) => {
   const source = String(value || "");
@@ -4698,10 +4709,18 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
 
     await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
     await humanPause();
+    await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+    if (isGdprPage(page.url())) {
+      await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+    }
     await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
     await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+    await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+    if (isGdprPage(page.url())) {
+      await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+    }
     await humanPause(180, 360);
     await performHumanLikePageActivity(page, { intensity: "medium" });
 
@@ -4772,6 +4791,7 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
 
   let cursor = 0;
   const collected = [];
+  const failures = [];
 
   const runNext = async () => {
     while (true) {
@@ -4780,9 +4800,7 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
       cursor += 1;
 
       const account = queuedAccounts[nextIndex];
-      const proxy = account.proxyId
-        ? (proxies || []).find((item) => item.id === account.proxyId)
-        : null;
+      const proxy = findProxyById(proxies, account.proxyId);
       const profileName = account.profileName || account.username || "Аккаунт";
       const profileEmail = account.profileEmail || "";
       const accountLabel = profileEmail ? `${profileName} (${profileEmail})` : profileName;
@@ -4793,13 +4811,34 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
           collected.push(...data.conversations);
         }
       } catch (error) {
-        console.log(`[messageService] Messages fetch failed for ${accountLabel}: ${error?.message || error}`);
+        const code = String(error?.code || "").trim();
+        const reason = String(error?.message || code || error || "unknown").trim().slice(0, 240);
+        failures.push({
+          accountId: account?.id,
+          accountLabel,
+          code,
+          reason
+        });
+        console.log(`[messageService] Messages fetch failed for ${accountLabel}: ${reason}`);
       }
     }
   };
 
   const workers = Array.from({ length: Math.min(concurrency, queuedAccounts.length) }, () => runNext());
   await Promise.all(workers);
+  if (!collected.length && failures.length) {
+    const allAuth = failures.every((item) => item?.code === "AUTH_REQUIRED" || item?.reason === "AUTH_REQUIRED");
+    const sample = failures
+      .slice(0, 3)
+      .map((item) => `${item.accountLabel}: ${item.reason || item.code || "error"}`)
+      .join("; ");
+    const error = new Error(`Не удалось загрузить сообщения ни для одного аккаунта. ${sample}`.trim());
+    if (allAuth) {
+      error.code = "AUTH_REQUIRED";
+    }
+    error.details = JSON.stringify(failures.slice(0, 8));
+    throw error;
+  }
   return collected;
 };
 
