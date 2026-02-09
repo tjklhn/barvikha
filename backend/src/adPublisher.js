@@ -4,7 +4,7 @@ const path = require("path");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 
 puppeteer.use(StealthPlugin());
@@ -1107,14 +1107,14 @@ const acceptCookieModal = async (page, { timeout = 15000 } = {}) => {
     "Accept all",
     "Accept",
     "Agree",
-    "I agree",
-    "OK",
-    "Okay"
+    "I agree"
   ];
 
   const clickByXpathInContext = async (context, texts) => {
     for (const text of texts) {
-      const xpath = `//button[contains(normalize-space(.), "${text}")] | //a[contains(normalize-space(.), "${text}")] | //span[contains(normalize-space(.), "${text}")]/ancestor::*[self::button or self::a][1]`;
+      // Be conservative: cookie banners typically use buttons. Avoid clicking anchors
+      // to prevent accidental navigations to policy/help pages.
+      const xpath = `//button[contains(normalize-space(.), "${text}")] | //span[contains(normalize-space(.), "${text}")]/ancestor::button[1] | //input[( @type="button" or @type="submit") and contains(normalize-space(@value), "${text}")]`;
       let handles = [];
       try {
         handles = await context.$x(xpath);
@@ -1287,7 +1287,7 @@ const acceptCookieModal = async (page, { timeout = 15000 } = {}) => {
         collectRoots(document, roots);
         for (const root of roots) {
           const candidates = Array.from(
-            root.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit']")
+            root.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']")
           );
           for (const node of candidates) {
             if (!isVisible(node)) continue;
@@ -1414,9 +1414,10 @@ const acceptCookieModal = async (page, { timeout = 15000 } = {}) => {
 };
 
 const acceptGdprConsent = async (page, { timeout = 15000 } = {}) => {
-  const url = page.url();
-  if (!isGdprPage(url)) return false;
-  const lowerTexts = [
+  if (!page) return false;
+  if (!isGdprPage(page.url())) return false;
+
+  const buttonTexts = [
     "alle akzeptieren",
     "akzeptieren",
     "zustimmen",
@@ -1431,91 +1432,79 @@ const acceptGdprConsent = async (page, { timeout = 15000 } = {}) => {
     "agree",
     "i agree"
   ];
-  const startedAt = Date.now();
-  let clicked = false;
 
-  while (!clicked && Date.now() - startedAt < timeout) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    // Prefer the same logic as regular cookie banners; Kleinanzeigen reuses it on /gdpr.
+    const acceptedViaCookieModal = await acceptCookieModal(page, { timeout: Math.min(5000, Math.max(1200, timeout - (Date.now() - startedAt))) })
+      .catch(() => false);
+
+    if (acceptedViaCookieModal) {
+      try {
+		        await Promise.race([
+		          page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }),
+		          page.waitForFunction(() => !String(window.location.href || "").toLowerCase().includes("/gdpr"), { timeout: 20000 })
+		        ]);
+		      } catch (error) {
+		        // ignore navigation; URL can also stay the same while consent is applied
+		      }
+      return true;
+    }
+
+    // Fallback: click a visible button (avoid anchors to prevent going to policy pages).
     const contexts = [page, ...page.frames()];
     for (const context of contexts) {
-      try {
-        if (await clickByXpathInContext(context, consentTexts)) {
-          clicked = true;
-          break;
-        }
-      } catch (error) {
-        // ignore context errors
-      }
-    }
-
-    if (!clicked) {
-      try {
-        clicked = await page.evaluate((texts) => {
-          const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-          const matches = (text) => texts.some((needle) => normalize(text).includes(needle));
-          const isVisible = (node) => {
-            if (!node) return false;
-            const style = window.getComputedStyle(node);
-            if (style.display === "none" || style.visibility === "hidden") return false;
-            const rect = node.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-          };
-          const collectRoots = (root, bucket) => {
-            if (!root || bucket.includes(root)) return;
-            bucket.push(root);
-            const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
-            elements.forEach((el) => {
-              if (el.shadowRoot) collectRoots(el.shadowRoot, bucket);
-            });
-          };
-          const roots = [];
-          collectRoots(document, roots);
-          for (const root of roots) {
-            const candidates = Array.from(
-              root.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit']")
-            );
-            for (const node of candidates) {
-              if (!isVisible(node)) continue;
-              const text = normalize(
-                node.textContent ||
-                  node.value ||
-                  node.getAttribute("aria-label") ||
-                  node.getAttribute("title") ||
-                  node.getAttribute("data-testid") ||
-                  node.getAttribute("data-test")
-              );
-              if (text && matches(text)) {
-                node.click();
-                return true;
-              }
-            }
+      const clicked = await context.evaluate((texts) => {
+        const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        const needles = Array.isArray(texts) ? texts.map(normalize).filter(Boolean) : [];
+        if (!needles.length) return false;
+        const isVisible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          if (!style) return false;
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") return false;
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const candidates = Array.from(document.querySelectorAll("button, [role='button'], input[type='button'], input[type='submit']"));
+        for (const node of candidates) {
+          if (!isVisible(node)) continue;
+          const text = normalize(
+            node.textContent
+            || node.value
+            || node.getAttribute("aria-label")
+            || node.getAttribute("title")
+            || node.getAttribute("data-testid")
+            || node.getAttribute("data-test")
+          );
+          if (!text) continue;
+          if (!needles.some((needle) => text.includes(needle))) continue;
+          try {
+            node.click();
+            return true;
+          } catch (error) {
+            // ignore and continue
           }
-          return false;
-        }, lowerTexts);
-      } catch (error) {
-        clicked = false;
+        }
+        return false;
+      }, buttonTexts);
+
+      if (clicked) {
+	        try {
+	          await Promise.race([
+	            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }),
+	            page.waitForFunction(() => !String(window.location.href || "").toLowerCase().includes("/gdpr"), { timeout: 20000 })
+	          ]);
+	        } catch (error) {
+	          // ignore
+	        }
+        return true;
       }
     }
 
-    if (!clicked) {
-      try {
-      await sleep(500);
-      } catch (error) {
-        break;
-      }
-    }
+    await sleep(400).catch(() => {});
   }
-
-  if (clicked) {
-    try {
-      await Promise.race([
-        page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }),
-        page.waitForFunction(() => !/\/gdpr/i.test(window.location.href), { timeout: 20000 })
-      ]);
-    } catch (error) {
-      // ignore
-    }
-  }
-  return clicked;
+  return false;
 };
 
 const clickSubmitButtonInContext = async (context, options = {}) => {
@@ -1996,6 +1985,10 @@ const waitForPublishState = async (page, timeout) => {
           bodyText.includes("Anzeige ist online") ||
           bodyText.includes("Anzeige wurde erfolgreich") ||
           bodyText.includes("Anzeige wurde veröffentlicht") ||
+          bodyText.includes("Anzeige wird geprüft") ||
+          bodyText.includes("Deine Anzeige wird geprüft") ||
+          bodyText.includes("Wir prüfen deine Anzeige") ||
+          bodyText.includes("Anzeige wurde eingereicht") ||
           bodyText.includes("Vielen Dank") ||
           bodyText.includes("Danke")
         ) {
@@ -2036,6 +2029,111 @@ const waitForPublishState = async (page, timeout) => {
       { timeout }
     );
     return await handle.jsonValue();
+  } catch (error) {
+    return null;
+  }
+};
+
+// After clicking submit on step2 Kleinanzeigen may navigate to the final step (p-anzeige-abschicken)
+// asynchronously. waitForPublishState() returns "form" immediately on form URLs, so we need a
+// dedicated waiter to detect step transitions or visible validation errors.
+const waitForPostSubmitTransition = async (page, { initialUrl = "", timeoutMs = 45000 } = {}) => {
+  if (!page) return null;
+  try {
+    const handle = await page.waitForFunction(
+      (initial) => {
+        const bodyText = document.body?.innerText || "";
+        const url = window.location.href;
+
+        const isVisible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          if (!style) return false;
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+
+        if (
+          url.includes("p-anzeige-aufgeben-bestaetigung") ||
+          url.includes("anzeige-aufgeben-bestaetigung") ||
+          url.includes("anzeige-aufgeben-schritt3") ||
+          url.includes("anzeige-aufgeben-schritt4") ||
+          url.includes("anzeige-aufgeben-danke") ||
+          url.includes("anzeige-aufgeben-abschliessen") ||
+          url.includes("meine-anzeigen") ||
+          bodyText.includes("Anzeige wird aufgegeben") ||
+          bodyText.includes("Anzeige wurde erstellt") ||
+          bodyText.includes("Anzeige ist online") ||
+          bodyText.includes("Anzeige wurde erfolgreich") ||
+          bodyText.includes("Anzeige wurde veröffentlicht") ||
+          bodyText.includes("Anzeige wird geprüft") ||
+          bodyText.includes("Deine Anzeige wird geprüft") ||
+          bodyText.includes("Wir prüfen deine Anzeige") ||
+          bodyText.includes("Anzeige wurde eingereicht") ||
+          bodyText.includes("Vielen Dank") ||
+          bodyText.includes("Danke")
+        ) {
+          return { outcome: "success", url };
+        }
+
+        const hasPreviewUrl = /vorschau|preview/i.test(url);
+        const headingText = Array.from(document.querySelectorAll("h1, h2, h3"))
+          .map((node) => node.textContent || "")
+          .join(" ");
+        const titleText = document.title || "";
+        const previewHints = `${titleText} ${headingText}`.toLowerCase();
+        const hasPreviewText = /vorschau/.test(previewHints);
+        const previewButtons = Array.from(
+          document.querySelectorAll('button[type="submit"], input[type="submit"], button')
+        ).map((button) => (button.innerText || button.value || "").toLowerCase());
+        const hasPublishButton = previewButtons.some((text) =>
+          text.includes("veröffentlichen")
+          || text.includes("veroeffentlichen")
+          || text.includes("anzeige aufgeben")
+        );
+        if (hasPreviewUrl || (hasPreviewText && hasPublishButton)) {
+          return { outcome: "preview", url };
+        }
+
+        const initialIsAbschicken = Boolean(initial && /p-anzeige-abschicken|anzeige-abschicken/i.test(initial));
+        if (/p-anzeige-abschicken|anzeige-abschicken/i.test(url) && !initialIsAbschicken) {
+          return { outcome: "abschicken", url };
+        }
+
+        // Visible validation errors on the current page (e.g. step2 staying on the form).
+        const errorSelectors = [
+          ".formerror",
+          "[role='alert']",
+          "[data-testid*='error']",
+          ".error-message",
+          ".form-error",
+          ".validation-error",
+          "#buyNow\\.errors"
+        ];
+        for (const selector of errorSelectors) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          if (nodes.some(isVisible)) {
+            return { outcome: "errors", url };
+          }
+        }
+
+        if (initial && url !== initial && /anzeige-aufgeben|anzeige-abschicken/i.test(url)) {
+          return { outcome: "url-changed", url };
+        }
+
+        return false;
+      },
+      { timeout: timeoutMs },
+      initialUrl || ""
+    );
+    const result = await handle.jsonValue();
+    try {
+      await handle.dispose();
+    } catch (error) {
+      // ignore dispose errors
+    }
+    return result;
   } catch (error) {
     return null;
   }
@@ -2165,6 +2263,10 @@ const getPublishStateSnapshot = async (context) =>
       bodyText.includes("Anzeige ist online") ||
       bodyText.includes("Anzeige wurde erfolgreich") ||
       bodyText.includes("Anzeige wurde veröffentlicht") ||
+      bodyText.includes("Anzeige wird geprüft") ||
+      bodyText.includes("Deine Anzeige wird geprüft") ||
+      bodyText.includes("Wir prüfen deine Anzeige") ||
+      bodyText.includes("Anzeige wurde eingereicht") ||
       bodyText.includes("Vielen Dank") ||
       bodyText.includes("Danke")
     ) {
@@ -2219,12 +2321,20 @@ const inferPublishSuccess = async (page) => {
   try {
     return await page.evaluate(() => {
       const url = window.location.href;
-      const bodyText = document.body?.innerText || "";
+      const title = String(document.title || "");
+      const titleLower = title.toLowerCase();
+      const pageType = String(window.pageType || window.page_type || "");
+      const pageTypeLower = pageType.toLowerCase();
+      const bodyText = (document.body?.innerText || "").toLowerCase();
       const successHints = [
-        "Anzeige wurde",
-        "Anzeige ist online",
-        "Vielen Dank",
-        "Danke"
+        "anzeige wurde",
+        "anzeige ist online",
+        "anzeige wird geprüft",
+        "deine anzeige wird geprüft",
+        "wir prüfen deine anzeige",
+        "anzeige wurde eingereicht",
+        "vielen dank",
+        "danke"
       ];
 
       const walkNodes = (root) => {
@@ -2247,7 +2357,7 @@ const inferPublishSuccess = async (page) => {
       const shadowText = allNodes
         .map((node) => node.textContent || "")
         .join(" ");
-      const hasShadowSuccessText = successHints.some((hint) => shadowText.includes(hint));
+      const hasShadowSuccessText = successHints.some((hint) => shadowText.toLowerCase().includes(hint));
 
       const hasAdLink = allNodes.some((node) => {
         if (!(node instanceof HTMLAnchorElement)) return false;
@@ -2264,13 +2374,31 @@ const inferPublishSuccess = async (page) => {
 
       const hasSuccessText = successHints.some((hint) => bodyText.includes(hint));
 
-      const isKnownForm = url.includes("anzeige-aufgeben") || url.includes("anzeige-abschicken");
+      const isSuccessUrl = url.includes("p-anzeige-aufgeben-bestaetigung") ||
+        url.includes("anzeige-aufgeben-bestaetigung") ||
+        url.includes("anzeige-aufgeben-schritt3") ||
+        url.includes("anzeige-aufgeben-schritt4") ||
+        url.includes("anzeige-aufgeben-danke") ||
+        url.includes("anzeige-aufgeben-abschliessen") ||
+        url.includes("meine-anzeigen");
+      const hasPageTypeSuccess = pageTypeLower.includes("postadsuccess");
+      const hasSuccessTitle = titleLower.includes("geht bald online") ||
+        titleLower.includes("anzeige geht") ||
+        titleLower.includes("vielen dank") ||
+        titleLower.includes("danke");
+
+      const isKnownForm = url.includes("anzeige-abschicken") || (url.includes("anzeige-aufgeben") && !isSuccessUrl);
       const isPreview = url.includes("vorschau");
 
       return {
         url,
+        title,
+        pageType,
         isKnownForm,
         isPreview,
+        isSuccessUrl,
+        hasPageTypeSuccess,
+        hasSuccessTitle,
         hasSubmit,
         hasSuccessText,
         hasShadowSuccessText,
@@ -2280,14 +2408,121 @@ const inferPublishSuccess = async (page) => {
   } catch (error) {
     return {
       url: "",
+      title: "",
+      pageType: "",
       isKnownForm: false,
       isPreview: false,
+      isSuccessUrl: false,
+      hasPageTypeSuccess: false,
+      hasSuccessTitle: false,
       hasSubmit: false,
       hasSuccessText: false,
       hasShadowSuccessText: false,
       hasAdLink: false,
       error: error?.message || String(error)
     };
+  }
+};
+
+const verifyPublishedByCheckingMyAds = async (browser, { title, deviceProfile, timeoutMs = 45000 } = {}) => {
+  const rawTitle = String(title || "").replace(/\s+/g, " ").trim();
+  if (!browser || !rawTitle) {
+    return { verified: false, reason: "missing-browser-or-title" };
+  }
+
+  const normalizedTitle = rawTitle.toLowerCase();
+  const needles = Array.from(
+    new Set(
+      [
+        normalizedTitle,
+        normalizedTitle.slice(0, 48).trim(),
+        normalizedTitle.slice(0, 32).trim(),
+        normalizedTitle.slice(0, 24).trim()
+      ].filter((value) => value && value.length >= 10)
+    )
+  );
+  if (!needles.length) {
+    return { verified: false, reason: "title-too-short" };
+  }
+
+  const MY_ADS_URL = "https://www.kleinanzeigen.de/m-meine-anzeigen.html";
+  let verifyPage = null;
+  try {
+    verifyPage = await browser.newPage();
+    if (deviceProfile?.userAgent) {
+      await verifyPage.setUserAgent(deviceProfile.userAgent);
+    }
+    if (deviceProfile?.viewport) {
+      await verifyPage.setViewport(deviceProfile.viewport);
+    }
+    if (deviceProfile?.locale) {
+      await verifyPage.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+    }
+    if (deviceProfile?.timezone) {
+      await verifyPage.emulateTimezone(deviceProfile.timezone).catch(() => {});
+    }
+
+    const startedAt = Date.now();
+    const attempts = 3;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const remaining = timeoutMs - (Date.now() - startedAt);
+      if (remaining <= 0) break;
+      const navTimeout = Math.max(8000, Math.min(20000, remaining));
+
+      await verifyPage.goto(MY_ADS_URL, { waitUntil: "domcontentloaded", timeout: navTimeout }).catch(() => {});
+      await acceptCookieModal(verifyPage, { timeout: Math.min(7000, navTimeout) }).catch(() => {});
+      if (isGdprPage(verifyPage.url())) {
+        await acceptGdprConsent(verifyPage, { timeout: Math.min(15000, remaining) }).catch(() => {});
+      }
+
+      const result = await verifyPage.evaluate((needleList) => {
+        const normalize = (value) => String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+        const body = normalize(document.body?.innerText || "");
+        const matchesBody = needleList.some((needle) => needle && body.includes(needle));
+
+        let adUrl = "";
+        if (needleList.length) {
+          const anchors = Array.from(document.querySelectorAll("a[href]"));
+          for (const anchor of anchors) {
+            const href = anchor.getAttribute("href") || "";
+            if (!href.includes("/s-anzeige/")) continue;
+            const text = normalize(anchor.textContent || "");
+            if (!text) continue;
+            const matched = needleList.some((needle) => needle && text.includes(needle));
+            if (!matched) continue;
+            try {
+              adUrl = new URL(href, window.location.origin).toString();
+            } catch (error) {
+              adUrl = href;
+            }
+            break;
+          }
+        }
+
+        return { matchesBody, adUrl, url: window.location.href };
+      }, needles).catch(() => null);
+
+      if (result?.adUrl) {
+        return { verified: true, method: "my-ads-ad-link", url: result.adUrl };
+      }
+      if (result?.matchesBody) {
+        return { verified: true, method: "my-ads-body-text", url: result?.url || verifyPage.url() };
+      }
+
+      if (attempt < attempts - 1) {
+        await sleep(2500);
+        await verifyPage.reload({ waitUntil: "domcontentloaded", timeout: navTimeout }).catch(() => {});
+        await sleep(1200);
+      }
+    }
+
+    return { verified: false, reason: "not-found" };
+  } catch (error) {
+    return { verified: false, reason: error?.message || String(error) };
+  } finally {
+    if (verifyPage) {
+      await verifyPage.close().catch(() => {});
+    }
   }
 };
 
@@ -3756,6 +3991,258 @@ const selectOptionByLabel = async (context, labelText, value) => {
   }, { labelText, value });
 };
 
+const normalizeExtraFieldEntries = (extraFields) => {
+  if (!extraFields) return [];
+  if (Array.isArray(extraFields)) return extraFields.filter(Boolean);
+  if (typeof extraFields === "object") {
+    return Object.entries(extraFields).map(([name, value]) => ({ name, value }));
+  }
+  return [];
+};
+
+const applyExtraFieldsToSelects = async (page, primaryContext, extraFields) => {
+  const entries = normalizeExtraFieldEntries(extraFields);
+  if (!entries.length) {
+    return { total: 0, appliedCount: 0 };
+  }
+
+  const contexts = [];
+  const pushUnique = (ctx) => {
+    if (!ctx || contexts.includes(ctx)) return;
+    contexts.push(ctx);
+  };
+  pushUnique(primaryContext);
+  pushUnique(page);
+
+  let appliedCount = 0;
+  for (const entry of entries) {
+    if (!entry) continue;
+    const fieldName = entry.name || "";
+    const fieldValue = entry.value;
+    const fieldLabel = entry.label || entry.name || "";
+    if (isBlankValue(fieldValue)) continue;
+
+    const selectors = fieldName ? buildSelectFieldSelectors(fieldName) : [];
+    let applied = false;
+
+    if (selectors.length) {
+      for (const ctx of contexts) {
+        applied = await selectOption(ctx, selectors, fieldValue);
+        if (applied) break;
+      }
+    }
+
+    if (!applied && fieldLabel) {
+      for (const ctx of contexts) {
+        applied = await selectOptionByLabel(ctx, fieldLabel, fieldValue);
+        if (applied) break;
+      }
+    }
+
+    if (applied) {
+      appliedCount += 1;
+      await humanPause(80, 140);
+    }
+  }
+
+  return { total: entries.length, appliedCount };
+};
+
+const applyPreferredAttributeSelectsInContext = async (context, preferredValues = []) => {
+  try {
+    return await context.evaluate((preferred) => {
+      const normalize = (value) => (value || "").toString().replace(/\s+/g, " ").trim().toLowerCase();
+      const preferredTokens = Array.isArray(preferred)
+        ? preferred
+          .map(normalize)
+          .filter((token) => token && token.length >= 3 && /[a-z]/.test(token))
+        : [];
+      if (!preferredTokens.length) return { changed: 0, applied: [] };
+
+      const dispatchChanges = (node) => {
+        node.dispatchEvent(new Event("input", { bubbles: true }));
+        node.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const selects = Array.from(document.querySelectorAll('select[name^="attributeMap["]'));
+      let changed = 0;
+      const applied = [];
+
+      for (const select of selects) {
+        if (!select || select.disabled) continue;
+        if (String(select.value || "").trim()) continue;
+
+        const options = Array.from(select.options || [])
+          .map((option) => ({
+            value: String(option?.value || ""),
+            text: String(option?.textContent || ""),
+            disabled: Boolean(option?.disabled)
+          }))
+          .filter((opt) => opt.value && !opt.disabled);
+
+        if (!options.length) continue;
+
+        const chosen = options.find((option) => {
+          const valueNorm = normalize(option.value);
+          const textNorm = normalize(option.text);
+          return preferredTokens.some((token) =>
+            token === valueNorm ||
+            valueNorm.includes(token) ||
+            textNorm.includes(token)
+          );
+        });
+        if (!chosen) continue;
+
+        select.value = chosen.value;
+        dispatchChanges(select);
+        changed += 1;
+        applied.push({
+          id: String(select.id || ""),
+          name: String(select.getAttribute("name") || ""),
+          value: chosen.value
+        });
+      }
+
+      return { changed, applied: applied.slice(0, 20) };
+    }, preferredValues);
+  } catch (error) {
+    return { changed: 0, applied: [], error: error?.message || String(error) };
+  }
+};
+
+const applyPreferredAttributeSelectsAcrossContexts = async (page, primaryContext, preferredValues = []) => {
+  const contexts = [];
+  const pushUnique = (ctx) => {
+    if (!ctx || contexts.includes(ctx)) return;
+    contexts.push(ctx);
+  };
+  pushUnique(primaryContext);
+  pushUnique(page);
+
+  const results = [];
+  for (const context of contexts) {
+    try {
+      const result = await applyPreferredAttributeSelectsInContext(context, preferredValues);
+      let contextUrl = "";
+      try {
+        contextUrl = typeof context.url === "function" ? context.url() : "";
+      } catch (error) {
+        contextUrl = "";
+      }
+      results.push({
+        contextType: context === page ? "page" : "frame",
+        contextUrl,
+        ...result
+      });
+    } catch (error) {
+      // ignore context errors
+    }
+  }
+
+  return {
+    changed: results.reduce((sum, item) => sum + Number(item?.changed || 0), 0),
+    contexts: results
+  };
+};
+
+const ensureVersandSelectionInContext = async (context, desiredValue) => {
+  try {
+    return await context.evaluate((desired) => {
+      const normalize = (value) => String(value || "").trim();
+      const dispatchChanges = (node) => {
+        node.dispatchEvent(new Event("input", { bubbles: true }));
+        node.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      const candidates = [];
+      const selectors = [
+        'select[id$=".versand_s"]',
+        'select[name*=".versand_s]"]',
+        'select[name*="versand_s"]'
+      ];
+      selectors.forEach((selector) => {
+        try {
+          candidates.push(...Array.from(document.querySelectorAll(selector)));
+        } catch (error) {
+          // ignore selector errors
+        }
+      });
+      const selects = Array.from(new Set(candidates));
+
+      const items = [];
+      let changed = 0;
+      const target = normalize(desired).toLowerCase();
+
+      for (const select of selects) {
+        if (!select || select.disabled) continue;
+        if (normalize(select.value)) continue;
+
+        const options = Array.from(select.options || [])
+          .filter((opt) => opt && !opt.disabled && normalize(opt.value));
+        if (!options.length) continue;
+
+        let next = "";
+        if (target) {
+          const match = options.find((opt) => normalize(opt.value).toLowerCase() === target);
+          if (match) next = match.value;
+        }
+        if (!next) {
+          next = options[0].value;
+        }
+        if (!next) continue;
+
+        select.value = next;
+        dispatchChanges(select);
+        changed += 1;
+        items.push({
+          id: normalize(select.id),
+          name: normalize(select.getAttribute("name") || ""),
+          value: next
+        });
+      }
+
+      return { changed, items: items.slice(0, 10) };
+    }, desiredValue);
+  } catch (error) {
+    return { changed: 0, items: [], error: error?.message || String(error) };
+  }
+};
+
+const ensureVersandSelectionAcrossContexts = async (page, primaryContext, desiredValue) => {
+  const contexts = [];
+  const pushUnique = (ctx) => {
+    if (!ctx || contexts.includes(ctx)) return;
+    contexts.push(ctx);
+  };
+  pushUnique(primaryContext);
+  pushUnique(page);
+
+  const results = [];
+  for (const context of contexts) {
+    try {
+      const result = await ensureVersandSelectionInContext(context, desiredValue);
+      let contextUrl = "";
+      try {
+        contextUrl = typeof context.url === "function" ? context.url() : "";
+      } catch (error) {
+        contextUrl = "";
+      }
+      results.push({
+        contextType: context === page ? "page" : "frame",
+        contextUrl,
+        ...result
+      });
+    } catch (error) {
+      // ignore context errors
+    }
+  }
+
+  return {
+    changed: results.reduce((sum, item) => sum + Number(item?.changed || 0), 0),
+    contexts: results
+  };
+};
+
 const parseExtraSelectFields = async (context) =>
   context.evaluate(() => {
     const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
@@ -5139,7 +5626,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
     ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
     : (account?.profileName || account?.username || "Аккаунт");
   const deviceProfile = toDeviceProfile(account.deviceProfile);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
 
   if (!cookies.length) {
     return { success: false, error: "Cookie файл пустой" };
@@ -5150,7 +5637,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
 
   const attemptPublish = async ({ useProxy }) => {
     const proxyServer = useProxy ? buildProxyServer(proxy) : null;
-    const proxyUrl = useProxy ? buildProxyUrl(proxy) : null;
+    const proxyUrl = useProxy ? buildPuppeteerProxyUrl(proxy) : null;
     const needsProxyChain = Boolean(
       proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
     );
@@ -6050,37 +6537,12 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         }
       }
 
-      if (ad?.extraFields && typeof ad.extraFields === "object") {
-        for (const entry of Array.isArray(ad.extraFields) ? ad.extraFields : Object.entries(ad.extraFields).map(([key, value]) => ({
-          name: key,
-          value
-        }))) {
-          const fieldName = entry.name || "";
-          const fieldValue = entry.value;
-          const fieldLabel = entry.label || entry.name || "";
-          if (isBlankValue(fieldValue)) continue;
-          const selectors = [];
-          if (fieldName) {
-            selectors.push(...buildSelectFieldSelectors(fieldName));
-          }
-          let applied = false;
-          if (selectors.length) {
-            applied = await selectOption(formContext, selectors, fieldValue);
-          }
-          if (!applied && formContext !== page && selectors.length) {
-            applied = await selectOption(page, selectors, fieldValue);
-          }
-          if (!applied && fieldLabel) {
-            applied = await selectOptionByLabel(formContext, fieldLabel, fieldValue);
-          }
-          if (!applied && fieldLabel && formContext !== page) {
-            applied = await selectOptionByLabel(page, fieldLabel, fieldValue);
-          }
-          if (applied) {
-            await humanPause(80, 140);
-          }
-        }
-      }
+      const extraFieldsApplied = await applyExtraFieldsToSelects(page, formContext, ad?.extraFields);
+      appendPublishTrace({
+        step: "extra-fields-applied",
+        total: extraFieldsApplied.total,
+        appliedCount: extraFieldsApplied.appliedCount
+      });
 
       // Повторно пытаемся выбрать "Nein" после заполнения полей/селектов
       try {
@@ -6340,6 +6802,154 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         publishState = await waitForPublishState(page, defaultTimeout);
         appendPublishTrace({ step: "publish-state-after-gdpr", publishState });
       }
+
+      // Kleinanzeigen can keep the user on step2 for a short time after submit and then navigate to
+      // the final step (p-anzeige-abschicken) where additional required selects appear (e.g. Art).
+      // waitForPublishState() returns "form" immediately on both steps, so we explicitly wait for
+      // the step transition and fill required selects again on the abschicken page.
+      const tryHandleAbschickenStep = async (reason) => {
+        const url = page.url();
+        if (!/anzeige-abschicken/i.test(url)) return false;
+        appendPublishTrace({ step: "publish-abschicken-detected", reason, url });
+
+        await page.waitForSelector("body", { timeout: 15000 }).catch(() => {});
+
+        try {
+          const refreshed = await getAdFormContext(page);
+          if (refreshed) {
+            formContext = refreshed;
+          }
+        } catch (error) {
+          // ignore context refresh errors
+        }
+
+        const extraApplied = await applyExtraFieldsToSelects(page, formContext, ad?.extraFields);
+        const preferredApplied = await applyPreferredAttributeSelectsAcrossContexts(
+          page,
+          formContext,
+          preferredFieldValues
+        );
+
+        let desiredVersand = "nein";
+        try {
+          const entries = normalizeExtraFieldEntries(ad?.extraFields);
+          for (const entry of entries) {
+            const name = String(entry?.name || "").toLowerCase();
+            const label = String(entry?.label || "").toLowerCase();
+            const rawValue = entry?.value;
+            if (rawValue === undefined || rawValue === null) continue;
+            const value = String(rawValue).trim().toLowerCase();
+            if (!value) continue;
+            const mentionsVersand = name.includes("versand_s") || label.includes("versand");
+            if (!mentionsVersand) continue;
+            if (value === "ja" || value === "nein") {
+              desiredVersand = value;
+              break;
+            }
+            if (value === "shipping" || value.includes("versand möglich") || value.includes("versand moeglich")) {
+              desiredVersand = "ja";
+              break;
+            }
+            if (value === "pickup" || value.includes("abholung")) {
+              desiredVersand = "nein";
+              break;
+            }
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        const versandApplied = await ensureVersandSelectionAcrossContexts(page, formContext, desiredVersand);
+
+        // Try to sync the micro-frontend shipping radio group when it exists.
+        try {
+          const radioLabelSelector = desiredVersand === "ja"
+            ? 'label[for="radio-shipping"]'
+            : 'label[for="radio-pickup"]';
+          const labelHandle = await page.$(radioLabelSelector);
+          if (labelHandle) {
+            await scrollIntoView(labelHandle);
+            await safeClick(labelHandle);
+            await humanPause(120, 220);
+          }
+        } catch (error) {
+          // ignore shipping radio sync errors
+        }
+
+        try {
+          await forceDirectBuyNoAcrossContexts(page, formContext);
+          await ensureBuyNowSelectedFalse(page);
+        } catch (error) {
+          // ignore buy-now repairs
+        }
+
+        try {
+          await acceptTermsIfPresent(formContext || page);
+          if (formContext && formContext !== page) {
+            await acceptTermsIfPresent(page);
+          }
+        } catch (error) {
+          // ignore terms
+        }
+
+        await dumpPublishDebug(page, {
+          accountLabel,
+          step: "abschicken-pre-submit",
+          error: "",
+          extra: {
+            url: page.url(),
+            reason,
+            desiredVersand,
+            extraApplied,
+            preferredApplied,
+            versandApplied
+          }
+        });
+
+        const urlBeforeSubmit = page.url();
+        const clicked = await clickSubmitButton(page, [formContext, page], { allowFallback: false });
+        if (!clicked) {
+          await clickSubmitButton(page, [page], { allowFallback: true });
+        }
+        const submitTransition = await waitForPostSubmitTransition(page, {
+          initialUrl: urlBeforeSubmit,
+          timeoutMs: 60000
+        });
+        appendPublishTrace({ step: "post-submit-transition-after-abschicken-submit", submitTransition });
+        if (submitTransition?.outcome === "success") {
+          publishState = "success";
+          appendPublishTrace({ step: "publish-state-after-abschicken-submit", publishState });
+          return true;
+        }
+        if (submitTransition?.outcome === "preview") {
+          publishState = "preview";
+        } else {
+          publishState = await waitForPublishState(page, defaultTimeout);
+        }
+        appendPublishTrace({ step: "publish-state-after-abschicken-submit", publishState });
+        return true;
+      };
+
+      if (publishState === "form") {
+        const urlAfterSubmit = page.url();
+        const isStep2 = /anzeige-aufgeben/i.test(urlAfterSubmit) && !/anzeige-abschicken/i.test(urlAfterSubmit);
+        if (isStep2) {
+          const transition = await waitForPostSubmitTransition(page, {
+            initialUrl,
+            timeoutMs: 90000
+          });
+          appendPublishTrace({ step: "post-submit-transition", transition });
+          if (transition?.outcome === "success") {
+            publishState = "success";
+          } else if (transition?.outcome === "preview") {
+            publishState = "preview";
+          } else if (transition?.outcome === "abschicken") {
+            await tryHandleAbschickenStep("transition-from-step2");
+          }
+        } else if (/anzeige-abschicken/i.test(urlAfterSubmit)) {
+          await tryHandleAbschickenStep("already-on-abschicken");
+        }
+      }
       if (publishState === "preview") {
         try {
           await dumpPublishDebug(page, {
@@ -6411,7 +7021,69 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       }
       let resubmitAttempts = 0;
       const maxResubmitAttempts = 1;
+      const isPrimaryPublishSubmitInProgress = async () => {
+        try {
+          return await page.evaluate(() => {
+            const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const tokens = [
+              "anzeige aufgeben",
+              "anzeige veröffentlichen",
+              "anzeige veroeffentlichen",
+              "veröffentlichen",
+              "veroeffentlichen",
+              "jetzt veröffentlichen",
+              "jetzt veroeffentlichen"
+            ];
+            const nodes = Array.from(document.querySelectorAll("button, input[type='submit'], input[type='button']"));
+            const candidates = nodes.filter((node) => {
+              const text = normalize(node.innerText || node.value || node.getAttribute("aria-label") || "");
+              if (!text) return false;
+              return tokens.some((token) => text.includes(token));
+            });
+            if (!candidates.length) return false;
+            return candidates.some((node) => {
+              if (node.disabled) return true;
+              if (node.getAttribute("aria-disabled") === "true") return true;
+              if (node.classList.contains("disabled")) return true;
+              if (node.getAttribute("aria-busy") === "true") return true;
+              const dataBusy = String(node.getAttribute("data-busy") || node.getAttribute("data-loading") || "").toLowerCase();
+              return dataBusy === "true" || dataBusy === "1";
+            });
+          });
+        } catch (error) {
+          return false;
+        }
+      };
       const tryResubmitAfterRepair = async (reason) => {
+        // Avoid double-posting: do not resubmit if the publish attempt is already in-flight or if
+        // the page shows explicit success signals.
+        try {
+          const inferred = await inferPublishSuccess(page);
+          const hasSuccessSignal = Boolean(
+            inferred?.isSuccessUrl ||
+              inferred?.hasPageTypeSuccess ||
+              inferred?.hasSuccessTitle ||
+              inferred?.hasSuccessText ||
+              inferred?.hasShadowSuccessText
+          );
+          if (hasSuccessSignal) {
+            publishState = "success";
+            appendPublishTrace({
+              step: "publish-resubmit-skip-success-signal",
+              reason,
+              url: inferred?.url || page.url()
+            });
+            return false;
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        if (await isPrimaryPublishSubmitInProgress()) {
+          appendPublishTrace({ step: "publish-resubmit-skip-in-progress", reason, url: page.url() });
+          return false;
+        }
+
         if (resubmitAttempts >= maxResubmitAttempts) {
           appendPublishTrace({
             step: "publish-resubmit-skipped",
@@ -6427,8 +7099,20 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           resubmitAttempts
         });
         await humanPause(180, 320);
+        const urlBeforeResubmit = page.url();
         await clickSubmitButton(page, [formContext, page], { allowFallback: false });
-        publishState = await waitForPublishState(page, defaultTimeout);
+        const resubmitTransition = await waitForPostSubmitTransition(page, {
+          initialUrl: urlBeforeResubmit,
+          timeoutMs: 60000
+        });
+        appendPublishTrace({ step: "post-submit-transition-after-resubmit", reason, resubmitTransition });
+        if (resubmitTransition?.outcome === "success") {
+          publishState = "success";
+        } else if (resubmitTransition?.outcome === "preview") {
+          publishState = "preview";
+        } else {
+          publishState = await waitForPublishState(page, defaultTimeout);
+        }
         appendPublishTrace({
           step: "publish-state-after-resubmit",
           reason,
@@ -6465,6 +7149,84 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         const buyNowError = errors.find((text) => /direkt kaufen|beiden optionen/i.test(text));
         let needsResubmit = false;
 
+        // Some categories show additional required selects only on p-anzeige-abschicken (e.g. Art).
+        // Fill them using explicit extraFields and safe category-based hints before trying other repairs.
+        let desiredVersand = "nein";
+        try {
+          const entries = normalizeExtraFieldEntries(ad?.extraFields);
+          for (const entry of entries) {
+            const name = String(entry?.name || "").toLowerCase();
+            const label = String(entry?.label || "").toLowerCase();
+            const rawValue = entry?.value;
+            if (rawValue === undefined || rawValue === null) continue;
+            const value = String(rawValue).trim().toLowerCase();
+            if (!value) continue;
+            const mentionsVersand = name.includes("versand_s") || label.includes("versand");
+            if (!mentionsVersand) continue;
+            if (value === "ja" || value === "nein") {
+              desiredVersand = value;
+              break;
+            }
+            if (value === "shipping" || value.includes("versand möglich") || value.includes("versand moeglich")) {
+              desiredVersand = "ja";
+              break;
+            }
+            if (value === "pickup" || value.includes("abholung")) {
+              desiredVersand = "nein";
+              break;
+            }
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        const abschickenExtraApplied = await applyExtraFieldsToSelects(page, formContext, ad?.extraFields);
+        const abschickenPreferredApplied = await applyPreferredAttributeSelectsAcrossContexts(
+          page,
+          formContext,
+          preferredFieldValues
+        );
+        const abschickenVersandApplied = await ensureVersandSelectionAcrossContexts(page, formContext, desiredVersand);
+
+        if (
+          errors.length > 0 && (
+            abschickenExtraApplied.appliedCount > 0 ||
+            abschickenPreferredApplied.changed > 0 ||
+            abschickenVersandApplied.changed > 0
+          )
+        ) {
+          needsResubmit = true;
+          await dumpPublishDebug(page, {
+            accountLabel,
+            step: "abschicken-required-selects-applied",
+            error: "",
+            extra: {
+              url: page.url(),
+              desiredVersand,
+              abschickenExtraApplied,
+              abschickenPreferredApplied,
+              abschickenVersandApplied
+            }
+          });
+        }
+
+        // Try to sync the micro-frontend shipping radio group when it exists.
+        if (abschickenVersandApplied.changed > 0) {
+          try {
+            const radioLabelSelector = desiredVersand === "ja"
+              ? 'label[for="radio-shipping"]'
+              : 'label[for="radio-pickup"]';
+            const labelHandle = await page.$(radioLabelSelector);
+            if (labelHandle) {
+              await scrollIntoView(labelHandle);
+              await safeClick(labelHandle);
+              await humanPause(120, 220);
+            }
+          } catch (error) {
+            // ignore shipping radio sync errors
+          }
+        }
+
         if (buyNowError) {
           appendPublishTrace({ step: "publish-form-abschicken-repair-buy-now" });
           try {
@@ -6489,7 +7251,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           totalErrors: serverErrorRepair.totalErrors,
           fixedCount: serverErrorRepair.fixedCount
         });
-        if (serverErrorRepair.fixedCount > 0) {
+        if (errors.length > 0 && serverErrorRepair.fixedCount > 0) {
           needsResubmit = true;
           await dumpPublishDebug(page, {
             accountLabel,
@@ -6510,26 +7272,30 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         }
       }
 
-      if (publishState !== "success") {
-        const progressDetected = await waitForPublishProgress(page, initialUrl, 30000);
-        const errors = await collectFormErrors(page);
-        const submitCandidatesFinal = await collectSubmitCandidatesDebug(page, [formContext]);
-        const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
-        const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
-        const inferred = await inferPublishSuccess(page);
-        const progressedAwayFromForm = Boolean(
-          progressDetected &&
-          inferred.url &&
-          inferred.url !== initialUrl &&
-          !inferred.isKnownForm
-        );
-        const explicitSuccessSignals = {
-          hasSuccessText: Boolean(inferred.hasSuccessText),
-          hasShadowSuccessText: Boolean(inferred.hasShadowSuccessText),
-          hasAdLink: Boolean(inferred.hasAdLink),
-          progressDetected: Boolean(progressDetected),
-          progressedAwayFromForm
-        };
+	      if (publishState !== "success") {
+	        const progressDetected = await waitForPublishProgress(page, initialUrl, 30000);
+	        const errors = await collectFormErrors(page);
+	        const submitCandidatesFinal = await collectSubmitCandidatesDebug(page, [formContext]);
+	        const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
+	        const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
+	        const inferred = await inferPublishSuccess(page);
+	        const progressedAwayFromForm = Boolean(
+	          progressDetected &&
+	          inferred.url &&
+	          inferred.url !== initialUrl &&
+	          !inferred.isKnownForm
+	        );
+	        const explicitSuccessSignals = {
+	          publishStateSuccess: publishState === "success",
+	          isSuccessUrl: Boolean(inferred.isSuccessUrl),
+	          hasPageTypeSuccess: Boolean(inferred.hasPageTypeSuccess),
+	          hasSuccessTitle: Boolean(inferred.hasSuccessTitle),
+	          hasSuccessText: Boolean(inferred.hasSuccessText),
+	          hasShadowSuccessText: Boolean(inferred.hasShadowSuccessText),
+	          hasAdLink: Boolean(inferred.hasAdLink),
+	          progressDetected: Boolean(progressDetected),
+	          progressedAwayFromForm
+	        };
         appendPublishTrace({
           step: "publish-success-signals",
           publishState,
@@ -6537,33 +7303,62 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           isPreview: Boolean(inferred.isPreview),
           ...explicitSuccessSignals
         });
-        const canTreatAsSuccess = !errors.length &&
-          !inferred.isPreview &&
-          (publishState === "success" ||
-            explicitSuccessSignals.hasSuccessText ||
-            explicitSuccessSignals.hasShadowSuccessText ||
-            (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
-            explicitSuccessSignals.progressedAwayFromForm);
-        if (canTreatAsSuccess) {
-          return {
-            success: true,
-            message: "Объявление отправлено на публикацию",
-            url: inferred.url
-          };
-        }
-        await dumpPublishDebug(page, {
-          accountLabel,
-          step: "publish-not-confirmed",
-          error: "publish-not-confirmed",
-          extra: {
-            publishState,
-            errors,
-            inferred,
-            progressDetected,
-            submitCandidatesFinal,
-            url: page.url()
-          }
-        });
+	        const hardSuccessSignal = explicitSuccessSignals.publishStateSuccess ||
+	          explicitSuccessSignals.isSuccessUrl ||
+	          explicitSuccessSignals.hasPageTypeSuccess ||
+	          explicitSuccessSignals.hasSuccessTitle;
+        const softSuccessSignal = explicitSuccessSignals.hasSuccessText ||
+          explicitSuccessSignals.hasShadowSuccessText ||
+          (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
+          explicitSuccessSignals.progressDetected ||
+          explicitSuccessSignals.progressedAwayFromForm;
+	        const canTreatAsSuccess = !inferred.isPreview &&
+	          (hardSuccessSignal || (!errors.length && softSuccessSignal));
+	        if (canTreatAsSuccess) {
+	          return {
+	            success: true,
+	            message: "Объявление отправлено на публикацию",
+	            url: inferred.url
+	          };
+	        }
+
+	        // Some Kleinanzeigen flows keep the user on the form even after the submit succeeds.
+	        // When we have no visible errors, do a secondary check by opening "Meine Anzeigen".
+	        let fallbackVerification = null;
+	        if (!errors.length && !inferred.isPreview) {
+	          fallbackVerification = await verifyPublishedByCheckingMyAds(browser, {
+	            title: ad?.title,
+	            deviceProfile,
+	            timeoutMs: 45000
+	          });
+	          appendPublishTrace({
+	            step: "publish-fallback-my-ads-check",
+	            verified: Boolean(fallbackVerification?.verified),
+	            method: fallbackVerification?.method || "",
+	            reason: fallbackVerification?.reason || ""
+	          });
+	          if (fallbackVerification?.verified) {
+	            return {
+	              success: true,
+	              message: "Объявление отправлено на публикацию",
+	              url: fallbackVerification.url || inferred.url || page.url()
+	            };
+	          }
+	        }
+	        await dumpPublishDebug(page, {
+	          accountLabel,
+	          step: "publish-not-confirmed",
+	          error: "publish-not-confirmed",
+	          extra: {
+	            publishState,
+	            errors,
+	            inferred,
+	            fallbackVerification,
+	            progressDetected,
+	            submitCandidatesFinal,
+	            url: page.url()
+	          }
+	        });
         return {
           success: false,
           error: `Публикация не подтверждена${stateDetails}${errorDetails}`,

@@ -7,6 +7,7 @@ import MessagesTab from "./components/MessagesTab";
 import AdModal from "./components/AdModal";
 import ActiveAdsTab from "./components/ActiveAdsTab";
 import {
+  ArmorLogoIcon,
   DashboardIcon,
   UserIcon,
   LinkIcon,
@@ -25,6 +26,8 @@ import {
 } from "./components/Icons";
 
 const PHONE_VIEW_MAX_WIDTH = 900;
+const APP_VERSION_RAW = String(process.env.REACT_APP_VERSION || "").trim();
+const APP_VERSION = APP_VERSION_RAW ? `v${APP_VERSION_RAW}` : "vdev";
 
 const detectPhoneView = () => {
   if (typeof window === "undefined") return false;
@@ -446,7 +449,8 @@ function App() {
     setOpenAccountMenuId(null);
     try {
       const result = await apiFetchJson(`/api/accounts/${id}/refresh`, {
-        method: "POST"
+        method: "POST",
+        timeoutMs: 180000
       });
       if (!result?.success) {
         alert(result?.error || "Не удалось обновить аккаунт");
@@ -1652,18 +1656,50 @@ function App() {
           height: isPhoneView ? "64px" : "70px",
           gap: isPhoneView ? "10px" : "16px"
         }}>
-          <h1 style={{
-            margin: 0,
-            color: "#f8fafc",
-            fontSize: isPhoneView ? "16px" : "22px",
-            fontWeight: "700",
-            background: "linear-gradient(135deg, #f8fafc 0%, #94a3b8 100%)",
-            WebkitBackgroundClip: "text",
-            WebkitTextFillColor: "transparent",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis"
-          }}>Kleinanzeigen Manager</h1>
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: isPhoneView ? "10px" : "14px",
+            minWidth: 0
+          }}>
+            <div style={{
+              width: isPhoneView ? "34px" : "38px",
+              height: isPhoneView ? "34px" : "38px",
+              borderRadius: "14px",
+              background: "rgba(167, 139, 250, 0.12)",
+              border: "1px solid rgba(167, 139, 250, 0.28)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 0 18px rgba(167, 139, 250, 0.18)",
+              flex: "0 0 auto"
+            }}>
+              <ArmorLogoIcon size={isPhoneView ? 20 : 24} />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", minWidth: 0, lineHeight: 1.05 }}>
+              <h1 style={{
+                margin: 0,
+                color: "#f8fafc",
+                fontSize: isPhoneView ? "18px" : "24px",
+                fontWeight: "800",
+                letterSpacing: "-0.02em",
+                background: "linear-gradient(135deg, #f8fafc 0%, #a78bfa 60%, #7dd3fc 100%)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis"
+              }}>armor</h1>
+              <div style={{
+                marginTop: "4px",
+                fontSize: "12px",
+                fontWeight: "600",
+                color: "#94a3b8",
+                letterSpacing: "0.02em",
+                whiteSpace: "nowrap"
+              }} title={APP_VERSION}>{APP_VERSION}</div>
+            </div>
+          </div>
           {tokenStatus.state === "valid" && (
           <div style={{ position: "relative" }} ref={profilePanelRef}>
             <button

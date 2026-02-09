@@ -4,7 +4,7 @@ const path = require("path");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 const { updateAccount } = require("./db");
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
@@ -37,12 +37,12 @@ const getDeviceProfile = (account) => {
 
 const fetchAccountAds = async ({ account, proxy, accountLabel }) => {
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) return [];
   if (!proxy) return [];
 
   const proxyServer = buildProxyServer(proxy);
-  const proxyUrl = buildProxyUrl(proxy);
+  const proxyUrl = buildPuppeteerProxyUrl(proxy);
   const needsProxyChain = Boolean(
     proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
   );
@@ -390,13 +390,13 @@ const performAdAction = async ({
     return { success: false, error: "AD_ID_REQUIRED" };
   }
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
     return { success: false, error: "AUTH_REQUIRED" };
   }
 
   const proxyServer = buildProxyServer(proxy);
-  const proxyUrl = buildProxyUrl(proxy);
+  const proxyUrl = buildPuppeteerProxyUrl(proxy);
   const needsProxyChain = Boolean(
     proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
   );
