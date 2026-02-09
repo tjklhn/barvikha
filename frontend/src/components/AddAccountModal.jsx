@@ -82,7 +82,8 @@ const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
 
       const result = await apiFetchJson("/api/accounts/upload", {
         method: "POST",
-        body: formData
+        body: formData,
+        timeoutMs: 180000
       });
 
       if (result.success) {

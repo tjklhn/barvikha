@@ -449,7 +449,8 @@ function App() {
     setOpenAccountMenuId(null);
     try {
       const result = await apiFetchJson(`/api/accounts/${id}/refresh`, {
-        method: "POST"
+        method: "POST",
+        timeoutMs: 180000
       });
       if (!result?.success) {
         alert(result?.error || "Не удалось обновить аккаунт");
