@@ -67,29 +67,67 @@ const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
     setLoading(true);
 
     try {
-      let formData = new FormData();
+      const buildFormData = () => {
+        const formData = new FormData();
+        if (uploadMode === "file") {
+          formData.append("cookieFile", file);
+        } else {
+          const blob = new Blob([cookieText], { type: "text/plain" });
+          formData.append("cookieFile", blob, "cookies.txt");
+        }
+        if (selectedProxy) {
+          formData.append("proxyId", selectedProxy);
+        }
+        return formData;
+      };
 
-      if (uploadMode === "file") {
-        formData.append("cookieFile", file);
-      } else {
-        const blob = new Blob([cookieText], { type: "text/plain" });
-        formData.append("cookieFile", blob, "cookies.txt");
-      }
+      const isNetworkLikeError = (error) => {
+        if (!error) return false;
+        if (error?.name === "AbortError") return true;
+        const msg = String(error?.message || "").toLowerCase();
+        return (
+          msg.includes("failed to fetch") ||
+          msg.includes("networkerror") ||
+          msg.includes("network error") ||
+          msg.includes("load failed") ||
+          msg.includes("connection reset") ||
+          msg.includes("timeout") ||
+          msg.includes("timed out")
+        );
+      };
 
-      if (selectedProxy) {
-        formData.append("proxyId", selectedProxy);
-      }
-
-      const token = getAccessToken();
-      const tokenQuery = token ? `?accessToken=${encodeURIComponent(token)}` : "";
-      const result = await apiFetchJson(`/api/accounts/upload${tokenQuery}`, {
+      const uploadWithAuthHeader = async () => apiFetchJson("/api/accounts/upload", {
         method: "POST",
-        body: formData,
-        timeoutMs: 180000,
-        // Avoid CORS preflight issues on some deployments by not sending custom headers.
-        skipAuth: true,
-        skipClientRequestId: true
+        body: buildFormData(),
+        timeoutMs: 240000,
+        allowBaseFallback: true
       });
+
+      const uploadWithTokenQuery = async () => {
+        const token = getAccessToken();
+        const tokenQuery = token ? `?accessToken=${encodeURIComponent(token)}` : "";
+        return apiFetchJson(`/api/accounts/upload${tokenQuery}`, {
+          method: "POST",
+          body: buildFormData(),
+          timeoutMs: 240000,
+          allowBaseFallback: true,
+          // Avoid CORS preflight issues on some deployments by not sending custom headers.
+          skipAuth: true,
+          skipClientRequestId: true
+        });
+      };
+
+      let result;
+      try {
+        result = await uploadWithAuthHeader();
+      } catch (firstError) {
+        // Some setups drop requests that contain tokens in the query string; others have strict CORS.
+        // Try the alternate auth delivery for network-layer failures.
+        if (!isNetworkLikeError(firstError)) {
+          throw firstError;
+        }
+        result = await uploadWithTokenQuery();
+      }
 
       if (result.success) {
         alert(result.message);
@@ -102,6 +140,7 @@ const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
       const details = [];
       if (error?.url) details.push(error.url);
       if (error?.requestId) details.push(`id=${error.requestId}`);
+      if (typeof window !== "undefined" && window.location?.origin) details.push(window.location.origin);
       const suffix = details.length ? ` (${details.join(", ")})` : "";
       alert("Ошибка при загрузке: " + (error?.message || "Failed to fetch") + suffix);
     } finally {

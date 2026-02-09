@@ -6,12 +6,18 @@ const getRuntimeOrigin = () => {
 };
 
 // Keep defaults safe for production: prefer same-origin (relative "/api/...") to avoid CORS/mixed-content.
-// Allow the hardcoded IP fallback only for local dev sessions.
+// Allow the hardcoded IP fallback on plain HTTP deployments as a fallback when reverse proxy is misconfigured.
 const resolveDefaultApiBases = () => {
   const origin = getRuntimeOrigin();
   const isLocal = origin.includes("localhost") || origin.includes("127.0.0.1");
-  if (isLocal) return ["", "http://95.81.100.250"];
-  return [""];
+  const protocol = typeof window !== "undefined" && window.location ? window.location.protocol : "";
+  const canUseHttpFallback = protocol !== "https:";
+
+  const bases = [""];
+  if (isLocal || canUseHttpFallback) {
+    bases.push("http://95.81.100.250");
+  }
+  return bases;
 };
 
 const resolveApiBases = () => {
