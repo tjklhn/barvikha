@@ -9,6 +9,16 @@ log() {
   printf '[deploy] %s\n' "$*"
 }
 
+resolve_app_version() {
+  local version="dev"
+  if command -v git >/dev/null 2>&1 && [ -d "$ROOT_DIR/.git" ]; then
+    version="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo dev)"
+  else
+    version="$(date +%Y%m%d-%H%M%S)"
+  fi
+  printf '%s' "$version"
+}
+
 ensure_frontend_api_base() {
   local api_file="$FRONTEND_DIR/src/api.js"
 
@@ -92,6 +102,10 @@ main() {
     cd "$ROOT_DIR"
     git pull --ff-only
   fi
+
+  export REACT_APP_VERSION
+  REACT_APP_VERSION="$(resolve_app_version)"
+  log "app version: v$REACT_APP_VERSION"
 
   ensure_frontend_api_base
   sanitize_frontend_env

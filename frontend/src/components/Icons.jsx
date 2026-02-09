@@ -1,4 +1,41 @@
-import React from "react";
+import React, { useId } from "react";
+
+export const ArmorLogoIcon = ({ size = 28 }) => {
+  const gradientId = useId();
+  const glowId = useId();
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id={gradientId} x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#a78bfa" />
+          <stop offset="0.5" stopColor="#7c3aed" />
+          <stop offset="1" stopColor="#38bdf8" />
+        </linearGradient>
+        <filter id={glowId} x="-40%" y="-40%" width="180%" height="180%" colorInterpolationFilters="sRGB">
+          <feGaussianBlur stdDeviation="1.4" result="blur" />
+          <feColorMatrix
+            in="blur"
+            type="matrix"
+            values="0 0 0 0 0.49  0 0 0 0 0.24  0 0 0 0 0.93  0 0 0 0.55 0"
+            result="glow"
+          />
+          <feMerge>
+            <feMergeNode in="glow" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+
+      <g filter={`url(#${glowId})`} stroke={`url(#${gradientId})`} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        {/* Shield */}
+        <path d="M12 2.2l7.2 3.3v6.6c0 6.8-4 10.9-7.2 12.7C8.8 23 4.8 18.9 4.8 12.1V5.5L12 2.2z" />
+        {/* Stylized 'A' */}
+        <path d="M9 15.4l3-6.8 3 6.8" />
+        <path d="M10.2 12.7h3.6" />
+      </g>
+    </svg>
+  );
+};
 
 export const DashboardIcon = ({ size = 20, color = "currentColor" }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
