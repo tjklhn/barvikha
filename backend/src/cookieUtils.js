@@ -184,7 +184,10 @@ const parseCookies = (rawText) => {
 const normalizeDomain = (domain) => {
   const raw = String(domain || "").trim();
   if (!raw) return ".kleinanzeigen.de";
-  if (raw === "kleinanzeigen.de") return ".kleinanzeigen.de";
+  const hostname = raw.replace(/^\\./, "");
+  if (hostname === "kleinanzeigen.de" || hostname === "www.kleinanzeigen.de") {
+    return ".kleinanzeigen.de";
+  }
   return raw;
 };
 
