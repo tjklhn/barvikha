@@ -47,7 +47,7 @@ const pickDeviceProfile = () => {
 const proxyChain = require("proxy-chain");
 const axios = require("axios");
 const proxyChecker = require("./proxyChecker");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 260) => sleep(Math.floor(min + Math.random() * (max - min)));
@@ -120,9 +120,11 @@ const validateCookies = async (rawCookieText, options = {}) => {
   const deviceProfile = options.deviceProfile || pickDeviceProfile();
   const cookies = parseCookies(rawCookieText).map(normalizeCookie);
   const proxyServer = buildProxyServer(options.proxy);
-  const proxyUrl = buildProxyUrl(options.proxy);
+  // Puppeteer/Chromium must receive a Chromium-compatible proxy URL (no `socks5h://`).
+  const proxyUrl = buildPuppeteerProxyUrl(options.proxy);
+  const proxyUrlForAgents = buildProxyUrl(options.proxy);
   const needsProxyChain = Boolean(
-    proxyUrl && ((options.proxy?.type || "").toLowerCase().startsWith("socks") || options.proxy?.username || options.proxy?.password)
+    proxyUrlForAgents && ((options.proxy?.type || "").toLowerCase().startsWith("socks") || options.proxy?.username || options.proxy?.password)
   );
 
   if (!cookies.length) {
@@ -231,6 +233,13 @@ const validateCookies = async (rawCookieText, options = {}) => {
 
       const currentUrl = page.url();
       const content = await page.content();
+      const safePath = (() => {
+        try {
+          return new URL(currentUrl).pathname || "";
+        } catch (error) {
+          return "";
+        }
+      })();
       const loggedIn =
         !currentUrl.includes("m-einloggen") &&
         (/Abmelden/i.test(content) || /Mein Konto/i.test(content) || /Nachrichten/i.test(content));
@@ -265,7 +274,15 @@ const validateCookies = async (rawCookieText, options = {}) => {
 
       return {
         valid: loggedIn,
-        reason: loggedIn ? null : "Kleinanzeigen перенаправил на логин",
+        reason: loggedIn
+          ? null
+          : (
+            currentUrl.includes("m-einloggen")
+              ? `Kleinanzeigen перенаправил на логин (${safePath || "m-einloggen"}). Частые причины: cookies устарели или cookies получены не через тот же прокси/IP.`
+              : currentUrl.includes("/gdpr")
+                ? `Kleinanzeigen открыл страницу GDPR (${safePath || "/gdpr"}). Примите cookies/GDPR в браузере через этот же прокси и попробуйте снова.`
+                : `Не удалось подтвердить вход в аккаунт (страница: ${safePath || "unknown"}).`
+          ),
         deviceProfile,
         profileName,
         profileEmail

@@ -4,7 +4,7 @@ const path = require("path");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 const { updateAccount } = require("./db");
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
@@ -42,7 +42,7 @@ const fetchAccountAds = async ({ account, proxy, accountLabel }) => {
   if (!proxy) return [];
 
   const proxyServer = buildProxyServer(proxy);
-  const proxyUrl = buildProxyUrl(proxy);
+  const proxyUrl = buildPuppeteerProxyUrl(proxy);
   const needsProxyChain = Boolean(
     proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
   );
@@ -396,7 +396,7 @@ const performAdAction = async ({
   }
 
   const proxyServer = buildProxyServer(proxy);
-  const proxyUrl = buildProxyUrl(proxy);
+  const proxyUrl = buildPuppeteerProxyUrl(proxy);
   const needsProxyChain = Boolean(
     proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
   );
