@@ -205,6 +205,10 @@ const inferCookieUrl = (domain) => {
   return `https://${raw}`;
 };
 
+const KLEINANZEIGEN_HOSTS = ["kleinanzeigen.de", "www.kleinanzeigen.de"];
+const isKleinanzeigenHostname = (hostname) =>
+  KLEINANZEIGEN_HOSTS.includes(String(hostname || "").trim().toLowerCase());
+
 const normalizeCookie = (cookie) => {
   const name = String(cookie?.name || "").trim();
   const value = cookie?.value === undefined || cookie?.value === null ? "" : String(cookie.value);
@@ -240,6 +244,52 @@ const normalizeCookie = (cookie) => {
   }
 
   return normalized;
+};
+
+const normalizeCookies = (rawCookies) => {
+  const input = Array.isArray(rawCookies) ? rawCookies : [];
+  const normalized = input.map(normalizeCookie).filter((cookie) => cookie?.name);
+
+  // Many cookie exports contain host-only cookies for either `kleinanzeigen.de` or `www.kleinanzeigen.de`.
+  // The app navigates across both; to avoid false "redirect to login" we duplicate host-only cookies across
+  // both hostnames. (Domain cookies already cover subdomains.)
+  const expanded = [];
+  for (const cookie of normalized) {
+    if (!cookie?.name) continue;
+    if (!cookie.url) {
+      expanded.push(cookie);
+      continue;
+    }
+
+    let hostname = "";
+    try {
+      hostname = new URL(cookie.url).hostname.toLowerCase();
+    } catch (error) {
+      hostname = "";
+    }
+
+    if (!isKleinanzeigenHostname(hostname)) {
+      expanded.push(cookie);
+      continue;
+    }
+
+    for (const targetHost of KLEINANZEIGEN_HOSTS) {
+      expanded.push({
+        ...cookie,
+        url: `https://${targetHost}`
+      });
+    }
+  }
+
+  // De-dupe by (name + url/domain + path). Keep the last occurrence.
+  const deduped = new Map();
+  for (const cookie of expanded) {
+    if (!cookie?.name) continue;
+    const scope = cookie.url ? `url:${cookie.url}` : `domain:${cookie.domain || ""}`;
+    const key = `${cookie.name}|${scope}|${cookie.path || ""}`;
+    deduped.set(key, cookie);
+  }
+  return Array.from(deduped.values());
 };
 
 const normalizeProxyHost = (value) =>
@@ -285,6 +335,7 @@ const buildProxyServer = (proxy) => {
 
 module.exports = {
   parseCookies,
+  normalizeCookies,
   normalizeCookie,
   buildProxyUrl,
   buildPuppeteerProxyUrl,

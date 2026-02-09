@@ -157,9 +157,14 @@ const sanitizeFilename = (value) => (value || "account")
 
 const buildCookieHeaderFromAccount = (account) => {
   const cookies = parseCookies(account?.cookie).map(normalizeCookie);
-  return (cookies || [])
-    .filter((cookie) => cookie?.name && cookie?.value)
-    .map((cookie) => `${cookie.name}=${cookie.value}`)
+  const byName = new Map();
+  for (const cookie of cookies || []) {
+    if (!cookie?.name) continue;
+    if (cookie.value === undefined || cookie.value === null) continue;
+    byName.set(cookie.name, String(cookie.value));
+  }
+  return Array.from(byName.entries())
+    .map(([name, value]) => `${name}=${value}`)
     .join("; ");
 };
 
@@ -1057,10 +1062,10 @@ app.get("/api/accounts/:id/plz", async (req, res) => {
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
-    const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
     const { pickDeviceProfile } = require("./cookieValidator");
 
-    const cookies = parseCookies(account.cookie).map(normalizeCookie);
+    const cookies = normalizeCookies(parseCookies(account.cookie));
     if (!cookies.length) {
       res.status(400).json({ success: false, error: "Cookie пустые." });
       return;
@@ -2583,10 +2588,10 @@ app.get("/api/categories/children", async (req, res) => {
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
-    const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
     const { pickDeviceProfile } = require("./cookieValidator");
 
-    const cookies = parseCookies(account.cookie).map(normalizeCookie);
+    const cookies = normalizeCookies(parseCookies(account.cookie));
     const deviceProfile = toDeviceProfile(account.deviceProfile);
     const proxyServer = buildProxyServer(selectedProxy);
     const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
@@ -4141,10 +4146,10 @@ app.get("/api/ads/fields", async (req, res) => {
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
-    const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
     const { pickDeviceProfile } = require("./cookieValidator");
 
-    const cookies = parseCookies(account.cookie).map(normalizeCookie);
+    const cookies = normalizeCookies(parseCookies(account.cookie));
     const deviceProfile = toDeviceProfile(account.deviceProfile);
     const proxyServer = buildProxyServer(selectedProxy);
     const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);

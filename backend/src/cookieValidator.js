@@ -47,7 +47,7 @@ const pickDeviceProfile = () => {
 const proxyChain = require("proxy-chain");
 const axios = require("axios");
 const proxyChecker = require("./proxyChecker");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 260) => sleep(Math.floor(min + Math.random() * (max - min)));
@@ -118,7 +118,7 @@ const sanitizeProfileName = (value) => {
 
 const validateCookies = async (rawCookieText, options = {}) => {
   const deviceProfile = options.deviceProfile || pickDeviceProfile();
-  const cookies = parseCookies(rawCookieText).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(rawCookieText));
   const proxyServer = buildProxyServer(options.proxy);
   // Puppeteer/Chromium must receive a Chromium-compatible proxy URL (no `socks5h://`).
   const proxyUrl = buildPuppeteerProxyUrl(options.proxy);

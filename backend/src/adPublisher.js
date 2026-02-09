@@ -4,7 +4,7 @@ const path = require("path");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 
 puppeteer.use(StealthPlugin());
@@ -5626,7 +5626,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
     ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
     : (account?.profileName || account?.username || "Аккаунт");
   const deviceProfile = toDeviceProfile(account.deviceProfile);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
 
   if (!cookies.length) {
     return { success: false, error: "Cookie файл пустой" };

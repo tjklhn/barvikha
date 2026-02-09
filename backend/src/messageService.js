@@ -6,7 +6,7 @@ const ProxyAgent = require("proxy-agent");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 const { acceptCookieModal, acceptGdprConsent, isGdprPage } = require("./adPublisher");
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
@@ -4053,7 +4053,7 @@ const sendConversationMessage = async ({
   }
 
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -4454,7 +4454,7 @@ const sendConversationMessage = async ({
 
 const fetchAccountConversations = async ({ account, proxy, accountLabel, options = {} }) => {
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) return { conversations: [] };
   const maxConversations = Number.isFinite(options.maxConversations)
     ? Math.max(1, Number(options.maxConversations))
@@ -4782,7 +4782,7 @@ const fetchThreadMessages = async ({
   }
 
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -4988,7 +4988,7 @@ const fetchConversationSnapshotViaApi = async ({
   requestTimeoutMs = 20000
 }) => {
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -5265,7 +5265,7 @@ const declineConversationOffer = async ({
   }
 
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -6078,7 +6078,7 @@ const sendConversationMedia = async ({
   }
 
   const deviceProfile = getDeviceProfile(account);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
