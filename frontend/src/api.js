@@ -1,9 +1,18 @@
-const DEFAULT_API_BASES = [
-  "",
-  "http://95.81.100.250"
-];
-
 const normalizeBase = (value) => String(value || "").trim().replace(/\/+$/, "");
+
+const getRuntimeOrigin = () => {
+  if (typeof window === "undefined" || !window.location) return "";
+  return normalizeBase(window.location.origin || "");
+};
+
+// Keep defaults safe for production: prefer same-origin (relative "/api/...") to avoid CORS/mixed-content.
+// Allow the hardcoded IP fallback only for local dev sessions.
+const resolveDefaultApiBases = () => {
+  const origin = getRuntimeOrigin();
+  const isLocal = origin.includes("localhost") || origin.includes("127.0.0.1");
+  if (isLocal) return ["", "http://95.81.100.250"];
+  return [""];
+};
 
 const resolveApiBases = () => {
   const envBase = String(process.env.REACT_APP_API_BASE || "").trim();
@@ -13,18 +22,13 @@ const resolveApiBases = () => {
       .map((item) => normalizeBase(item))
       .filter(Boolean);
   }
-  return DEFAULT_API_BASES
+  return resolveDefaultApiBases()
     .map((item) => normalizeBase(item))
     .filter((item, index, arr) => arr.indexOf(item) === index);
 };
 
 const API_BASES = resolveApiBases();
 let preferredBaseIndex = 0;
-
-const getRuntimeOrigin = () => {
-  if (typeof window === "undefined" || !window.location) return "";
-  return normalizeBase(window.location.origin || "");
-};
 
 const getCandidateKey = (base) => {
   const normalized = normalizeBase(base);
@@ -66,6 +70,8 @@ export const apiFetch = async (path, options = {}) => {
     timeoutMs = 45000,
     retry,
     allowBaseFallback,
+    skipAuth,
+    skipClientRequestId,
     _retried = false,
     ...fetchOptions
   } = options || {};
@@ -79,10 +85,10 @@ export const apiFetch = async (path, options = {}) => {
 
   const headers = new Headers(fetchOptions.headers || {});
   const token = getAccessToken();
-  if (token && !headers.has("Authorization")) {
+  if (!skipAuth && token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  if (!headers.has("X-Client-Request-Id")) {
+  if (!skipClientRequestId && !headers.has("X-Client-Request-Id")) {
     headers.set("X-Client-Request-Id", requestId);
   }
 

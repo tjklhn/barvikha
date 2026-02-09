@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { apiFetchJson } from "../api";
+import { apiFetchJson, getAccessToken } from "../api";
 import { UserIcon, XIcon, FileIcon, PlusIcon } from "./Icons";
 
 const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
@@ -80,10 +80,15 @@ const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
         formData.append("proxyId", selectedProxy);
       }
 
-      const result = await apiFetchJson("/api/accounts/upload", {
+      const token = getAccessToken();
+      const tokenQuery = token ? `?accessToken=${encodeURIComponent(token)}` : "";
+      const result = await apiFetchJson(`/api/accounts/upload${tokenQuery}`, {
         method: "POST",
         body: formData,
-        timeoutMs: 180000
+        timeoutMs: 180000,
+        // Avoid CORS preflight issues on some deployments by not sending custom headers.
+        skipAuth: true,
+        skipClientRequestId: true
       });
 
       if (result.success) {
@@ -94,7 +99,11 @@ const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
         alert("Ошибка: " + (result.error || "Неизвестная ошибка"));
       }
     } catch (error) {
-      alert("Ошибка при загрузке: " + error.message);
+      const details = [];
+      if (error?.url) details.push(error.url);
+      if (error?.requestId) details.push(`id=${error.requestId}`);
+      const suffix = details.length ? ` (${details.join(", ")})` : "";
+      alert("Ошибка при загрузке: " + (error?.message || "Failed to fetch") + suffix);
     } finally {
       setLoading(false);
     }
