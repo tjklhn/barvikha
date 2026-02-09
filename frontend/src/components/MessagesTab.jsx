@@ -402,7 +402,10 @@ const MessagesTab = () => {
       setError(null);
     }
     try {
-      const data = await apiFetchJson("/api/messages");
+      // Request only a limited number of conversations per account to keep the endpoint fast/stable.
+      const params = new URLSearchParams();
+      params.set("limit", "30");
+      const data = await apiFetchJson(`/api/messages?${params.toString()}`, { timeoutMs: 120000 });
       const list = Array.isArray(data) ? data : [];
       const seen = new Set();
       const deduped = [];

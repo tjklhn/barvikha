@@ -1438,7 +1438,17 @@ app.post("/api/ads/:adId/delete", async (req, res) => {
 app.get("/api/messages", async (req, res) => {
   try {
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
-    const maxConversations = req.query.limit ? Number(req.query.limit) : undefined;
+    const defaultLimitValue = Number(process.env.KL_MESSAGES_DEFAULT_LIMIT || 30);
+    const defaultLimit = Number.isFinite(defaultLimitValue) && defaultLimitValue > 0
+      ? Math.floor(defaultLimitValue)
+      : 30;
+    const wantsFull = ["1", "true", "yes"].includes(String(req.query.full || "").trim().toLowerCase());
+    const limitFromQuery = req.query.limit !== undefined && req.query.limit !== null && String(req.query.limit).trim() !== ""
+      ? Number(req.query.limit)
+      : NaN;
+    const maxConversations = wantsFull
+      ? undefined
+      : (Number.isFinite(limitFromQuery) && limitFromQuery > 0 ? Math.floor(limitFromQuery) : defaultLimit);
     let accounts = accountId ? [getAccountForRequest(accountId, req, res)].filter(Boolean) : filterByOwner(listAccounts(), getOwnerContext(req));
 
     if (!accounts.length) {
@@ -1465,7 +1475,12 @@ app.get("/api/messages", async (req, res) => {
     const conversations = await fetchMessages({
       accounts,
       proxies: filterByOwner(proxies, getOwnerContext(req)),
-      options: { maxConversations }
+      options: {
+        maxConversations,
+        // Heavy preview enrichment (Puppeteer) makes the endpoint slow and flaky behind proxies.
+        // Frontend can hydrate missing images via /api/messages/thread on demand.
+        enrichImages: ["1", "true", "yes"].includes(String(req.query.enrichImages || "").trim().toLowerCase())
+      }
     });
     const summaries = summarizeConversations(conversations);
     res.json(summaries);

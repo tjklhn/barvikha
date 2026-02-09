@@ -4467,6 +4467,7 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
   const maxConversations = Number.isFinite(options.maxConversations)
     ? Math.max(1, Number(options.maxConversations))
     : null;
+  const enrichImages = options.enrichImages === true;
 
   let userId = getUserIdFromCookies(cookies);
   let accessTokenInfo = null;
@@ -4562,7 +4563,7 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
 
       mapped = dedupeConversationList(mapped, account.id);
 
-      if (mapped.some((item) => !isValidImageUrl(item.adImage))) {
+      if (enrichImages && mapped.some((item) => !isValidImageUrl(item.adImage))) {
         try {
           const webList = await fetchConversationListFromWeb({
             account,
@@ -4602,7 +4603,7 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       }
 
       const stillMissing = mapped.filter((item) => !isValidImageUrl(item.adImage));
-      if (stillMissing.length) {
+      if (enrichImages && stillMissing.length) {
         try {
           const missingLimit = maxConversations || 25;
           const targets = stillMissing.slice(0, missingLimit);
@@ -4760,19 +4761,46 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
 };
 
 const fetchMessages = async ({ accounts, proxies, options = {} }) => {
-  const results = [];
-  for (const account of accounts) {
-    if (!account.cookie) continue;
-    const proxy = account.proxyId
-      ? proxies.find((item) => item.id === account.proxyId)
-      : null;
-    const profileName = account.profileName || account.username || "Аккаунт";
-    const profileEmail = account.profileEmail || "";
-    const accountLabel = profileEmail ? `${profileName} (${profileEmail})` : profileName;
-    const data = await fetchAccountConversations({ account, proxy, accountLabel, options });
-    results.push(...data.conversations);
-  }
-  return results;
+  const input = Array.isArray(accounts) ? accounts : [];
+  const queuedAccounts = input.filter((account) => account && account.cookie);
+  if (!queuedAccounts.length) return [];
+
+  const concurrencyRaw = Number(process.env.KL_MESSAGES_CONCURRENCY || 2);
+  const concurrency = Number.isFinite(concurrencyRaw)
+    ? Math.max(1, Math.min(4, Math.floor(concurrencyRaw)))
+    : 2;
+
+  let cursor = 0;
+  const collected = [];
+
+  const runNext = async () => {
+    while (true) {
+      const nextIndex = cursor;
+      if (nextIndex >= queuedAccounts.length) return;
+      cursor += 1;
+
+      const account = queuedAccounts[nextIndex];
+      const proxy = account.proxyId
+        ? (proxies || []).find((item) => item.id === account.proxyId)
+        : null;
+      const profileName = account.profileName || account.username || "Аккаунт";
+      const profileEmail = account.profileEmail || "";
+      const accountLabel = profileEmail ? `${profileName} (${profileEmail})` : profileName;
+
+      try {
+        const data = await fetchAccountConversations({ account, proxy, accountLabel, options });
+        if (Array.isArray(data?.conversations) && data.conversations.length) {
+          collected.push(...data.conversations);
+        }
+      } catch (error) {
+        console.log(`[messageService] Messages fetch failed for ${accountLabel}: ${error?.message || error}`);
+      }
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(concurrency, queuedAccounts.length) }, () => runNext());
+  await Promise.all(workers);
+  return collected;
 };
 
 const fetchThreadMessages = async ({

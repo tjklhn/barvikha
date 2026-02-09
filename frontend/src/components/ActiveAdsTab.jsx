@@ -95,10 +95,10 @@ const ActiveAdsTab = () => {
         setAds(cached);
       }
     }
-    setLoading(true);
+      setLoading(true);
     try {
       const suffix = force ? "?force=1" : "";
-      const data = await apiFetchJson(`/api/ads/active${suffix}`);
+      const data = await apiFetchJson(`/api/ads/active${suffix}`, { timeoutMs: 180000 });
       const list = Array.isArray(data?.ads) ? data.ads : [];
       const seen = new Set();
       const deduped = [];

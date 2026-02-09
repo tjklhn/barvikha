@@ -348,21 +348,33 @@ function App() {
 
   const loadData = async () => {
     try {
-      const [accountsRes, proxiesRes, statsRes, messagesRes] = await Promise.all([
+      const [accountsRes, proxiesRes, statsRes] = await Promise.all([
         apiFetchJson("/api/accounts"),
         apiFetchJson("/api/proxies"),
-        apiFetchJson("/api/stats"),
-        apiFetchJson("/api/messages").catch(() => null)
+        apiFetchJson("/api/stats")
       ]);
 
       setAccounts(accountsRes);
       setProxies(proxiesRes);
 
-      const realMessageStats = Array.isArray(messagesRes) ? buildMessagesStats(messagesRes) : null;
       setStats({
         ...statsRes,
-        messages: realMessageStats || statsRes?.messages || { total: 0, today: 0, unread: 0 }
+        messages: statsRes?.messages || { total: 0, today: 0, unread: 0 }
       });
+
+      // Load message stats in the background so a slow proxy/cookies check doesn't block the whole UI.
+      const messageParams = new URLSearchParams();
+      messageParams.set("limit", "30");
+      apiFetchJson(`/api/messages?${messageParams.toString()}`, { timeoutMs: 120000 })
+        .then((messagesRes) => {
+          if (!Array.isArray(messagesRes)) return;
+          const realMessageStats = buildMessagesStats(messagesRes);
+          setStats((prev) => ({
+            ...(prev || statsRes || {}),
+            messages: realMessageStats
+          }));
+        })
+        .catch(() => {});
     } catch (error) {
       handleAuthError(error);
       console.error("Ошибка загрузки данных:", error);
@@ -400,9 +412,11 @@ function App() {
 
   const loadAccountMetrics = async () => {
     try {
+      const messagesParams = new URLSearchParams();
+      messagesParams.set("limit", "30");
       const [adsRes, messagesRes] = await Promise.all([
-        apiFetchJson("/api/ads/active"),
-        apiFetchJson("/api/messages")
+        apiFetchJson("/api/ads/active", { timeoutMs: 180000 }),
+        apiFetchJson(`/api/messages?${messagesParams.toString()}`, { timeoutMs: 120000 })
       ]);
       const ads = Array.isArray(adsRes?.ads) ? adsRes.ads : [];
       const messages = Array.isArray(messagesRes) ? messagesRes : [];
