@@ -435,7 +435,13 @@ const MessagesTab = () => {
       hydrateMissingPreviewImages(merged);
     } catch (err) {
       console.error("Ошибка загрузки сообщений:", err);
-      if (!silent) setError(err.message || "Не удалось загрузить сообщения");
+      if (!silent) {
+        const details = [];
+        if (err?.requestId) details.push(`id=${err.requestId}`);
+        if (err?.status) details.push(`HTTP ${err.status}`);
+        const suffix = details.length ? ` (${details.join(", ")})` : "";
+        setError((err?.message || "Не удалось загрузить сообщения") + suffix);
+      }
     } finally {
       if (!silent) setLoading(false);
       messagesRefreshInFlight.current = false;

@@ -34,7 +34,6 @@ const resolveApiBases = () => {
 };
 
 const API_BASES = resolveApiBases();
-let preferredBaseIndex = 0;
 
 const getCandidateKey = (base) => {
   const normalized = normalizeBase(base);
@@ -113,12 +112,14 @@ export const apiFetch = async (path, options = {}) => {
     return `${normalizedBase}${normalizedPath}`;
   };
 
+  const toError = (error) => {
+    if (error instanceof Error) return error;
+    return new Error(String(error || "Failed to fetch"));
+  };
+
   const candidates = path.startsWith("http")
     ? [""]
-    : [
-      ...API_BASES.slice(preferredBaseIndex),
-      ...API_BASES.slice(0, preferredBaseIndex)
-    ];
+    : API_BASES;
   const seenCandidateKeys = new Set();
   const uniqueCandidates = candidates.filter((item) => {
     const key = getCandidateKey(item);
@@ -150,13 +151,9 @@ export const apiFetch = async (path, options = {}) => {
         cache: fetchOptions.cache || "no-store",
         signal: fetchOptions.signal || controller?.signal
       });
-      const matchedIndex = API_BASES.indexOf(base);
-      if (matchedIndex >= 0) {
-        preferredBaseIndex = matchedIndex;
-      }
       return response;
     } catch (error) {
-      if (timedOut && error?.name === "AbortError") {
+      if (timedOut) {
         const timeoutError = new Error(`Request timeout after ${Math.max(5000, timeoutValue)}ms (${method} ${path})`);
         timeoutError.name = "AbortError";
         timeoutError.code = "REQUEST_TIMEOUT";
@@ -168,11 +165,18 @@ export const apiFetch = async (path, options = {}) => {
         timeoutError.requestId = requestId;
         lastError = timeoutError;
       } else {
-        if (error && typeof error === "object") {
-          error.requestId = requestId;
-          error.url = url;
+        const networkError = toError(error);
+        // Keep the error message concise but actionable in the UI.
+        if (!networkError.message || networkError.message.toLowerCase() === "failed to fetch") {
+          networkError.message = `${networkError.message || "Failed to fetch"} (${method} ${path})`;
         }
-        lastError = error;
+        networkError.code = networkError.code || "FETCH_FAILED";
+        networkError.method = method;
+        networkError.path = path;
+        networkError.url = url;
+        networkError.requestId = requestId;
+        networkError.originalError = error;
+        lastError = networkError;
       }
       const hasAnotherBase = shouldFallbackBetweenBases && index < activeCandidates.length - 1;
       if (!hasAnotherBase) break;
