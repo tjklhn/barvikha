@@ -7021,7 +7021,69 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       }
       let resubmitAttempts = 0;
       const maxResubmitAttempts = 1;
+      const isPrimaryPublishSubmitInProgress = async () => {
+        try {
+          return await page.evaluate(() => {
+            const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const tokens = [
+              "anzeige aufgeben",
+              "anzeige veröffentlichen",
+              "anzeige veroeffentlichen",
+              "veröffentlichen",
+              "veroeffentlichen",
+              "jetzt veröffentlichen",
+              "jetzt veroeffentlichen"
+            ];
+            const nodes = Array.from(document.querySelectorAll("button, input[type='submit'], input[type='button']"));
+            const candidates = nodes.filter((node) => {
+              const text = normalize(node.innerText || node.value || node.getAttribute("aria-label") || "");
+              if (!text) return false;
+              return tokens.some((token) => text.includes(token));
+            });
+            if (!candidates.length) return false;
+            return candidates.some((node) => {
+              if (node.disabled) return true;
+              if (node.getAttribute("aria-disabled") === "true") return true;
+              if (node.classList.contains("disabled")) return true;
+              if (node.getAttribute("aria-busy") === "true") return true;
+              const dataBusy = String(node.getAttribute("data-busy") || node.getAttribute("data-loading") || "").toLowerCase();
+              return dataBusy === "true" || dataBusy === "1";
+            });
+          });
+        } catch (error) {
+          return false;
+        }
+      };
       const tryResubmitAfterRepair = async (reason) => {
+        // Avoid double-posting: do not resubmit if the publish attempt is already in-flight or if
+        // the page shows explicit success signals.
+        try {
+          const inferred = await inferPublishSuccess(page);
+          const hasSuccessSignal = Boolean(
+            inferred?.isSuccessUrl ||
+              inferred?.hasPageTypeSuccess ||
+              inferred?.hasSuccessTitle ||
+              inferred?.hasSuccessText ||
+              inferred?.hasShadowSuccessText
+          );
+          if (hasSuccessSignal) {
+            publishState = "success";
+            appendPublishTrace({
+              step: "publish-resubmit-skip-success-signal",
+              reason,
+              url: inferred?.url || page.url()
+            });
+            return false;
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        if (await isPrimaryPublishSubmitInProgress()) {
+          appendPublishTrace({ step: "publish-resubmit-skip-in-progress", reason, url: page.url() });
+          return false;
+        }
+
         if (resubmitAttempts >= maxResubmitAttempts) {
           appendPublishTrace({
             step: "publish-resubmit-skipped",
@@ -7127,9 +7189,11 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         const abschickenVersandApplied = await ensureVersandSelectionAcrossContexts(page, formContext, desiredVersand);
 
         if (
-          abschickenExtraApplied.appliedCount > 0 ||
-          abschickenPreferredApplied.changed > 0 ||
-          abschickenVersandApplied.changed > 0
+          errors.length > 0 && (
+            abschickenExtraApplied.appliedCount > 0 ||
+            abschickenPreferredApplied.changed > 0 ||
+            abschickenVersandApplied.changed > 0
+          )
         ) {
           needsResubmit = true;
           await dumpPublishDebug(page, {
@@ -7187,7 +7251,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           totalErrors: serverErrorRepair.totalErrors,
           fixedCount: serverErrorRepair.fixedCount
         });
-        if (serverErrorRepair.fixedCount > 0) {
+        if (errors.length > 0 && serverErrorRepair.fixedCount > 0) {
           needsResubmit = true;
           await dumpPublishDebug(page, {
             accountLabel,
@@ -7243,10 +7307,11 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
 	          explicitSuccessSignals.isSuccessUrl ||
 	          explicitSuccessSignals.hasPageTypeSuccess ||
 	          explicitSuccessSignals.hasSuccessTitle;
-	        const softSuccessSignal = explicitSuccessSignals.hasSuccessText ||
-	          explicitSuccessSignals.hasShadowSuccessText ||
-	          (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
-	          explicitSuccessSignals.progressedAwayFromForm;
+        const softSuccessSignal = explicitSuccessSignals.hasSuccessText ||
+          explicitSuccessSignals.hasShadowSuccessText ||
+          (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
+          explicitSuccessSignals.progressDetected ||
+          explicitSuccessSignals.progressedAwayFromForm;
 	        const canTreatAsSuccess = !inferred.isPreview &&
 	          (hardSuccessSignal || (!errors.length && softSuccessSignal));
 	        if (canTreatAsSuccess) {
