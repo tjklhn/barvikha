@@ -10,7 +10,7 @@ const crypto = require("crypto");
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
-const { buildProxyUrl, parseCookies, normalizeCookie } = require("./cookieUtils");
+const { buildProxyUrl, parseCookies, normalizeCookie, filterKleinanzeigenCookies } = require("./cookieUtils");
 const {
   publishAd,
   parseExtraSelectFields,
@@ -156,7 +156,7 @@ const sanitizeFilename = (value) => (value || "account")
   .slice(0, 60);
 
 const buildCookieHeaderFromAccount = (account) => {
-  const cookies = parseCookies(account?.cookie).map(normalizeCookie);
+  const cookies = filterKleinanzeigenCookies(parseCookies(account?.cookie)).map(normalizeCookie);
   const byName = new Map();
   for (const cookie of cookies || []) {
     if (!cookie?.name) continue;

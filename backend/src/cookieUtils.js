@@ -184,7 +184,7 @@ const parseCookies = (rawText) => {
 const normalizeDomain = (domain) => {
   const raw = String(domain || "").trim();
   if (!raw) return ".kleinanzeigen.de";
-  const hostname = raw.replace(/^\\./, "");
+  const hostname = raw.replace(/^\./, "");
   if (hostname === "kleinanzeigen.de" || hostname === "www.kleinanzeigen.de") {
     return ".kleinanzeigen.de";
   }
@@ -211,6 +211,45 @@ const inferCookieUrl = (domain) => {
 const KLEINANZEIGEN_HOSTS = ["kleinanzeigen.de", "www.kleinanzeigen.de"];
 const isKleinanzeigenHostname = (hostname) =>
   KLEINANZEIGEN_HOSTS.includes(String(hostname || "").trim().toLowerCase());
+
+const KLEINANZEIGEN_DOMAIN_SUFFIX = "kleinanzeigen.de";
+
+const extractHostname = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      return new URL(raw).hostname.toLowerCase();
+    }
+  } catch (error) {
+    // ignore URL parse errors
+  }
+  return raw
+    .replace(/^https?:\/\//i, "")
+    .replace(/^\./, "")
+    .split("/")[0]
+    .toLowerCase();
+};
+
+const isKleinanzeigenCookie = (cookie) => {
+  const urlHost = cookie?.url ? extractHostname(cookie.url) : "";
+  if (urlHost && urlHost.endsWith(KLEINANZEIGEN_DOMAIN_SUFFIX)) return true;
+  const domainHost = cookie?.domain ? extractHostname(cookie.domain) : "";
+  if (domainHost && domainHost.endsWith(KLEINANZEIGEN_DOMAIN_SUFFIX)) return true;
+  return false;
+};
+
+// Cookie exports often include many unrelated third-party cookies. We only need Kleinanzeigen cookies for auth/actions.
+// Keep cookies without explicit scope (rare) to avoid dropping pasted Cookie header pairs.
+const filterKleinanzeigenCookies = (cookies, { includeUnknown = true } = {}) => {
+  const input = Array.isArray(cookies) ? cookies : [];
+  return input.filter((cookie) => {
+    if (!cookie?.name) return false;
+    const hasScope = Boolean(cookie?.url || cookie?.domain);
+    if (!hasScope) return includeUnknown;
+    return isKleinanzeigenCookie(cookie);
+  });
+};
 
 const normalizeCookie = (cookie) => {
   const name = String(cookie?.name || "").trim();
@@ -249,9 +288,10 @@ const normalizeCookie = (cookie) => {
   return normalized;
 };
 
-const normalizeCookies = (rawCookies) => {
+const normalizeCookies = (rawCookies, { onlyKleinanzeigen = true } = {}) => {
   const input = Array.isArray(rawCookies) ? rawCookies : [];
-  const normalized = input.map(normalizeCookie).filter((cookie) => cookie?.name);
+  const scoped = onlyKleinanzeigen ? filterKleinanzeigenCookies(input) : input;
+  const normalized = scoped.map(normalizeCookie).filter((cookie) => cookie?.name);
 
   // Many cookie exports contain host-only cookies for either `kleinanzeigen.de` or `www.kleinanzeigen.de`.
   // The app navigates across both; to avoid false "redirect to login" we duplicate host-only cookies across
@@ -340,6 +380,8 @@ module.exports = {
   parseCookies,
   normalizeCookies,
   normalizeCookie,
+  isKleinanzeigenCookie,
+  filterKleinanzeigenCookies,
   buildProxyUrl,
   buildPuppeteerProxyUrl,
   buildProxyServer

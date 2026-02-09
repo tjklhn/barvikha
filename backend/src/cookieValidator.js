@@ -47,7 +47,7 @@ const pickDeviceProfile = () => {
 const proxyChain = require("proxy-chain");
 const axios = require("axios");
 const proxyChecker = require("./proxyChecker");
-const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const { parseCookies, normalizeCookies, normalizeCookie, filterKleinanzeigenCookies, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 260) => sleep(Math.floor(min + Math.random() * (max - min)));
@@ -116,9 +116,75 @@ const sanitizeProfileName = (value) => {
   return normalized;
 };
 
+const decodeJwtPayload = (token) => {
+  if (!token) return null;
+  const parts = String(token).split(".");
+  if (parts.length < 2) return null;
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    return JSON.parse(decoded);
+  } catch (error) {
+    return null;
+  }
+};
+
+const buildCookieHeader = (cookies) => {
+  const byName = new Map();
+  for (const cookie of cookies || []) {
+    if (!cookie?.name) continue;
+    if (cookie.value === undefined || cookie.value === null) continue;
+    const value = String(cookie.value);
+    if (!value) continue;
+    byName.set(cookie.name, value);
+  }
+  return Array.from(byName.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+};
+
+const extractProfileFromCookies = (cookies) => {
+  const accessToken = (cookies || []).find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  if (!accessToken?.value) return { profileName: "", profileEmail: "" };
+  const payload = decodeJwtPayload(accessToken.value);
+  if (!payload) return { profileName: "", profileEmail: "" };
+  const name = payload?.name || payload?.preferred_username || "";
+  const email = payload?.email || "";
+  return {
+    profileName: sanitizeProfileName(name),
+    profileEmail: String(email || "").trim()
+  };
+};
+
+const validateCookiesViaAccessToken = async ({ cookieHeader, proxy, deviceProfile, timeoutMs = 20000 } = {}) => {
+  if (!cookieHeader) {
+    return { ok: false, status: 0, reason: "EMPTY_COOKIE_HEADER" };
+  }
+  const axiosConfig = proxyChecker.buildAxiosConfig(proxy, Math.max(4000, Number(timeoutMs) || 20000));
+  axiosConfig.headers = {
+    ...axiosConfig.headers,
+    Cookie: cookieHeader,
+    "User-Agent": deviceProfile?.userAgent || axiosConfig.headers?.["User-Agent"] || "Mozilla/5.0",
+    "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9,en;q=0.8",
+    Accept: "application/json"
+  };
+  axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
+
+  const response = await axios.get("https://www.kleinanzeigen.de/m-access-token.json", axiosConfig);
+  if (response.status === 401 || response.status === 403) {
+    return { ok: false, status: response.status, reason: "AUTH_REQUIRED" };
+  }
+  const token = response.headers?.authorization || response.headers?.Authorization || "";
+  if (!token) {
+    return { ok: false, status: response.status, reason: "AUTH_REQUIRED" };
+  }
+  return { ok: true, status: response.status, token };
+};
+
 const validateCookies = async (rawCookieText, options = {}) => {
   const deviceProfile = options.deviceProfile || pickDeviceProfile();
-  const cookies = normalizeCookies(parseCookies(rawCookieText));
+  const cookies = normalizeCookies(filterKleinanzeigenCookies(parseCookies(rawCookieText)));
   const proxyServer = buildProxyServer(options.proxy);
   // Puppeteer/Chromium must receive a Chromium-compatible proxy URL (no `socks5h://`).
   const proxyUrl = buildPuppeteerProxyUrl(options.proxy);
@@ -163,6 +229,30 @@ const validateCookies = async (rawCookieText, options = {}) => {
         deviceProfile
       };
     }
+  }
+
+  // Primary validation: use the same token endpoint as the web app.
+  // This avoids flaky Puppeteer-based checks and works reliably with token cookies.
+  try {
+    const cookieHeader = buildCookieHeader(cookies);
+    const tokenCheck = await validateCookiesViaAccessToken({
+      cookieHeader,
+      proxy: options.proxy,
+      deviceProfile,
+      timeoutMs: 20000
+    });
+    if (tokenCheck.ok) {
+      const profile = extractProfileFromCookies(cookies);
+      return {
+        valid: true,
+        reason: null,
+        deviceProfile,
+        profileName: profile.profileName || "",
+        profileEmail: profile.profileEmail || ""
+      };
+    }
+  } catch (error) {
+    // Fall back to Puppeteer validation below when the token endpoint is unreachable.
   }
 
   const runValidation = async (attempt = 0, useProxyChain = needsProxyChain) => {
