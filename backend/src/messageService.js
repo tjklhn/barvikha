@@ -24,8 +24,6 @@ const FAST_SNAPSHOT_TIMEOUT_MS = Number(process.env.KL_FAST_SNAPSHOT_TIMEOUT_MS 
 const FAST_SNAPSHOT_ATTEMPTS = Math.max(1, Number(process.env.KL_FAST_SNAPSHOT_ATTEMPTS || 1));
 const FAST_SNAPSHOT_DELAY_MS = Math.max(100, Number(process.env.KL_FAST_SNAPSHOT_DELAY_MS || 250));
 const MESSAGE_ACTION_DEADLINE_MS = Math.max(25000, Number(process.env.KL_MESSAGE_ACTION_DEADLINE_MS || 45000));
-const MESSAGE_CONSENT_TIMEOUT_MS = Math.max(1200, Number(process.env.KL_MESSAGE_CONSENT_TIMEOUT_MS || 2800));
-const MESSAGE_GDPR_TIMEOUT_MS = Math.max(1800, Number(process.env.KL_MESSAGE_GDPR_TIMEOUT_MS || 5000));
 const PROXY_TUNNEL_ERROR_CODE = "PROXY_TUNNEL_CONNECTION_FAILED";
 const DETACHED_FRAME_ERROR_PATTERNS = [
   /attempted to use detached frame/i,
@@ -260,34 +258,6 @@ const pickParticipantFromApi = (conversation, userId) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 240) => sleep(Math.floor(min + Math.random() * (max - min)));
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
-const safeCloseBrowser = async (browser, { timeoutMs = 4500 } = {}) => {
-  if (!browser) return;
-  let finished = false;
-  const closePromise = Promise.resolve()
-    .then(() => browser.close())
-    .catch(() => {})
-    .finally(() => {
-      finished = true;
-    });
-
-  await Promise.race([
-    closePromise,
-    sleep(Math.max(600, Number(timeoutMs) || 4500))
-  ]);
-
-  if (finished) return;
-
-  try {
-    const proc = typeof browser.process === "function" ? browser.process() : null;
-    if (proc && !proc.killed) {
-      proc.kill("SIGKILL");
-    }
-  } catch (error) {
-    // ignore kill errors
-  }
-
-  await Promise.race([closePromise, sleep(800)]);
-};
 const randomInt = (min, max) => {
   const low = Math.floor(Math.min(min, max));
   const high = Math.floor(Math.max(min, max));
@@ -3833,21 +3803,10 @@ const declineConversationOffer = async ({
   account,
   proxy,
   conversationId,
-  conversationUrl,
-  abortSignal = null,
-  hardDeadlineMs = null
+  conversationUrl
 }) => {
   const actionStartedAt = Date.now();
-  const normalizedHardDeadlineMs = Number(hardDeadlineMs);
-  const actionDeadlineMs = Math.max(
-    25000,
-    Math.min(
-      MESSAGE_ACTION_DEADLINE_MS,
-      Number.isFinite(normalizedHardDeadlineMs) && normalizedHardDeadlineMs > 5000
-        ? normalizedHardDeadlineMs - 2500
-        : MESSAGE_ACTION_DEADLINE_MS
-    )
-  );
+  const actionDeadlineMs = MESSAGE_ACTION_DEADLINE_MS;
   const snapshotTimeoutMs = Math.max(1500, Math.min(3000, FAST_SNAPSHOT_TIMEOUT_MS));
   const remainingMs = () => actionDeadlineMs - (Date.now() - actionStartedAt);
   const ensureDeadline = (context = "") => {
@@ -3856,11 +3815,6 @@ const declineConversationOffer = async ({
     }
   };
   const hasTimeLeft = (reserveMs = 0) => Date.now() - actionStartedAt < (actionDeadlineMs - Math.max(0, reserveMs));
-  const throwIfAborted = (context = "") => {
-    if (abortSignal?.aborted) {
-      throw buildActionTimeoutError(context || "offer-decline-aborted");
-    }
-  };
   const getStepTimeout = (desiredMs, minMs = 1200, reserveMs = 2500, context = "") => {
     const normalizedMin = Math.max(500, Number(minMs) || 500);
     const desired = Math.max(normalizedMin, Number(desiredMs) || normalizedMin);
@@ -3891,7 +3845,27 @@ const declineConversationOffer = async ({
     throw error;
   }
   const resolvedConversationUrl = buildConversationUrl(resolvedConversationId, conversationUrl);
-  const beforeSnapshot = null;
+  let beforeSnapshot = null;
+  try {
+    beforeSnapshot = await fetchConversationSnapshotViaApiWithRetry({
+      account,
+      proxy,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl,
+      attempts: FAST_SNAPSHOT_ATTEMPTS,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: snapshotTimeoutMs
+    });
+  } catch (error) {
+    beforeSnapshot = null;
+  }
+
+  ensureDeadline("offer-decline-before-proxy-check");
+  await ensureProxyCanReachKleinanzeigen(
+    proxy,
+    getStepTimeout(12000, 4500, 9000, "offer-decline-proxy-check")
+  );
+  ensureDeadline("offer-decline-after-proxy-check");
 
   const proxyServer = buildProxyServer(proxy);
   const proxyUrl = buildProxyUrl(proxy);
@@ -3919,23 +3893,10 @@ const declineConversationOffer = async ({
     protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
   });
 
-  let abortListener = null;
-  if (abortSignal) {
-    abortListener = () => {
-      safeCloseBrowser(browser).catch(() => {});
-    };
-    if (abortSignal.aborted) {
-      abortListener();
-    } else {
-      abortSignal.addEventListener("abort", abortListener, { once: true });
-    }
-  }
-
   try {
-    throwIfAborted("offer-decline-before-new-page");
     const page = await browser.newPage();
     const localTimeout = getStepTimeout(
-      Math.min(PUPPETEER_NAV_TIMEOUT, 18000),
+      Math.min(PUPPETEER_NAV_TIMEOUT, 20000),
       4500,
       9000,
       "offer-decline-navigation-budget"
@@ -3960,9 +3921,8 @@ const declineConversationOffer = async ({
     }, deviceProfile.platform);
 
     ensureDeadline("offer-decline-before-set-cookie");
-    throwIfAborted("offer-decline-before-set-cookie");
     await page.setCookie(...cookies);
-    await humanPause(35, 90);
+    await humanPause(90, 160);
     const conversationGotoTimeout = getStepTimeout(
       localTimeout,
       4500,
@@ -3975,18 +3935,13 @@ const declineConversationOffer = async ({
       { waitUntil: "domcontentloaded", timeout: conversationGotoTimeout },
       "DECLINE_CONVERSATION_GOTO"
     );
-    throwIfAborted("offer-decline-after-conversation-goto");
-    if (await isAuthFailure(page)) {
-      const error = new Error("AUTH_REQUIRED");
-      error.code = "AUTH_REQUIRED";
-      throw error;
-    }
-    await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+    await acceptCookieModal(page).catch(() => {});
     if (isGdprPage(page.url())) {
-      await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+      await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
     }
-    await humanPause(30, 70);
-    await dismissConversationBlockingModals(page, { maxPasses: 1 }).catch(() => {});
+    await humanPause(140, 260);
+    await performHumanLikePageActivity(page, { intensity: "medium", force: true });
+    await dismissConversationBlockingModals(page, { maxPasses: 6 }).catch(() => {});
 
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
@@ -4177,7 +4132,7 @@ const declineConversationOffer = async ({
           });
         });
       });
-    }, { timeout: 1000 }, paymentActionSelectors).catch(() => {});
+    }, { timeout: 2200 }, paymentActionSelectors).catch(() => {});
 
     // There can be several onboarding/payment dialogs before the actual decline action appears.
     for (let pass = 0; pass < 3 && hasTimeLeft(5000); pass += 1) {
@@ -4330,12 +4285,8 @@ const declineConversationOffer = async ({
     }
 
     ensureDeadline("offer-decline-after-clicks");
-    throwIfAborted("offer-decline-after-clicks");
   } finally {
-    if (abortSignal && abortListener) {
-      abortSignal.removeEventListener("abort", abortListener);
-    }
-    await safeCloseBrowser(browser);
+    await browser.close();
     if (anonymizedProxyUrl) {
       await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
     }
@@ -4393,21 +4344,10 @@ const sendConversationMedia = async ({
   conversationId,
   conversationUrl,
   text,
-  files,
-  abortSignal = null,
-  hardDeadlineMs = null
+  files
 }) => {
   const actionStartedAt = Date.now();
-  const normalizedHardDeadlineMs = Number(hardDeadlineMs);
-  const actionDeadlineMs = Math.max(
-    25000,
-    Math.min(
-      MESSAGE_ACTION_DEADLINE_MS,
-      Number.isFinite(normalizedHardDeadlineMs) && normalizedHardDeadlineMs > 5000
-        ? normalizedHardDeadlineMs - 2500
-        : MESSAGE_ACTION_DEADLINE_MS
-    )
-  );
+  const actionDeadlineMs = MESSAGE_ACTION_DEADLINE_MS;
   const snapshotTimeoutMs = Math.max(1500, Math.min(3000, FAST_SNAPSHOT_TIMEOUT_MS));
   const remainingMs = () => actionDeadlineMs - (Date.now() - actionStartedAt);
   const ensureDeadline = (context = "") => {
@@ -4416,11 +4356,6 @@ const sendConversationMedia = async ({
     }
   };
   const hasTimeLeft = (reserveMs = 0) => Date.now() - actionStartedAt < (actionDeadlineMs - Math.max(0, reserveMs));
-  const throwIfAborted = (context = "") => {
-    if (abortSignal?.aborted) {
-      throw buildActionTimeoutError(context || "send-media-aborted");
-    }
-  };
   const getStepTimeout = (desiredMs, minMs = 1200, reserveMs = 2500, context = "") => {
     const normalizedMin = Math.max(500, Number(minMs) || 500);
     const desired = Math.max(normalizedMin, Number(desiredMs) || normalizedMin);
@@ -4459,7 +4394,20 @@ const sendConversationMedia = async ({
     throw error;
   }
   const resolvedConversationUrl = buildConversationUrl(resolvedConversationId, conversationUrl);
-  const beforeSnapshot = null;
+  let beforeSnapshot = null;
+  try {
+    beforeSnapshot = await fetchConversationSnapshotViaApiWithRetry({
+      account,
+      proxy,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl,
+      attempts: FAST_SNAPSHOT_ATTEMPTS,
+      delayMs: FAST_SNAPSHOT_DELAY_MS,
+      requestTimeoutMs: snapshotTimeoutMs
+    });
+  } catch (error) {
+    beforeSnapshot = null;
+  }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-media-"));
   const tempPaths = [];
@@ -4495,6 +4443,13 @@ const sendConversationMedia = async ({
       tempPaths.push(targetPath);
     }
 
+    ensureDeadline("send-media-before-proxy-check");
+    await ensureProxyCanReachKleinanzeigen(
+      proxy,
+      getStepTimeout(12000, 4500, 9000, "send-media-proxy-check")
+    );
+    ensureDeadline("send-media-after-proxy-check");
+
     const proxyServer = buildProxyServer(proxy);
     const proxyUrl = buildProxyUrl(proxy);
     const needsProxyChain = Boolean(
@@ -4521,26 +4476,13 @@ const sendConversationMedia = async ({
       protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
     });
 
-    let abortListener = null;
-    if (abortSignal) {
-      abortListener = () => {
-        safeCloseBrowser(browser).catch(() => {});
-      };
-      if (abortSignal.aborted) {
-        abortListener();
-      } else {
-        abortSignal.addEventListener("abort", abortListener, { once: true });
-      }
-    }
-
     let page = null;
     let requestListener = null;
     let waitForLikelyMessageRequestAfter = async () => false;
     try {
-      throwIfAborted("send-media-before-new-page");
       page = await browser.newPage();
       const localTimeout = getStepTimeout(
-        Math.min(PUPPETEER_NAV_TIMEOUT, 18000),
+        Math.min(PUPPETEER_NAV_TIMEOUT, 20000),
         4500,
         9000,
         "send-media-navigation-budget"
@@ -4565,9 +4507,8 @@ const sendConversationMedia = async ({
       }, deviceProfile.platform);
 
       ensureDeadline("send-media-before-set-cookie");
-      throwIfAborted("send-media-before-set-cookie");
       await page.setCookie(...cookies);
-      await humanPause(35, 90);
+      await humanPause(90, 160);
       const conversationGotoTimeout = getStepTimeout(
         localTimeout,
         4500,
@@ -4580,20 +4521,14 @@ const sendConversationMedia = async ({
         { waitUntil: "domcontentloaded", timeout: conversationGotoTimeout },
         "MEDIA_CONVERSATION_GOTO"
       );
-      throwIfAborted("send-media-after-conversation-goto");
-      if (await isAuthFailure(page)) {
-        const error = new Error("AUTH_REQUIRED");
-        error.code = "AUTH_REQUIRED";
-        throw error;
-      }
-      await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+      await acceptCookieModal(page).catch(() => {});
       if (isGdprPage(page.url())) {
-        await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+        await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
       }
-      await humanPause(30, 70);
-      await dismissConversationBlockingModals(page, { maxPasses: 1 }).catch(() => {});
+      await humanPause(140, 240);
+      await performHumanLikePageActivity(page, { intensity: "medium", force: true });
+      await dismissConversationBlockingModals(page, { maxPasses: 6 }).catch(() => {});
       ensureDeadline("send-media-after-conversation-open");
-      throwIfAborted("send-media-after-conversation-open");
 
       if (await isAuthFailure(page)) {
         const error = new Error("AUTH_REQUIRED");
@@ -4865,7 +4800,6 @@ const sendConversationMedia = async ({
       }
       sendInteractionTriggered = true;
       await humanPause(120, 190);
-      throwIfAborted("send-media-after-send-click");
 
       await waitForLikelyMessageRequestAfter(
         sendAttemptStartedAt,
@@ -4906,10 +4840,7 @@ const sendConversationMedia = async ({
           page.removeListener("request", requestListener);
         }
       }
-      if (abortSignal && abortListener) {
-        abortSignal.removeEventListener("abort", abortListener);
-      }
-      await safeCloseBrowser(browser);
+      await browser.close();
       if (anonymizedProxyUrl) {
         await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
       }
