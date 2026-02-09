@@ -105,7 +105,9 @@ const AddAccountModal = ({ isOpen, onClose, onSuccess, proxies }) => {
 
       const uploadWithTokenQuery = async () => {
         const token = getAccessToken();
-        const tokenQuery = token ? `?accessToken=${encodeURIComponent(token)}` : "";
+        // Some reverse-proxies/WAF rules can drop requests that include `accessToken` in the query string.
+        // Backend accepts both `token` and `accessToken`, so prefer the more generic `token`.
+        const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : "";
         return apiFetchJson(`/api/accounts/upload${tokenQuery}`, {
           method: "POST",
           body: buildFormData(),

@@ -74,7 +74,7 @@ const toMessageImageSrc = (value, accountId) => {
     }
     if (accessToken && !/[?&](accessToken|token)=/i.test(src)) {
       const separator = src.includes("?") ? "&" : "?";
-      src = `${src}${separator}accessToken=${encodeURIComponent(accessToken)}`;
+      src = `${src}${separator}token=${encodeURIComponent(accessToken)}`;
     }
     return src;
   }
@@ -84,7 +84,7 @@ const toMessageImageSrc = (value, accountId) => {
     params.set("url", normalized);
     params.set("accountId", accountToken);
     if (accessToken) {
-      params.set("accessToken", accessToken);
+      params.set("token", accessToken);
     }
     return `/api/messages/image?${params.toString()}`;
   }
