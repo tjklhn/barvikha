@@ -984,9 +984,7 @@ const corsOptions = {
     return callback(new Error("Not allowed by CORS"));
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  // Frontend always adds X-Client-Request-Id for diagnostics. If the UI is served from a different origin
-  // (e.g. API base points to an IP/domain), this header triggers a preflight and must be allowed.
-  allowedHeaders: ["Content-Type", "Authorization", "X-Access-Token", "X-Client-Request-Id"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Access-Token"],
   credentials: true
 };
 

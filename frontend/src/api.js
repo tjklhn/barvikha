@@ -1,24 +1,9 @@
+const DEFAULT_API_BASES = [
+  "",
+  "http://95.81.100.250"
+];
+
 const normalizeBase = (value) => String(value || "").trim().replace(/\/+$/, "");
-
-const getRuntimeOrigin = () => {
-  if (typeof window === "undefined" || !window.location) return "";
-  return normalizeBase(window.location.origin || "");
-};
-
-// Keep defaults safe for production: prefer same-origin (relative "/api/...") to avoid CORS/mixed-content.
-// Allow the hardcoded IP fallback on plain HTTP deployments as a fallback when reverse proxy is misconfigured.
-const resolveDefaultApiBases = () => {
-  const origin = getRuntimeOrigin();
-  const isLocal = origin.includes("localhost") || origin.includes("127.0.0.1");
-  const protocol = typeof window !== "undefined" && window.location ? window.location.protocol : "";
-  const canUseHttpFallback = protocol !== "https:";
-
-  const bases = [""];
-  if (isLocal || canUseHttpFallback) {
-    bases.push("http://95.81.100.250");
-  }
-  return bases;
-};
 
 const resolveApiBases = () => {
   const envBase = String(process.env.REACT_APP_API_BASE || "").trim();
@@ -28,13 +13,18 @@ const resolveApiBases = () => {
       .map((item) => normalizeBase(item))
       .filter(Boolean);
   }
-  return resolveDefaultApiBases()
+  return DEFAULT_API_BASES
     .map((item) => normalizeBase(item))
     .filter((item, index, arr) => arr.indexOf(item) === index);
 };
 
 const API_BASES = resolveApiBases();
 let preferredBaseIndex = 0;
+
+const getRuntimeOrigin = () => {
+  if (typeof window === "undefined" || !window.location) return "";
+  return normalizeBase(window.location.origin || "");
+};
 
 const getCandidateKey = (base) => {
   const normalized = normalizeBase(base);
@@ -76,8 +66,6 @@ export const apiFetch = async (path, options = {}) => {
     timeoutMs = 45000,
     retry,
     allowBaseFallback,
-    skipAuth,
-    skipClientRequestId,
     _retried = false,
     ...fetchOptions
   } = options || {};
@@ -91,10 +79,10 @@ export const apiFetch = async (path, options = {}) => {
 
   const headers = new Headers(fetchOptions.headers || {});
   const token = getAccessToken();
-  if (!skipAuth && token && !headers.has("Authorization")) {
+  if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
-  if (!skipClientRequestId && !headers.has("X-Client-Request-Id")) {
+  if (!headers.has("X-Client-Request-Id")) {
     headers.set("X-Client-Request-Id", requestId);
   }
 
