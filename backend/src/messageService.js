@@ -463,11 +463,19 @@ const getUserIdFromAccessToken = (token) => {
   return payload?.preferred_username || payload?.uid || payload?.sub || "";
 };
 
-const buildCookieHeader = (cookies) =>
-  (cookies || [])
-    .filter((cookie) => cookie?.name && cookie?.value)
-    .map((cookie) => `${cookie.name}=${cookie.value}`)
+const buildCookieHeader = (cookies) => {
+  const byName = new Map();
+  for (const cookie of cookies || []) {
+    if (!cookie?.name) continue;
+    if (cookie.value === undefined || cookie.value === null) continue;
+    const value = String(cookie.value);
+    if (!value) continue;
+    byName.set(cookie.name, value);
+  }
+  return Array.from(byName.entries())
+    .map(([name, value]) => `${name}=${value}`)
     .join("; ");
+};
 
 const buildAxiosConfig = ({ proxy, headers = {}, timeout = 20000 } = {}) => {
   const config = {

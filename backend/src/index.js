@@ -161,7 +161,9 @@ const buildCookieHeaderFromAccount = (account) => {
   for (const cookie of cookies || []) {
     if (!cookie?.name) continue;
     if (cookie.value === undefined || cookie.value === null) continue;
-    byName.set(cookie.name, String(cookie.value));
+    const value = String(cookie.value);
+    if (!value) continue;
+    byName.set(cookie.name, value);
   }
   return Array.from(byName.entries())
     .map(([name, value]) => `${name}=${value}`)
