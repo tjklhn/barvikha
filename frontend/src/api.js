@@ -1,6 +1,6 @@
 const DEFAULT_API_BASES = [
-  "",
-  "http://95.81.100.250"
+  "http://95.81.100.250",
+  ""
 ];
 
 const normalizeBase = (value) => String(value || "").trim().replace(/\/+$/, "");

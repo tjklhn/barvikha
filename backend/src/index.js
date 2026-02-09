@@ -10,7 +10,7 @@ const crypto = require("crypto");
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
-const { buildProxyUrl, parseCookies, normalizeCookie, filterKleinanzeigenCookies } = require("./cookieUtils");
+const { buildProxyUrl } = require("./cookieUtils");
 const {
   publishAd,
   parseExtraSelectFields,
@@ -70,63 +70,6 @@ const recentSuccessfulPublishes = new Map();
 const RECENT_PUBLISH_TTL_MS = 30 * 60 * 1000;
 const ADS_ACTIVE_CACHE_TTL_MS = Number(process.env.KL_ACTIVE_ADS_CACHE_TTL_MS || 90 * 1000);
 const activeAdsCache = new Map();
-// Message actions can be slow behind proxies (GDPR, messagebox bundle, uploads).
-// Frontend uses long timeouts (up to 240s) so keep backend deadline aligned.
-const MESSAGE_ROUTE_DEADLINE_DEFAULT_MS = 120000;
-const MESSAGE_ROUTE_DEADLINE_MIN_MS = 15000;
-const MESSAGE_ROUTE_DEADLINE_MAX_MS = 240000;
-const MESSAGE_ACTION_LOCK_STALE_MS = 8 * 60 * 1000;
-const activeMessageActionByAccount = new Map();
-const messageboxAccessTokenCacheByAccount = new Map();
-const MESSAGEBOX_ACCESS_TOKEN_SKEW_MS = 60 * 1000;
-
-const resolveMessageRouteDeadlineMs = () => {
-  const configured = Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || MESSAGE_ROUTE_DEADLINE_DEFAULT_MS);
-  if (!Number.isFinite(configured)) return MESSAGE_ROUTE_DEADLINE_DEFAULT_MS;
-  return Math.max(
-    MESSAGE_ROUTE_DEADLINE_MIN_MS,
-    Math.min(MESSAGE_ROUTE_DEADLINE_MAX_MS, configured)
-  );
-};
-
-const tryAcquireMessageActionLock = ({ accountId, route, debugId, clientRequestId }) => {
-  const key = String(accountId || "").trim();
-  if (!key) {
-    return { acquired: false, key: "", reason: "INVALID_ACCOUNT" };
-  }
-
-  const now = Date.now();
-  const current = activeMessageActionByAccount.get(key);
-  if (current && now - Number(current.startedAt || 0) > MESSAGE_ACTION_LOCK_STALE_MS) {
-    activeMessageActionByAccount.delete(key);
-  }
-
-  const existing = activeMessageActionByAccount.get(key);
-  if (existing) {
-    return { acquired: false, key, reason: "BUSY", existing };
-  }
-
-  const token = `${now}-${Math.random().toString(36).slice(2, 8)}`;
-  activeMessageActionByAccount.set(key, {
-    token,
-    route: String(route || ""),
-    debugId: String(debugId || ""),
-    clientRequestId: String(clientRequestId || ""),
-    startedAt: now
-  });
-  return { acquired: true, key, token };
-};
-
-const releaseMessageActionLock = (lockInfo) => {
-  if (!lockInfo?.acquired) return;
-  const key = String(lockInfo.key || "");
-  const token = String(lockInfo.token || "");
-  if (!key || !token) return;
-  const existing = activeMessageActionByAccount.get(key);
-  if (existing?.token === token) {
-    activeMessageActionByAccount.delete(key);
-  }
-};
 
 const getPuppeteer = () => {
   if (!puppeteerStealthReady) {
@@ -154,86 +97,6 @@ const sanitizeFilename = (value) => (value || "account")
   .toString()
   .replace(/[^a-z0-9._-]+/gi, "_")
   .slice(0, 60);
-
-const buildCookieHeaderFromAccount = (account) => {
-  const cookies = filterKleinanzeigenCookies(parseCookies(account?.cookie)).map(normalizeCookie);
-  const byName = new Map();
-  for (const cookie of cookies || []) {
-    if (!cookie?.name) continue;
-    if (cookie.value === undefined || cookie.value === null) continue;
-    const value = String(cookie.value);
-    if (!value) continue;
-    byName.set(cookie.name, value);
-  }
-  return Array.from(byName.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
-};
-
-const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
-  const cookieHeader = buildCookieHeaderFromAccount(account);
-  if (!cookieHeader) {
-    const error = new Error("AUTH_REQUIRED");
-    error.code = "AUTH_REQUIRED";
-    throw error;
-  }
-
-  const deviceProfile = toDeviceProfile(account?.deviceProfile);
-  const axiosConfig = proxyChecker.buildAxiosConfig(proxy, Math.max(4000, Number(timeoutMs) || 20000));
-  axiosConfig.headers = {
-    ...axiosConfig.headers,
-    Cookie: cookieHeader,
-    "User-Agent": deviceProfile.userAgent || "Mozilla/5.0",
-    Accept: "application/json"
-  };
-  axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
-
-  const response = await axios.get("https://www.kleinanzeigen.de/m-access-token.json", axiosConfig);
-  if (response.status === 401 || response.status === 403) {
-    const error = new Error("AUTH_REQUIRED");
-    error.code = "AUTH_REQUIRED";
-    throw error;
-  }
-
-  const token = response.headers?.authorization || response.headers?.Authorization || "";
-  if (!token) {
-    const error = new Error("AUTH_REQUIRED");
-    error.code = "AUTH_REQUIRED";
-    throw error;
-  }
-
-  const messageboxHeader = response.headers?.messagebox || response.headers?.Messagebox || "";
-  const expirationRaw = response.data?.expiration;
-  const expiration = expirationRaw !== undefined && expirationRaw !== null ? Number(expirationRaw) : null;
-
-  return { token, messageboxHeader, expiration, cookieHeader };
-};
-
-const getMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
-  const accountKey = account?.id != null ? String(account.id) : "";
-  if (!accountKey) {
-    const error = new Error("ACCOUNT_REQUIRED");
-    error.code = "ACCOUNT_REQUIRED";
-    throw error;
-  }
-
-  const cached = messageboxAccessTokenCacheByAccount.get(accountKey);
-  const now = Date.now();
-  if (cached?.token && cached?.expiresAt && (now + MESSAGEBOX_ACCESS_TOKEN_SKEW_MS) < cached.expiresAt) {
-    return cached;
-  }
-
-  const fresh = await fetchMessageboxAccessTokenForAccount({ account, proxy, timeoutMs });
-  const expiresAt = Number.isFinite(fresh.expiration) && fresh.expiration > 0 ? fresh.expiration : (now + 10 * 60 * 1000);
-  const entry = {
-    token: fresh.token,
-    messageboxHeader: fresh.messageboxHeader || "",
-    expiresAt,
-    cookieHeader: fresh.cookieHeader || ""
-  };
-  messageboxAccessTokenCacheByAccount.set(accountKey, entry);
-  return entry;
-};
 
 const safeJsonStringify = (value) => {
   try {
@@ -1064,10 +927,10 @@ app.get("/api/accounts/:id/plz", async (req, res) => {
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
-    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
     const { pickDeviceProfile } = require("./cookieValidator");
 
-    const cookies = normalizeCookies(parseCookies(account.cookie));
+    const cookies = parseCookies(account.cookie).map(normalizeCookie);
     if (!cookies.length) {
       res.status(400).json({ success: false, error: "Cookie пустые." });
       return;
@@ -1085,7 +948,7 @@ app.get("/api/accounts/:id/plz", async (req, res) => {
     }
 
     const proxyServer = buildProxyServer(selectedProxy);
-    const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
+    const proxyUrl = buildProxyUrl(selectedProxy);
     const needsProxyChain = Boolean(
       proxyUrl && ((selectedProxy?.type || "").toLowerCase().startsWith("socks") || selectedProxy?.username || selectedProxy?.password)
     );
@@ -1523,29 +1386,15 @@ app.get("/api/messages/image", async (req, res) => {
     const proxy = requireAccountProxy(account, res, "загрузки изображения", getOwnerContext(req));
     if (!proxy) return;
 
-    const baseUrl = new URL(parsed.toString());
-    // Kleinanzeigen conversation attachments frequently come as api.kleinanzeigen.de URLs that return 401,
-    // while the gateway.kleinanzeigen.de/messagebox URL works with the messagebox access token.
-    if (baseUrl.hostname.toLowerCase() === "api.kleinanzeigen.de"
-      && baseUrl.pathname.startsWith("/api/users/")
-      && baseUrl.pathname.includes("/conversation-attachments")) {
-      baseUrl.hostname = "gateway.kleinanzeigen.de";
-      baseUrl.pathname = `/messagebox${baseUrl.pathname}`;
-      baseUrl.protocol = "https:";
-    }
-
-    const isMessageboxAttachment = baseUrl.hostname.toLowerCase() === "gateway.kleinanzeigen.de"
-      && baseUrl.pathname.startsWith("/messagebox/api/")
-      && baseUrl.pathname.includes("/conversation-attachments");
-
-    const isProdAdsImage = baseUrl.hostname.toLowerCase() === "img.kleinanzeigen.de"
-      && baseUrl.pathname.startsWith("/api/v1/prod-ads/images/");
+    const isProdAdsImage = parsed.hostname.toLowerCase() === "img.kleinanzeigen.de"
+      && parsed.pathname.startsWith("/api/v1/prod-ads/images/");
 
     const defaultRule = "$_57.JPG";
     const ruleVariants = [defaultRule, "$_24.JPG", "$_2.JPG", "$_57.AUTO", "$_24.AUTO"];
     const looksLikeMalformedRule = (rule) => /(imageid|\$\{.*\}|\$_\{.*\})/i.test(String(rule || ""));
     const isValidRule = (rule) => /^\$_[a-z0-9_.-]+$/i.test(String(rule || ""));
 
+    const baseUrl = new URL(parsed.toString());
     if (isProdAdsImage) {
       const currentRule = baseUrl.searchParams.get("rule") || "";
       if (!isValidRule(currentRule) || looksLikeMalformedRule(currentRule)) {
@@ -1563,20 +1412,11 @@ app.get("/api/messages/image", async (req, res) => {
       }
     }
 
-    const deviceProfile = toDeviceProfile(account?.deviceProfile);
     const requestHeaders = {
-      "User-Agent": deviceProfile?.userAgent
-        || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
       "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-      "Referer": isMessageboxAttachment ? "https://www.kleinanzeigen.de/m-nachrichten.html" : "https://www.kleinanzeigen.de/"
+      "Referer": "https://www.kleinanzeigen.de/"
     };
-
-    if (isMessageboxAttachment) {
-      const auth = await getMessageboxAccessTokenForAccount({ account, proxy, timeoutMs: 20000 });
-      requestHeaders.Authorization = auth.token;
-      requestHeaders.Cookie = auth.cookieHeader || buildCookieHeaderFromAccount(account);
-      requestHeaders["X-ECG-USER-AGENT"] = "messagebox-1";
-    }
 
     let lastStatus = 502;
     let lastErrorMessage = "Image fetch failed";
@@ -1666,17 +1506,6 @@ app.get("/api/messages/thread", async (req, res) => {
 });
 
 app.post("/api/messages/send", async (req, res) => {
-  const debugId = `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const clientRequestId = String(req.get("x-client-request-id") || "");
-  const startedAt = Date.now();
-  appendServerLog(getMessageActionsLogPath(), {
-    event: "start",
-    route: "send-message",
-    debugId,
-    clientRequestId,
-    ip: req.ip,
-    bodyKeys: Object.keys(req.body || {})
-  });
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
@@ -1686,12 +1515,7 @@ app.post("/api/messages/send", async (req, res) => {
     const text = req.body?.text ? String(req.body.text) : "";
 
     if (!accountId || (!conversationId && !conversationUrl && !participant && !adTitle) || !text.trim()) {
-      res.status(400).json({
-        success: false,
-        error: "Недостаточно данных для отправки.",
-        debugId,
-        requestId: clientRequestId
-      });
+      res.status(400).json({ success: false, error: "Недостаточно данных для отправки." });
       return;
     }
 
@@ -1708,60 +1532,24 @@ app.post("/api/messages/send", async (req, res) => {
       conversationUrl,
       participant,
       adTitle,
-      text: text.trim(),
-      debugContext: {
-        route: "send-message",
-        debugId,
-        clientRequestId,
-        accountId,
-        conversationId,
-        conversationUrl
-      }
-    });
-    appendServerLog(getMessageActionsLogPath(), {
-      event: "service-success",
-      route: "send-message",
-      debugId,
-      clientRequestId,
-      elapsedMs: Date.now() - startedAt,
-      messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
+      text: text.trim()
     });
 
     res.json({
       success: true,
       messages: result.messages || [],
       conversationId: result.conversationId || conversationId,
-      conversationUrl: result.conversationUrl || conversationUrl,
-      debugId,
-      requestId: clientRequestId
+      conversationUrl: result.conversationUrl || conversationUrl
     });
   } catch (error) {
-    appendServerLog(getMessageActionsLogPath(), {
-      event: "service-error",
-      route: "send-message",
-      debugId,
-      clientRequestId,
-      elapsedMs: Date.now() - startedAt,
-      code: error?.code || "",
-      message: error?.message || String(error),
-      details: error?.details || "",
-      stack: error?.stack || ""
-    });
     if (error.code === "AUTH_REQUIRED") {
       res.status(401).json({
         success: false,
-        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
-        debugId,
-        requestId: clientRequestId
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
       });
       return;
     }
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      debugId,
-      requestId: clientRequestId
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -1773,10 +1561,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   }
   const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const clientRequestId = String(req.get("x-client-request-id") || "");
-  const routeDeadlineMs = resolveMessageRouteDeadlineMs();
+  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 90000));
   const startedAt = Date.now();
-  let messageActionLock = null;
-  let abortController = null;
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
     route: "offer-decline",
@@ -1786,9 +1572,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     bodyKeys: Object.keys(req.body || {})
   });
   req.on("aborted", () => {
-    if (abortController && !abortController.signal.aborted) {
-      try { abortController.abort(); } catch (error) {}
-    }
     appendServerLog(getMessageActionsLogPath(), {
       event: "request-aborted",
       route: "offer-decline",
@@ -1798,9 +1581,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     });
   });
   res.on("close", () => {
-    if (!res.writableEnded && abortController && !abortController.signal.aborted) {
-      try { abortController.abort(); } catch (error) {}
-    }
     appendServerLog(getMessageActionsLogPath(), {
       event: "response-close",
       route: "offer-decline",
@@ -1858,34 +1638,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       return;
     }
 
-    messageActionLock = tryAcquireMessageActionLock({
-      accountId,
-      route: "offer-decline",
-      debugId,
-      clientRequestId
-    });
-    if (!messageActionLock?.acquired) {
-      appendServerLog(getMessageActionsLogPath(), {
-        event: "action-lock-busy",
-        route: "offer-decline",
-        debugId,
-        clientRequestId,
-        accountId,
-        lockReason: messageActionLock?.reason || "",
-        activeRoute: messageActionLock?.existing?.route || "",
-        activeDebugId: messageActionLock?.existing?.debugId || "",
-        activeSinceMs: messageActionLock?.existing?.startedAt ? Date.now() - messageActionLock.existing.startedAt : null
-      });
-      res.status(409).json({
-        success: false,
-        error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
-        code: "MESSAGE_ACTION_IN_PROGRESS",
-        debugId,
-        requestId: clientRequestId
-      });
-      return;
-    }
-
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
       route: "offer-decline",
@@ -1895,24 +1647,14 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     });
     let serviceTimer = null;
     let timedOut = false;
-    abortController = new AbortController();
+    const abortController = new AbortController();
     const servicePromise = declineConversationOffer({
       account,
       proxy,
       conversationId,
       conversationUrl,
       abortSignal: abortController.signal,
-      hardDeadlineMs: routeDeadlineMs,
-      debugContext: {
-        route: "offer-decline",
-        debugId,
-        clientRequestId,
-        accountId,
-        conversationId,
-        conversationUrl
-      }
-    }).finally(() => {
-      releaseMessageActionLock(messageActionLock);
+      hardDeadlineMs: routeDeadlineMs
     });
     const timeoutPromise = new Promise((_, reject) => {
       serviceTimer = setTimeout(() => {
@@ -1964,16 +1706,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
-    if (res.writableEnded || res.headersSent) {
-      appendServerLog(getMessageActionsLogPath(), {
-        event: "response-already-closed",
-        route: "offer-decline",
-        debugId,
-        clientRequestId,
-        elapsedMs: Date.now() - startedAt
-      });
-      return;
-    }
 
     res.json({
       success: true,
@@ -1992,21 +1724,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       elapsedMs: Date.now() - startedAt,
       code: error?.code || "",
       message: error?.message || String(error),
-      details: error?.details || "",
       stack: error?.stack || ""
     });
-    if (res.writableEnded || res.headersSent) {
-      appendServerLog(getMessageActionsLogPath(), {
-        event: "response-already-closed",
-        route: "offer-decline",
-        debugId,
-        clientRequestId,
-        elapsedMs: Date.now() - startedAt,
-        code: error?.code || "",
-        message: error?.message || String(error)
-      });
-      return;
-    }
     if (error.code === "AUTH_REQUIRED") {
       res.status(401).json({
         success: false,
@@ -2038,33 +1757,10 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       });
       return;
     }
-    if (error.code === "CONVERSATION_NOT_READY") {
-      res.status(503).json({
-        success: false,
-        error: "Диалог в Kleinanzeigen не успел прогрузиться (загрузка/скелетон). Обновите диалог и попробуйте снова.",
-        code: error.code,
-        details: error?.details || "",
-        debugId,
-        requestId: clientRequestId
-      });
-      return;
-    }
-    if (error.code === "CONSENT_REQUIRED") {
-      res.status(503).json({
-        success: false,
-        error: "Kleinanzeigen блокирует действие страницей согласия cookie/GDPR. Откройте Kleinanzeigen в браузере через этот же прокси, нажмите «Alle akzeptieren», затем повторите действие.",
-        code: error.code,
-        details: error?.details || "",
-        debugId,
-        requestId: clientRequestId
-      });
-      return;
-    }
     res.status(500).json({
       success: false,
       error: error?.message || "Не удалось отклонить предложение",
       code: error?.code || "",
-      details: error?.details || "",
       debugId,
       requestId: clientRequestId
     });
@@ -2079,10 +1775,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
   }
   const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const clientRequestId = String(req.get("x-client-request-id") || "");
-  const routeDeadlineMs = resolveMessageRouteDeadlineMs();
+  const routeDeadlineMs = Math.max(15000, Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || 90000));
   const startedAt = Date.now();
-  let messageActionLock = null;
-  let abortController = null;
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
     route: "send-media",
@@ -2092,9 +1786,6 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     bodyKeys: Object.keys(req.body || {})
   });
   req.on("aborted", () => {
-    if (abortController && !abortController.signal.aborted) {
-      try { abortController.abort(); } catch (error) {}
-    }
     appendServerLog(getMessageActionsLogPath(), {
       event: "request-aborted",
       route: "send-media",
@@ -2104,9 +1795,6 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     });
   });
   res.on("close", () => {
-    if (!res.writableEnded && abortController && !abortController.signal.aborted) {
-      try { abortController.abort(); } catch (error) {}
-    }
     appendServerLog(getMessageActionsLogPath(), {
       event: "response-close",
       route: "send-media",
@@ -2179,34 +1867,6 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       return;
     }
 
-    messageActionLock = tryAcquireMessageActionLock({
-      accountId,
-      route: "send-media",
-      debugId,
-      clientRequestId
-    });
-    if (!messageActionLock?.acquired) {
-      appendServerLog(getMessageActionsLogPath(), {
-        event: "action-lock-busy",
-        route: "send-media",
-        debugId,
-        clientRequestId,
-        accountId,
-        lockReason: messageActionLock?.reason || "",
-        activeRoute: messageActionLock?.existing?.route || "",
-        activeDebugId: messageActionLock?.existing?.debugId || "",
-        activeSinceMs: messageActionLock?.existing?.startedAt ? Date.now() - messageActionLock.existing.startedAt : null
-      });
-      res.status(409).json({
-        success: false,
-        error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
-        code: "MESSAGE_ACTION_IN_PROGRESS",
-        debugId,
-        requestId: clientRequestId
-      });
-      return;
-    }
-
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
       route: "send-media",
@@ -2216,7 +1876,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
     });
     let serviceTimer = null;
     let timedOut = false;
-    abortController = new AbortController();
+    const abortController = new AbortController();
     const servicePromise = sendConversationMedia({
       account,
       proxy,
@@ -2225,17 +1885,7 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       text: text.trim(),
       files: imageFiles,
       abortSignal: abortController.signal,
-      hardDeadlineMs: routeDeadlineMs,
-      debugContext: {
-        route: "send-media",
-        debugId,
-        clientRequestId,
-        accountId,
-        conversationId,
-        conversationUrl
-      }
-    }).finally(() => {
-      releaseMessageActionLock(messageActionLock);
+      hardDeadlineMs: routeDeadlineMs
     });
     const timeoutPromise = new Promise((_, reject) => {
       serviceTimer = setTimeout(() => {
@@ -2287,16 +1937,6 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
-    if (res.writableEnded || res.headersSent) {
-      appendServerLog(getMessageActionsLogPath(), {
-        event: "response-already-closed",
-        route: "send-media",
-        debugId,
-        clientRequestId,
-        elapsedMs: Date.now() - startedAt
-      });
-      return;
-    }
 
     res.json({
       success: true,
@@ -2318,18 +1958,6 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       details: error?.details || "",
       stack: error?.stack || ""
     });
-    if (res.writableEnded || res.headersSent) {
-      appendServerLog(getMessageActionsLogPath(), {
-        event: "response-already-closed",
-        route: "send-media",
-        debugId,
-        clientRequestId,
-        elapsedMs: Date.now() - startedAt,
-        code: error?.code || "",
-        message: error?.message || String(error)
-      });
-      return;
-    }
     if (error.code === "AUTH_REQUIRED") {
       res.status(401).json({
         success: false,
@@ -2354,28 +1982,6 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       res.status(504).json({
         success: false,
         error: "Отправка медиа заняла слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
-        code: error.code,
-        details: error?.details || "",
-        debugId,
-        requestId: clientRequestId
-      });
-      return;
-    }
-    if (error.code === "CONVERSATION_NOT_READY") {
-      res.status(503).json({
-        success: false,
-        error: "Диалог в Kleinanzeigen не успел прогрузиться (загрузка/скелетон). Обновите диалог и попробуйте снова.",
-        code: error.code,
-        details: error?.details || "",
-        debugId,
-        requestId: clientRequestId
-      });
-      return;
-    }
-    if (error.code === "CONSENT_REQUIRED") {
-      res.status(503).json({
-        success: false,
-        error: "Kleinanzeigen блокирует отправку страницей согласия cookie/GDPR. Откройте Kleinanzeigen в браузере через этот же прокси, нажмите «Alle akzeptieren», затем повторите отправку.",
         code: error.code,
         details: error?.details || "",
         debugId,
@@ -2590,13 +2196,13 @@ app.get("/api/categories/children", async (req, res) => {
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
-    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
     const { pickDeviceProfile } = require("./cookieValidator");
 
-    const cookies = normalizeCookies(parseCookies(account.cookie));
+    const cookies = parseCookies(account.cookie).map(normalizeCookie);
     const deviceProfile = toDeviceProfile(account.deviceProfile);
     const proxyServer = buildProxyServer(selectedProxy);
-    const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
+    const proxyUrl = buildProxyUrl(selectedProxy);
     const needsProxyChain = Boolean(
       proxyUrl && ((selectedProxy?.type || "").toLowerCase().startsWith("socks") || selectedProxy?.username || selectedProxy?.password)
     );
@@ -4148,13 +3754,13 @@ app.get("/api/ads/fields", async (req, res) => {
 
     const puppeteer = getPuppeteer();
     const proxyChain = require("proxy-chain");
-    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { parseCookies, normalizeCookie, buildProxyServer, buildProxyUrl } = require("./cookieUtils");
     const { pickDeviceProfile } = require("./cookieValidator");
 
-    const cookies = normalizeCookies(parseCookies(account.cookie));
+    const cookies = parseCookies(account.cookie).map(normalizeCookie);
     const deviceProfile = toDeviceProfile(account.deviceProfile);
     const proxyServer = buildProxyServer(selectedProxy);
-    const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
+    const proxyUrl = buildProxyUrl(selectedProxy);
     const needsProxyChain = Boolean(
       proxyUrl && ((selectedProxy?.type || "").toLowerCase().startsWith("socks") || selectedProxy?.username || selectedProxy?.password)
     );

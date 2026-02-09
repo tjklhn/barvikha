@@ -146,32 +146,17 @@ const getOfferActionText = (message, actionType, fallback = "") => {
 };
 
 const extractAttachmentUrls = (message) => {
-  const buckets = [
-    message?.attachments,
-    message?.images,
-    message?.imageUrls,
-    message?.media,
-    message?.pictures
-  ].filter((value) => Array.isArray(value));
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const urls = [];
-  for (const bucket of buckets) {
-    for (const item of bucket) {
-      if (!item) continue;
-      if (typeof item === "string") {
-        urls.push(item);
-        continue;
-      }
-      if (typeof item === "object") {
-        // Kleinanzeigen message attachments often need the gateway URL (auth required),
-        // while the api.kleinanzeigen.de URL can return 401.
-        const candidate = item.gatewayUrl
-          || item.url
-          || item.href
-          || item.src
-          || item.imageUrl
-          || item.thumbnailUrl;
-        if (candidate) urls.push(candidate);
-      }
+  for (const item of attachments) {
+    if (!item) continue;
+    if (typeof item === "string") {
+      urls.push(item);
+      continue;
+    }
+    if (typeof item === "object") {
+      const candidate = item.url || item.href || item.src || item.imageUrl || item.thumbnailUrl;
+      if (candidate) urls.push(candidate);
     }
   }
   return urls.filter(Boolean);

@@ -5,7 +5,7 @@ const ProxyAgent = require("proxy-agent");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { buildProxyUrl, buildProxyServer, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const { buildProxyUrl, buildProxyServer } = require("./cookieUtils");
 
 puppeteer.use(StealthPlugin());
 
@@ -728,7 +728,7 @@ const fetchCategoriesFromPage = async ({ proxy } = {}) => {
   }
 
   const proxyServer = buildProxyServer(proxy);
-  const proxyUrl = buildPuppeteerProxyUrl(proxy);
+  const proxyUrl = buildProxyUrl(proxy);
   if (!proxyServer || !proxyUrl) {
     return [];
   }
