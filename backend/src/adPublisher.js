@@ -1122,25 +1122,84 @@ const acceptCookieModal = async (page, { timeout = 15000 } = {}) => {
         handles = [];
       }
       if (!handles.length) continue;
-      const handle = handles[0];
-      try {
-        await handle.click({ delay: 40 });
-        return true;
-      } catch (error) {
+
+      const isCandidateInConsentUi = async (handle) => {
+        if (!handle) return false;
+        return handle.evaluate((node) => {
+          const isVisible = (element) => {
+            if (!element) return false;
+            const style = window.getComputedStyle(element);
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+              return false;
+            }
+            const rect = element.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+          const getComposedParent = (element) => {
+            if (!element) return null;
+            if (element.parentElement) return element.parentElement;
+            const root = typeof element.getRootNode === "function" ? element.getRootNode() : null;
+            return root && root.host ? root.host : null;
+          };
+          const isInsideSelectors = (element, selectors) => {
+            let current = element;
+            while (current) {
+              for (const selector of selectors) {
+                if (!selector) continue;
+                try {
+                  if (typeof current.matches === "function" && current.matches(selector)) return true;
+                } catch (error) {
+                  // ignore selector errors
+                }
+              }
+              current = getComposedParent(current);
+            }
+            return false;
+          };
+          const consentSelectors = [
+            "#consentBanner",
+            "#consentManagementPage",
+            "#gdpr-banner",
+            "[data-testid='gdpr-banner-container']",
+            ".cmpbox",
+            "[class*='consent']",
+            "[id*='consent']",
+            "[class*='gdpr']",
+            "[id*='gdpr']"
+          ];
+          if (!isVisible(node)) return false;
+          if (isInsideSelectors(node, consentSelectors)) return true;
+          const pageText = String(document.body?.innerText || "");
+          return /Willkommen bei Kleinanzeigen/i.test(pageText);
+        }).catch(() => false);
+      };
+
+      for (const handle of handles) {
         try {
-          const box = await handle.boundingBox();
-          if (box) {
-            await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
+          if (!(await isCandidateInConsentUi(handle))) continue;
+          try {
+            await handle.click({ delay: 40 });
             return true;
+          } catch (error) {
+            try {
+              const box = await handle.boundingBox();
+              if (box) {
+                await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { delay: 40 });
+                return true;
+              }
+            } catch (innerError) {
+              // ignore
+            }
+            try {
+              await handle.evaluate((node) => node.click());
+              return true;
+            } catch (innerError) {
+              // ignore
+            }
           }
-        } catch (innerError) {
-          // ignore
-        }
-        try {
-          await handle.evaluate((node) => node.click());
-          return true;
-        } catch (innerError) {
-          // ignore
+        } finally {
+          await handle.dispose().catch(() => {});
         }
       }
     }
