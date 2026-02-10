@@ -1973,20 +1973,54 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
     for (const context of contexts) {
       const ready = await evaluateInContext(context, (expected) => {
         const normalizeExpected = Math.max(1, Number(expected) || 1);
+        const collectRoots = (startRoot) => {
+          const roots = [startRoot];
+          const queue = [startRoot];
+          const seen = new Set([startRoot]);
+          while (queue.length) {
+            const root = queue.shift();
+            let nodes = [];
+            try {
+              nodes = Array.from(root.querySelectorAll("*"));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              const shadowRoot = node?.shadowRoot;
+              if (!shadowRoot || seen.has(shadowRoot)) continue;
+              seen.add(shadowRoot);
+              roots.push(shadowRoot);
+              queue.push(shadowRoot);
+            }
+          }
+          return roots;
+        };
+
+        const roots = collectRoots(document);
         const inputSelectors = [
+          ".ReplyBox input[data-testid='reply-box-file-input']",
+          "[class*='ReplyBox'] input[data-testid='reply-box-file-input']",
           "input[data-testid='reply-box-file-input']",
-          "input[type='file'][accept*='image']",
-          "input[type='file']"
+          ".ReplyBox input[type='file'][accept*='image']",
+          "[class*='ReplyBox'] input[type='file'][accept*='image']",
+          ".ReplyBox input[type='file']",
+          "[class*='ReplyBox'] input[type='file']",
+          "[data-testid*='reply'] input[type='file'][accept*='image']",
+          "input[type='file'][accept*='image']"
         ];
         const previewSelectors = [
-          "[data-testid*='attachment'] img",
-          "[class*='Attachment'] img",
-          "[class*='attachment'] img",
-          "[class*='Reply'] img[src^='blob:']",
-          "[class*='Reply'] img[src*='img.kleinanzeigen.de']",
-          "[class*='Reply'] img",
-          "[class*='reply'] img",
-          ".ReplyBox img"
+          ".ReplyBox .Reply--Attachment--List li",
+          "[class*='ReplyBox'] .Reply--Attachment--List li",
+          ".ReplyBox [class*='Reply--Attachment']",
+          "[class*='ReplyBox'] [class*='Reply--Attachment']",
+          ".ReplyBox [data-testid*='attachment']",
+          "[class*='ReplyBox'] [data-testid*='attachment']",
+          ".ReplyBox img[src^='blob:']",
+          "[class*='ReplyBox'] img[src^='blob:']",
+          ".ReplyBox img[src^='data:']",
+          "[class*='ReplyBox'] img[src^='data:']",
+          ".ReplyBox img",
+          "[class*='ReplyBox'] img"
         ];
         const sendSelectors = [
           ".ReplyBox button[data-testid='submit-button']",
@@ -1997,35 +2031,43 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
           "button[data-testid='submit-button']"
         ];
 
-        const fileCount = inputSelectors.reduce((max, selector) => {
-          let current = max;
-          try {
-            const inputs = Array.from(document.querySelectorAll(selector));
+        const composerFileCount = inputSelectors.reduce((max, selector) => {
+          let currentMax = max;
+          for (const root of roots) {
+            let inputs = [];
+            try {
+              inputs = Array.from(root.querySelectorAll(selector));
+            } catch (error) {
+              inputs = [];
+            }
             for (const input of inputs) {
               const count = Number(input?.files?.length || 0);
-              if (count > current) current = count;
+              if (count > currentMax) currentMax = count;
             }
-          } catch (error) {
-            // ignore invalid selectors
           }
-          return current;
+          return currentMax;
         }, 0);
 
-        const previewCount = previewSelectors.reduce((max, selector) => {
-          try {
-            return Math.max(max, document.querySelectorAll(selector).length);
-          } catch (error) {
-            return max;
+        const composerPreviewCount = previewSelectors.reduce((max, selector) => {
+          let currentMax = max;
+          for (const root of roots) {
+            try {
+              currentMax = Math.max(currentMax, root.querySelectorAll(selector).length);
+            } catch (error) {
+              // ignore per-root selector failures
+            }
           }
+          return currentMax;
         }, 0);
 
         const sendReady = sendSelectors.some((selector) => {
-          let buttons = [];
-          try {
-            buttons = Array.from(document.querySelectorAll(selector));
-          } catch (error) {
-            buttons = [];
-          }
+          const buttons = roots.flatMap((root) => {
+            try {
+              return Array.from(root.querySelectorAll(selector));
+            } catch (error) {
+              return [];
+            }
+          });
           return buttons.some((button) => {
             if (!button) return false;
             const style = window.getComputedStyle(button);
@@ -2042,7 +2084,7 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
           });
         });
 
-        const hasAttachment = fileCount >= normalizeExpected || previewCount > 0;
+        const hasAttachment = composerFileCount >= normalizeExpected || composerPreviewCount >= normalizeExpected;
         return Boolean(hasAttachment && sendReady);
       }, expectedCount);
 
@@ -2051,6 +2093,185 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
     await sleep(220);
   }
   return false;
+};
+
+const clickOfferDeclineButtonInPaymentBox = async (
+  page,
+  paymentActionSelectors,
+  { timeout = 3500, mainFrameOnly = false } = {}
+) => {
+  if (!page) return { clicked: false, reason: "NO_PAGE", pickedText: "", candidates: [] };
+  const selectors = Array.isArray(paymentActionSelectors) ? paymentActionSelectors : [];
+  if (!selectors.length) return { clicked: false, reason: "NO_SELECTORS", pickedText: "", candidates: [] };
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const contexts = getPageContexts(page, { mainFrameOnly });
+    for (const context of contexts) {
+      const result = await evaluateInContext(context, (containerSelectors) => {
+        const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        const isVisible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          if (!style) return false;
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+            return false;
+          }
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const isEnabled = (node) => {
+          if (!node) return false;
+          if (node.hasAttribute("disabled")) return false;
+          if (String(node.getAttribute("aria-disabled") || "").toLowerCase() === "true") return false;
+          if (String(node.getAttribute("aria-busy") || "").toLowerCase() === "true") return false;
+          return true;
+        };
+        const getComposedParent = (node) => {
+          if (!node) return null;
+          if (node.parentElement) return node.parentElement;
+          const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+          return root && root.host ? root.host : null;
+        };
+        const isInsideNode = (node, container) => {
+          let current = node;
+          while (current) {
+            if (current === container) return true;
+            current = getComposedParent(current);
+          }
+          return false;
+        };
+        const collectRoots = (startRoot) => {
+          const roots = [startRoot];
+          const queue = [startRoot];
+          const seen = new Set([startRoot]);
+          while (queue.length) {
+            const root = queue.shift();
+            let nodes = [];
+            try {
+              nodes = Array.from(root.querySelectorAll("*"));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              const shadowRoot = node?.shadowRoot;
+              if (!shadowRoot || seen.has(shadowRoot)) continue;
+              seen.add(shadowRoot);
+              roots.push(shadowRoot);
+              queue.push(shadowRoot);
+            }
+          }
+          return roots;
+        };
+
+        const roots = collectRoots(document);
+        const paymentBoxes = roots.flatMap((root) => {
+          return (Array.isArray(containerSelectors) ? containerSelectors : []).flatMap((selector) => {
+            try {
+              return Array.from(root.querySelectorAll(selector));
+            } catch (error) {
+              return [];
+            }
+          });
+        }).filter(isVisible);
+
+        if (!paymentBoxes.length) {
+          return { clicked: false, reason: "NO_PAYMENT_BOX", pickedText: "", candidates: [] };
+        }
+
+        const allCandidates = roots.flatMap((root) => {
+          try {
+            return Array.from(root.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit']"));
+          } catch (error) {
+            return [];
+          }
+        });
+
+        const scored = [];
+        const candidateTexts = [];
+        for (const candidate of allCandidates) {
+          if (!isVisible(candidate)) continue;
+          if (!isEnabled(candidate)) continue;
+          if (!paymentBoxes.some((box) => isInsideNode(candidate, box))) continue;
+
+          const text = normalize(
+            candidate.textContent
+            || candidate.getAttribute("aria-label")
+            || candidate.getAttribute("title")
+            || candidate.getAttribute("value")
+          );
+          if (!text) continue;
+          if (candidateTexts.length < 40) candidateTexts.push(text);
+
+          const hasDecline = text.includes("ablehn");
+          if (!hasDecline) continue;
+          const hasAccept = text.includes("akzept");
+          if (hasAccept) continue;
+          const hasCounter = text.includes("gegenangebot") || text.includes("gegen angebot");
+          if (hasCounter) continue;
+
+          let score = 0;
+          if (text.includes("anfrage ablehnen")) score += 60;
+          if (text.includes("angebot ablehnen")) score += 60;
+          if (text === "ablehnen") score += 45;
+          if (text.includes("ja") && text.includes("ablehn")) score += 35;
+          if (text.includes("ablehn")) score += 20;
+
+          const rect = candidate.getBoundingClientRect();
+          scored.push({
+            candidate,
+            text,
+            score,
+            area: rect.width * rect.height
+          });
+        }
+
+        if (!scored.length) {
+          return { clicked: false, reason: "NO_DECLINE_CANDIDATE", pickedText: "", candidates: candidateTexts };
+        }
+
+        scored.sort((a, b) => {
+          if (a.score !== b.score) return b.score - a.score;
+          if (a.area !== b.area) return b.area - a.area;
+          return 0;
+        });
+
+        const target = scored[0].candidate;
+        const pickedText = scored[0].text;
+        try {
+          if (typeof target.scrollIntoView === "function") {
+            target.scrollIntoView({ block: "center", inline: "center" });
+          }
+          if (typeof target.focus === "function") {
+            target.focus({ preventScroll: true });
+          }
+          const rect = target.getBoundingClientRect();
+          const clientX = Math.max(1, Math.min(window.innerWidth - 2, rect.left + rect.width / 2));
+          const clientY = Math.max(1, Math.min(window.innerHeight - 2, rect.top + rect.height / 2));
+          const dispatch = (type) => target.dispatchEvent(new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX,
+            clientY
+          }));
+          dispatch("pointerdown");
+          dispatch("mousedown");
+          dispatch("pointerup");
+          dispatch("mouseup");
+          target.click();
+          return { clicked: true, reason: "CLICKED", pickedText, candidates: candidateTexts };
+        } catch (error) {
+          return { clicked: false, reason: "CLICK_FAILED", pickedText, candidates: candidateTexts };
+        }
+      }, selectors);
+      if (result?.clicked) return result;
+    }
+    await sleep(220);
+  }
+
+  return { clicked: false, reason: "TIMEOUT", pickedText: "", candidates: [] };
 };
 
 const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
@@ -5922,7 +6143,19 @@ const declineConversationOffer = async ({
     const paymentActionSelectors = [
       "section.PaymentMessageBox",
       ".PaymentMessageBox",
+      "[class*='PaymentMessageBox']",
+      "[data-testid*='payment-message']",
+      "[data-testid*='paymentMessage']",
       "[data-testid='payment-message-header-extended']"
+    ];
+    const dialogSelectors = [
+      "[role='dialog']",
+      "[aria-modal='true']",
+      ".Modal",
+      "[class*='Modal']",
+      "[class*='Dialog']",
+      "[class*='modal']",
+      "[class*='dialog']"
     ];
     const declineLabels = [
       "Anfrage ablehnen",
@@ -6151,51 +6384,56 @@ const declineConversationOffer = async ({
     if (!firstDeclineClickStartedAt) {
       firstDeclineClickStartedAt = Date.now();
     }
-    const clicked = await clickVisibleButtonByText(page, declineLabels, {
-      timeout: 4200,
-      preferDialog: true,
-      preferTopLayer: true,
-      mainFrameOnly: false
-    });
-    let declineClicksPerformed = Boolean(clicked);
-    if (!clicked) {
-      const fallbackClicked = await clickVisibleButtonByText(page, declineLabels, {
-        timeout: 2200,
-        requireInSelectors: paymentActionSelectors,
+
+    const attemptDeclinePick = async (location, containerSelectors, timeoutMs) => {
+      const pick = await clickOfferDeclineButtonInPaymentBox(page, containerSelectors, {
+        timeout: timeoutMs,
         mainFrameOnly: false
       });
-      if (!fallbackClicked) {
-        const clickedAfterContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-          timeout: 1200,
-          preferDialog: true,
-          preferTopLayer: true,
-          mainFrameOnly: false
-        });
-        if (clickedAfterContinue) {
-          await humanPause(100, 170);
-        }
-        const finalTry = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: 1800,
-          preferDialog: true,
-          preferTopLayer: true,
-          mainFrameOnly: false
-        });
-        if (!finalTry) {
-          const maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
-          if (isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined)) {
-            return maybeAlreadyDeclined;
-          }
-          const notFoundError = new Error("DECLINE_BUTTON_NOT_FOUND");
-          notFoundError.details = "decline-not-found-after-initial-clicks";
-          await captureDeclineArtifact("decline-button-not-found", page, {
-            stage: "after-initial-clicks"
-          }, notFoundError);
-          throw notFoundError;
-        }
-        declineClicksPerformed = true;
-      } else {
-        declineClicksPerformed = true;
+      await captureDeclineArtifact("decline-button-pick", page, {
+        location,
+        ...pick
+      });
+      return pick;
+    };
+
+    let declinePick = await attemptDeclinePick("payment-box", paymentActionSelectors, 4200);
+    if (!declinePick.clicked) {
+      // Some layouts show offer actions in a modal overlay instead of inline buttons.
+      declinePick = await attemptDeclinePick("dialog", dialogSelectors, 2500);
+    }
+
+    if (!declinePick.clicked) {
+      // There can be onboarding/payment dialogs before the actual decline action appears.
+      const clickedAfterContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
+        timeout: 1200,
+        preferDialog: true,
+        preferTopLayer: true,
+        mainFrameOnly: false
+      });
+      if (clickedAfterContinue) {
+        await humanPause(100, 170);
+        await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
       }
+      declinePick = await attemptDeclinePick("payment-box-retry", paymentActionSelectors, 2200);
+      if (!declinePick.clicked) {
+        declinePick = await attemptDeclinePick("dialog-retry", dialogSelectors, 2200);
+      }
+    }
+
+    let declineClicksPerformed = Boolean(declinePick.clicked);
+    if (!declineClicksPerformed) {
+      const maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
+      if (isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined)) {
+        return maybeAlreadyDeclined;
+      }
+      const notFoundError = new Error("DECLINE_BUTTON_NOT_FOUND");
+      notFoundError.details = "decline-not-found-after-initial-pick";
+      await captureDeclineArtifact("decline-button-not-found", page, {
+        stage: "after-initial-pick",
+        lastPick: declinePick
+      }, notFoundError);
+      throw notFoundError;
     }
     await humanPause(100, 170);
     await performHumanLikePageActivity(page, { intensity: "light" });
@@ -6240,26 +6478,31 @@ const declineConversationOffer = async ({
         acted = true;
       }
 
-      const clickedDecline = await clickVisibleButtonByText(page, declineLabels, {
+      const modalDeclinePick = await clickOfferDeclineButtonInPaymentBox(page, dialogSelectors, {
         timeout: state.hasModalDecline ? 1700 : 750,
-        preferDialog: true,
-        preferTopLayer: true,
         mainFrameOnly: false
       });
-      if (clickedDecline) {
+      if (modalDeclinePick?.clicked) {
         acted = true;
         declineClicksPerformed = true;
+        await captureDeclineArtifact("decline-button-pick", page, {
+          location: `loop-${attempt + 1}-dialog`,
+          ...modalDeclinePick
+        });
       }
 
       if (state.hasInline) {
-        const clickedInline = await clickVisibleButtonByText(page, declineLabels, {
+        const inlineDeclinePick = await clickOfferDeclineButtonInPaymentBox(page, paymentActionSelectors, {
           timeout: 900,
-          requireInSelectors: paymentActionSelectors,
           mainFrameOnly: false
         });
-        if (clickedInline) {
+        if (inlineDeclinePick?.clicked) {
           acted = true;
           declineClicksPerformed = true;
+          await captureDeclineArtifact("decline-button-pick", page, {
+            location: `loop-${attempt + 1}-payment-box`,
+            ...inlineDeclinePick
+          });
         }
       }
 
@@ -6301,15 +6544,30 @@ const declineConversationOffer = async ({
           mainFrameOnly: false
         });
         if (clickedContinue) acted = true;
-        const clickedDecline = await clickVisibleButtonByText(page, declineLabels, {
+        const retryDialogPick = await clickOfferDeclineButtonInPaymentBox(page, dialogSelectors, {
           timeout: 1000,
-          preferDialog: true,
-          preferTopLayer: true,
           mainFrameOnly: false
         });
-        if (clickedDecline) {
+        if (retryDialogPick?.clicked) {
           acted = true;
           declineClicksPerformed = true;
+          await captureDeclineArtifact("decline-button-pick", page, {
+            location: `retry-${retry + 1}-dialog`,
+            ...retryDialogPick
+          });
+        } else {
+          const retryInlinePick = await clickOfferDeclineButtonInPaymentBox(page, paymentActionSelectors, {
+            timeout: 1000,
+            mainFrameOnly: false
+          });
+          if (retryInlinePick?.clicked) {
+            acted = true;
+            declineClicksPerformed = true;
+            await captureDeclineArtifact("decline-button-pick", page, {
+              location: `retry-${retry + 1}-payment-box`,
+              ...retryInlinePick
+            });
+          }
         }
         if (!acted) break;
         await humanPause(90, 150);
@@ -6594,6 +6852,9 @@ const sendConversationMedia = async ({
   let observedSendRequestUrl = "";
   let composerSettledAfterSend = false;
   let sendInteractionTriggered = false;
+  let attachmentsReadyBeforeSend = fileList.length === 0;
+  let uploadMethod = "";
+  let fileInputInfo = null;
 
   const guessExtension = (file) => {
     const name = String(file?.originalname || "").trim().toLowerCase();
@@ -6989,6 +7250,73 @@ const sendConversationMedia = async ({
         ];
         let uploaded = false;
         let fileInputHandle = null;
+        const describeFileInput = async (handle) => {
+          if (!handle) return null;
+          return handle.evaluate((node) => {
+            const toText = (value, max = 180) => {
+              const raw = String(value || "");
+              if (raw.length <= max) return raw;
+              return raw.slice(0, max) + "…";
+            };
+            const getComposedParent = (current) => {
+              if (!current) return null;
+              if (current.parentElement) return current.parentElement;
+              const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+              return root && root.host ? root.host : null;
+            };
+            const matchesAny = (current, selectors) => {
+              for (const selector of selectors) {
+                if (!selector) continue;
+                try {
+                  if (typeof current.matches === "function" && current.matches(selector)) return true;
+                } catch (error) {
+                  // ignore selector errors
+                }
+              }
+              return false;
+            };
+            const isInsideReplyBox = (() => {
+              const selectors = [".ReplyBox", "[class*='ReplyBox']", "[class*='Reply']", "[data-testid*='reply']"];
+              let current = node;
+              while (current) {
+                if (matchesAny(current, selectors)) return true;
+                current = getComposedParent(current);
+              }
+              return false;
+            })();
+
+            const tag = String(node?.tagName || "").toUpperCase();
+            const type = String(node?.getAttribute?.("type") || "").toLowerCase();
+            return {
+              tag,
+              type,
+              id: toText(node?.id || ""),
+              name: toText(node?.getAttribute?.("name") || ""),
+              accept: toText(node?.getAttribute?.("accept") || ""),
+              multiple: Boolean(node?.multiple),
+              disabled: Boolean(node?.disabled),
+              dataTestId: toText(node?.getAttribute?.("data-testid") || ""),
+              dataQa: toText(node?.getAttribute?.("data-qa") || ""),
+              className: toText(node?.className || ""),
+              insideReplyBox: isInsideReplyBox,
+              outerHtml: toText(node?.outerHTML || "", 420)
+            };
+          }).catch(() => null);
+        };
+
+        const isLikelyReplyFileInput = async (handle) => {
+          const info = await describeFileInput(handle);
+          if (!info) return false;
+          if (info.tag !== "INPUT") return false;
+          if (info.type !== "file") return false;
+          if (info.disabled) return false;
+          const accept = String(info.accept || "").toLowerCase();
+          const testId = String(info.dataTestId || "").toLowerCase();
+          const qa = String(info.dataQa || "").toLowerCase();
+          const acceptOk = !accept || accept.includes("image");
+          const idOk = testId.includes("reply") || qa.includes("reply");
+          return Boolean(info.insideReplyBox && (acceptOk || idOk));
+        };
         const getDirectReplyFileInput = async () => {
           const handle = await page.evaluateHandle((selectors) => {
             const list = Array.isArray(selectors) ? selectors : [];
@@ -7088,6 +7416,56 @@ const sendConversationMedia = async ({
             }
           }
           if (!cameraButton?.handle) return false;
+          const uploadButtonInfo = await cameraButton.handle.evaluate((node) => {
+            const toText = (value, max = 180) => {
+              const raw = String(value || "");
+              if (raw.length <= max) return raw;
+              return raw.slice(0, max) + "…";
+            };
+            const getComposedParent = (current) => {
+              if (!current) return null;
+              if (current.parentElement) return current.parentElement;
+              const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+              return root && root.host ? root.host : null;
+            };
+            const matchesAny = (current, selectors) => {
+              for (const selector of selectors) {
+                if (!selector) continue;
+                try {
+                  if (typeof current.matches === "function" && current.matches(selector)) return true;
+                } catch (error) {
+                  // ignore selector errors
+                }
+              }
+              return false;
+            };
+            const isInsideReplyBox = (() => {
+              const selectors = [".ReplyBox", "[class*='ReplyBox']", "[class*='Reply']", "[data-testid*='reply']"];
+              let current = node;
+              while (current) {
+                if (matchesAny(current, selectors)) return true;
+                current = getComposedParent(current);
+              }
+              return false;
+            })();
+            const tag = String(node?.tagName || "").toUpperCase();
+            return {
+              tag,
+              ariaLabel: toText(node?.getAttribute?.("aria-label") || ""),
+              dataTestId: toText(node?.getAttribute?.("data-testid") || ""),
+              className: toText(node?.className || ""),
+              text: toText(node?.textContent || ""),
+              insideReplyBox: isInsideReplyBox,
+              outerHtml: toText(node?.outerHTML || "", 420)
+            };
+          }).catch(() => null);
+          await captureMediaArtifact("upload-button-picked", page, {
+            uploadButtonInfo
+          });
+          if (uploadButtonInfo && uploadButtonInfo.insideReplyBox === false) {
+            // Avoid clicking camera icons from message history attachments.
+            return false;
+          }
           const chooserPromise = page.waitForFileChooser({ timeout: 4200 }).catch(() => null);
           const clickedCamera = await clickHandleHumanLike(page, cameraButton.handle);
           if (!clickedCamera) {
@@ -7096,8 +7474,18 @@ const sendConversationMedia = async ({
           const chooser = await chooserPromise;
           if (!chooser) return false;
           await chooser.accept(tempPaths);
+          uploadMethod = "file-chooser";
+          await captureMediaArtifact("file-chooser-accepted", page, {
+            uploadMethod,
+            uploadButtonInfo,
+            filesPreparedCount: tempPaths.length
+          });
           return true;
         };
+
+        // Prefer the same path as a real user: click the upload button and accept the file chooser.
+        // Some versions of the messagebox UI rely on composed events that can be flaky with direct uploadFile().
+        uploaded = await tryCameraChooserUpload();
 
         for (let attempt = 0; attempt < 3 && !uploaded && hasTimeLeft(11000); attempt += 1) {
           if (isConsentInterruptionUrl(getSafePageUrl(page))) {
@@ -7122,11 +7510,11 @@ const sendConversationMedia = async ({
           if (!fileInputHandle) {
             fileInputHandle = await getDirectReplyFileInput();
           }
-          if (fileInputHandle) break;
-          if (attempt === 0 || randomChance(0.35)) {
-            uploaded = await tryCameraChooserUpload();
-            if (uploaded) break;
+          if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+            await fileInputHandle.dispose().catch(() => {});
+            fileInputHandle = null;
           }
+          if (fileInputHandle) break;
           await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
           await humanPause(100, 180);
         }
@@ -7145,6 +7533,10 @@ const sendConversationMedia = async ({
         }
         if (!uploaded && !fileInputHandle) {
           fileInputHandle = await getDirectReplyFileInput();
+        }
+        if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+          await fileInputHandle.dispose().catch(() => {});
+          fileInputHandle = null;
         }
 
         if (!uploaded && !fileInputHandle && hasTimeLeft(14000)) {
@@ -7206,6 +7598,10 @@ const sendConversationMedia = async ({
             if (!fileInputHandle) {
               fileInputHandle = await getDirectReplyFileInput();
             }
+            if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+              await fileInputHandle.dispose().catch(() => {});
+              fileInputHandle = null;
+            }
             if (fileInputHandle) break;
             await humanPause(110, 190);
           }
@@ -7234,25 +7630,112 @@ const sendConversationMedia = async ({
             node.style.opacity = "1";
           }).catch(() => {});
 
+          fileInputInfo = await describeFileInput(fileInputHandle);
+          uploadMethod = uploadMethod || "input";
+          await captureMediaArtifact("file-input-picked", page, {
+            uploadMethod,
+            fileInputInfo
+          });
+
           await fileInputHandle.uploadFile(...tempPaths);
+          const selectedInputFileCount = await fileInputHandle.evaluate((node) => Number(node?.files?.length || 0)).catch(() => 0);
           await fileInputHandle.evaluate((node) => {
-            node.dispatchEvent(new Event("input", { bubbles: true }));
-            node.dispatchEvent(new Event("change", { bubbles: true }));
+            node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
           }).catch(() => {});
+          await captureMediaArtifact("upload-input-dispatched", page, {
+            uploadMethod,
+            selectedInputFileCount,
+            fileInputInfo
+          });
         }
 
         await humanPause(140, 220);
-        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 3500).catch(() => false);
+        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 4500).catch(() => false);
         let sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 3000).catch(() => false);
         if (!attachmentsReady && !sendReadyAfterAttachment) {
           await humanPause(140, 240);
-          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 2500).catch(() => false);
+          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 3500).catch(() => false);
           sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 2500).catch(() => false);
         }
-        if (!attachmentsReady && !sendReadyAfterAttachment) {
-          // Kleinanzeigen can keep image previews in loading state for a while.
-          // Do not fail hard here; proceed to send click path with retries below.
-          await humanPause(100, 170);
+        if (!attachmentsReady && !uploadMethod) {
+          uploadMethod = "unknown";
+        }
+        if (!attachmentsReady && uploadMethod === "file-chooser") {
+          // If the chooser was opened from the wrong button/input (or the UI ignored it),
+          // try the direct input upload path before we retry the chooser.
+          if (!fileInputHandle) {
+            const fallbackInput = await findFirstHandleInAnyContext(page, fileInputSelectors, {
+              timeout: 2800,
+              requireVisible: false,
+              mainFrameOnly: false
+            });
+            fileInputHandle = fallbackInput?.handle || null;
+          }
+          if (!fileInputHandle) {
+            fileInputHandle = await getDirectReplyFileInput();
+          }
+          if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+            await fileInputHandle.dispose().catch(() => {});
+            fileInputHandle = null;
+          }
+          if (fileInputHandle) {
+            fileInputInfo = await describeFileInput(fileInputHandle);
+            await captureMediaArtifact("upload-fallback-input-before", page, {
+              uploadMethod,
+              fileInputInfo,
+              filesPreparedCount: tempPaths.length
+            });
+            await fileInputHandle.uploadFile(...tempPaths);
+            const selectedInputFileCount = await fileInputHandle.evaluate((node) => Number(node?.files?.length || 0)).catch(() => 0);
+            await fileInputHandle.evaluate((node) => {
+              node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+              node.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+            }).catch(() => {});
+            uploadMethod = "input-fallback";
+            await captureMediaArtifact("upload-fallback-input-dispatched", page, {
+              uploadMethod,
+              selectedInputFileCount,
+              fileInputInfo,
+              filesPreparedCount: tempPaths.length
+            });
+            await humanPause(140, 240);
+            attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 4500).catch(() => false);
+          }
+        }
+        if (!attachmentsReady) {
+          // Last attempt: use file chooser path even if we already used the file input.
+          const chooserUploaded = await tryCameraChooserUpload();
+          if (chooserUploaded) {
+            await humanPause(140, 240);
+            attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 4500).catch(() => false);
+          }
+        }
+
+        attachmentsReadyBeforeSend = Boolean(attachmentsReady);
+        await captureMediaArtifact("upload-checked", page, {
+          uploadMethod,
+          attachmentsReadyBeforeSend,
+          sendReadyAfterAttachment,
+          fileInputInfo,
+          filesPreparedCount: tempPaths.length
+        });
+        if (!attachmentsReadyBeforeSend) {
+          const diagnostics = await collectComposerDiagnostics();
+          const uiState = await readMessagingConversationUiState(page, resolvedConversationId);
+          const bootstrapState = await readMessageboxBootstrapState(page);
+          const error = new Error("MESSAGE_ATTACHMENTS_NOT_READY");
+          error.code = "MESSAGE_ATTACHMENTS_NOT_READY";
+          error.details = `uploadMethod=${uploadMethod};diagnostics=${JSON.stringify(diagnostics).slice(0, 500)};uiState=${JSON.stringify(uiState || {}).slice(0, 500)};bootstrap=${JSON.stringify(bootstrapState || {}).slice(0, 500)}`;
+          await captureMediaArtifact("attachments-not-ready", page, {
+            uploadMethod,
+            diagnostics,
+            uiState,
+            bootstrapState,
+            fileInputInfo,
+            filesPreparedCount: tempPaths.length
+          }, error);
+          throw error;
         }
         await performHumanLikePageActivity(page, { intensity: "light" });
       }
@@ -7460,6 +7943,7 @@ const sendConversationMedia = async ({
         observedSendRequestAfterClick,
         observedSendRequestUrl,
         composerSettledAfterSend,
+        attachmentsReadyBeforeSend,
         filesPreparedCount: tempPaths.length,
         textLength: trimmedText.length
       });
@@ -7469,6 +7953,7 @@ const sendConversationMedia = async ({
         observedSendRequestAfterClick,
         observedSendRequestUrl,
         composerSettledAfterSend,
+        attachmentsReadyBeforeSend,
         filesPreparedCount: tempPaths.length,
         textLength: trimmedText.length
       }, error);
@@ -7524,8 +8009,7 @@ const sendConversationMedia = async ({
       || (beforeTextCount === 0 && hasOutgoingTextInSnapshot(afterSnapshot, trimmedText));
     let mediaConfirmed = !requireMediaConfirmation
       || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits
-      || observedSendRequestAfterClick
-      || composerSettledAfterSend;
+      || (attachmentsReadyBeforeSend && (observedSendRequestAfterClick || composerSettledAfterSend));
 
     if ((!textConfirmed || !mediaConfirmed) && (trimmedText || tempPaths.length)) {
       await sleep(350);
@@ -7570,6 +8054,8 @@ const sendConversationMedia = async ({
       observedSendRequestAfterClick,
       observedSendRequestUrl,
       composerSettledAfterSend,
+      attachmentsReadyBeforeSend,
+      uploadMethod,
       filesPreparedCount: tempPaths.length,
       textLength: trimmedText.length
     });
