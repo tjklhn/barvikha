@@ -83,7 +83,10 @@ export const apiFetch = async (path, options = {}) => {
 
   const method = String(fetchOptions.method || "GET").toUpperCase();
   const allowRetry = typeof retry === "boolean" ? retry : (method === "GET" || method === "HEAD");
-  const shouldFallbackBetweenBases = typeof allowBaseFallback === "boolean" ? allowBaseFallback : allowRetry;
+  const isSafeMethodForBaseFallback = method === "GET" || method === "HEAD";
+  const shouldFallbackBetweenBases = typeof allowBaseFallback === "boolean"
+    ? allowBaseFallback
+    : isSafeMethodForBaseFallback;
   const timeoutValue = Number(timeoutMs);
   const shouldTimeout = Number.isFinite(timeoutValue) && timeoutValue > 0;
   const requestId = String(fetchOptions.requestId || makeRequestId());
