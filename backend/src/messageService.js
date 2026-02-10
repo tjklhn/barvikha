@@ -284,6 +284,146 @@ const pickParticipantFromApi = (conversation, userId) => {
   return conversation.sellerName || conversation.buyerName || "";
 };
 
+const extractConversationIdFromApiConversation = (conversation) => {
+  if (!conversation || typeof conversation !== "object") return "";
+  return String(
+    conversation.id
+    || conversation.conversationId
+    || conversation.conversationID
+    || conversation.uuid
+    || conversation.conversationUuid
+    || conversation.conversationUUID
+    || ""
+  ).trim();
+};
+
+const pickAdTitleFromApiConversation = (conversation) => {
+  if (!conversation || typeof conversation !== "object") return "";
+  const direct = String(conversation.adTitle || conversation.subject || conversation.title || "").trim();
+  if (direct) return direct;
+  const ad = conversation.ad || conversation.adInfo || conversation.item || conversation.advertisement || {};
+  if (!ad || typeof ad !== "object") return "";
+  return String(ad.title || ad.subject || ad.adTitle || ad.name || "").trim();
+};
+
+const pickLastMessageFromApiConversation = (conversation) => {
+  if (!conversation || typeof conversation !== "object") return "";
+  return String(
+    conversation.textShortTrimmed
+    || conversation.textShort
+    || conversation.lastMessage
+    || conversation.lastMessageText
+    || conversation.lastMessagePreview
+    || conversation.text
+    || ""
+  ).trim();
+};
+
+const pickTimeTextFromApiConversation = (conversation) => {
+  if (!conversation || typeof conversation !== "object") return "";
+  return String(
+    conversation.receivedDate
+    || conversation.receivedAt
+    || conversation.receivedDateTime
+    || conversation.updatedAt
+    || conversation.lastMessageAt
+    || conversation.lastUpdatedAt
+    || conversation.modifiedAt
+    || ""
+  ).trim();
+};
+
+const pickUnreadFromApiConversation = (conversation) => Boolean(
+  conversation?.unread
+  || conversation?.hasUnread
+  || conversation?.unreadMessages
+  || conversation?.unreadCount
+);
+
+const looksLikeApiConversationItem = (item) => {
+  if (!item || typeof item !== "object") return false;
+  return Boolean(
+    extractConversationIdFromApiConversation(item)
+    || item.adTitle
+    || item.subject
+    || item.title
+    || item.textShort
+    || item.textShortTrimmed
+    || item.lastMessage
+    || item.receivedDate
+    || item.updatedAt
+    || item.userIdBuyer
+    || item.userIdSeller
+  );
+};
+
+const extractConversationListFromApiResponse = (apiData) => {
+  const directCandidates = [
+    apiData?.conversations,
+    apiData?.content,
+    apiData?.items,
+    apiData?.elements,
+    apiData?.data,
+    apiData?.results,
+    apiData?.page?.content,
+    apiData?.page?.items,
+    apiData?.page?.elements,
+    apiData?._embedded?.conversations,
+    apiData?._embedded?.items,
+    apiData?._embedded?.content,
+    apiData?._embedded?.results,
+    apiData?._embedded?.conversationList,
+    apiData?._embedded?.conversationListItems,
+    apiData?._embedded?.threads
+  ];
+  for (const candidate of directCandidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+
+  // Heuristic fallback: find the first array that looks like a conversation list.
+  const visited = new Set();
+  const scan = (value, depth = 0) => {
+    if (!value || typeof value !== "object") return null;
+    if (visited.has(value)) return null;
+    visited.add(value);
+    if (depth > 3) return null;
+
+    for (const entry of Object.values(value)) {
+      if (Array.isArray(entry) && entry.some(looksLikeApiConversationItem)) {
+        return entry;
+      }
+    }
+
+    for (const entry of Object.values(value)) {
+      if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+        const found = scan(entry, depth + 1);
+        if (found) return found;
+      }
+    }
+
+    return null;
+  };
+
+  const found = scan(apiData);
+  return Array.isArray(found) ? found : [];
+};
+
+const extractConversationTotalFoundFromApiResponse = (apiData, fallbackLength = 0) => {
+  const raw = apiData?._meta?.numFound
+    ?? apiData?.total
+    ?? apiData?.totalElements
+    ?? apiData?.totalCount
+    ?? apiData?.count
+    ?? apiData?.page?.totalElements
+    ?? apiData?.page?.total
+    ?? apiData?.page?.totalCount
+    ?? apiData?.page?.count
+    ?? fallbackLength;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num < 0) return fallbackLength;
+  return num;
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 240) => sleep(Math.floor(min + Math.random() * (max - min)));
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
@@ -2983,24 +3123,20 @@ const waitForConversationUiReady = async ({
 };
 
 const parseConversationList = async (page) => {
+  // Wait for actual conversation list items, not just the messagebox container.
+  // Otherwise we can parse too early (before XHR/render), returning an empty list.
   await waitForDynamicContent(page, [
     "#conversation-list article",
     "[data-testid='conversation-list'] article",
-    "a[href*='conversationId']",
-    "a[href*='m-nachrichten']",
-    "a[href*='nachrichten']",
-    "a.AdImage img",
-    "#conversation-list img",
-    "[data-testid*='conversation']",
-    "[data-qa*='conversation']",
-    "[data-qa*='message-list']",
-    "[data-testid*='message-list-item']",
-    "[data-qa*='message-list-item']",
-    "[class*='Conversation']",
-    "[class*='conversation']",
-    "[class*='MessageList']",
-    "[class*='messagelist']"
-  ]);
+    "article.ConversationListItem",
+    "#conversation-list [role='listitem']",
+    "[data-testid='conversation-list'] [role='listitem']",
+    "#conversation-list li",
+    "[data-testid='conversation-list'] li",
+    "#conversation-list input[data-testid]",
+    "[data-testid='conversation-list'] input[data-testid]",
+    "a[href*='conversationId']"
+  ], 20000);
 
   return page.evaluate(() => {
     const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
@@ -4124,16 +4260,16 @@ const sendConversationMessage = async ({
             page: 0,
             size: 50
           });
-          const candidates = Array.isArray(apiList?.conversations) ? apiList.conversations : [];
+          const candidates = extractConversationListFromApiResponse(apiList);
           const matched = candidates.find((item) => {
             const participantName = pickParticipantFromApi(item, userId);
             return matchConversation(
-              { participant: participantName, adTitle: item.adTitle || "" },
+              { participant: participantName, adTitle: pickAdTitleFromApiConversation(item) },
               { participant, adTitle }
             );
           });
           if (matched) {
-            resolvedConversationId = matched.id;
+            resolvedConversationId = extractConversationIdFromApiConversation(matched) || matched.id;
           }
         }
 
@@ -4508,16 +4644,8 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
         size
       });
 
-      let apiConversations = Array.isArray(apiData?.conversations)
-        ? apiData.conversations
-        : Array.isArray(apiData?.items)
-          ? apiData.items
-          : Array.isArray(apiData?.data)
-            ? apiData.data
-            : Array.isArray(apiData?.results)
-              ? apiData.results
-              : [];
-      const totalFound = Number(apiData?._meta?.numFound || apiData?.total || apiData?.totalElements || apiConversations.length);
+      let apiConversations = extractConversationListFromApiResponse(apiData);
+      const totalFound = extractConversationTotalFoundFromApiResponse(apiData, apiConversations.length);
       if (!maxConversations && apiConversations.length < totalFound) {
         let page = 1;
         while (apiConversations.length < totalFound && page < 10) {
@@ -4530,15 +4658,7 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
             page,
             size
           });
-          const nextConversations = Array.isArray(nextPage?.conversations)
-            ? nextPage.conversations
-            : Array.isArray(nextPage?.items)
-              ? nextPage.items
-              : Array.isArray(nextPage?.data)
-                ? nextPage.data
-                : Array.isArray(nextPage?.results)
-                  ? nextPage.results
-                  : [];
+          const nextConversations = extractConversationListFromApiResponse(nextPage);
           if (!nextConversations.length) break;
           apiConversations = apiConversations.concat(nextConversations);
           page += 1;
@@ -4547,25 +4667,28 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       const uniqueApi = [];
       const seenApi = new Set();
       for (const conversation of apiConversations) {
-        const id = conversation?.id || conversation?.conversationId || "";
+        const id = extractConversationIdFromApiConversation(conversation);
         if (id && seenApi.has(id)) continue;
         if (id) seenApi.add(id);
         uniqueApi.push(conversation);
       }
 
       const limited = maxConversations ? uniqueApi.slice(0, maxConversations) : uniqueApi;
-      let mapped = limited.map((conversation) => ({
-        href: buildConversationUrl(conversation.id),
-        conversationId: conversation.id,
+      let mapped = limited.map((conversation) => {
+        const conversationId = extractConversationIdFromApiConversation(conversation);
+        return {
+        href: buildConversationUrl(conversationId),
+        conversationId,
         participant: pickParticipantFromApi(conversation, userId),
-        adTitle: conversation.adTitle || "",
+        adTitle: pickAdTitleFromApiConversation(conversation),
         adImage: pickAdImageFromApi(conversation),
-        lastMessage: conversation.textShortTrimmed || "",
-        timeText: conversation.receivedDate || "",
-        unread: Boolean(conversation.unread),
+        lastMessage: pickLastMessageFromApiConversation(conversation),
+        timeText: pickTimeTextFromApiConversation(conversation),
+        unread: pickUnreadFromApiConversation(conversation),
         accountId: account.id,
         accountLabel
-      }));
+        };
+      });
 
       mapped = mapped.map((item) => ({
         ...item,
@@ -4649,8 +4772,8 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
         }
       }
 
-      console.log(`[messageService] API conversations: ${mapped.length} for ${accountLabel}`);
-      if (!mapped.length) {
+      console.log(`[messageService] API conversations: ${mapped.length} (totalFound=${Number.isFinite(totalFound) ? totalFound : "n/a"}) for ${accountLabel}`);
+      if (!mapped.length && totalFound > 0) {
         throw new Error("MESSAGEBOX_API_EMPTY");
       }
       return { conversations: mapped };
@@ -4741,35 +4864,21 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       await dumpMessageListDebug(page, accountLabel);
     }
     const conversationLimit = maxConversations || dedupedConversations.length;
-
-    const parsed = [];
-    for (const conversation of dedupedConversations.slice(0, conversationLimit)) {
-      const href = conversation.href || "";
-      const conversationId = conversation.conversationId || extractConversationId(href);
-      if (!href) continue;
-
-      await page.goto(href, { waitUntil: "domcontentloaded" });
-      await humanPause(120, 240);
-      if (randomChance(0.5)) {
-        await performHumanLikePageActivity(page, { intensity: "light" });
-      }
-
-      const messages = await parseMessagesFromThread(page, conversation.participant);
-      const meta = await parseConversationMetaFromThread(page);
-      console.log(`[messageService] Thread ${conversationId}: ${messages.length} messages, adTitle="${meta.adTitle || conversation.adTitle}"`);
-      parsed.push({
-        ...conversation,
-        participant: conversation.participant || meta.participant || "",
-        adTitle: conversation.adTitle || meta.adTitle,
-        adImage: conversation.adImage || meta.adImage,
-        conversationId,
-        messages,
-        accountId: account.id,
-        accountLabel
+    const limited = dedupedConversations
+      .slice(0, conversationLimit)
+      .map((conversation) => {
+        const href = conversation.href || "";
+        const conversationId = conversation.conversationId || extractConversationId(href);
+        return {
+          ...conversation,
+          href,
+          conversationId,
+          accountId: account.id,
+          accountLabel
+        };
       });
-    }
 
-    return { conversations: parsed };
+    return { conversations: limited };
   } finally {
     await browser.close();
     if (anonymizedProxyUrl) {
@@ -4892,16 +5001,16 @@ const fetchThreadMessages = async ({
           page: 0,
           size: 50
         });
-        const candidates = Array.isArray(apiList?.conversations) ? apiList.conversations : [];
+        const candidates = extractConversationListFromApiResponse(apiList);
         const matched = candidates.find((item) => {
           const participantName = pickParticipantFromApi(item, userId);
           return matchConversation(
-            { participant: participantName, adTitle: item.adTitle || "" },
+            { participant: participantName, adTitle: pickAdTitleFromApiConversation(item) },
             { participant, adTitle }
           );
         });
         if (matched) {
-          resolvedConversationId = matched.id;
+          resolvedConversationId = extractConversationIdFromApiConversation(matched) || matched.id;
         }
       }
 

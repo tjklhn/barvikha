@@ -709,14 +709,24 @@ const getOwnerContext = (req) => ({
 const filterByOwner = (items, ownerContext = {}) => {
   const list = Array.isArray(items) ? items : [];
   if (ownerContext.isAdmin) return list;
-  if (!ownerContext.ownerId) return [];
-  return list.filter((item) => item?.ownerId && String(item.ownerId) === String(ownerContext.ownerId));
+  const ownerId = String(ownerContext.ownerId || "").trim();
+  // Backward compat: legacy data created before owner scoping might not have ownerId set.
+  // Treat ownerless entries as belonging to the current owner to avoid "empty UI" regressions.
+  if (!ownerId) return list;
+  return list.filter((item) => {
+    const itemOwner = String(item?.ownerId || "").trim();
+    if (!itemOwner) return true;
+    return itemOwner === ownerId;
+  });
 };
 
 const isOwnerMatch = (item, ownerContext = {}) => {
   if (ownerContext.isAdmin) return true;
-  if (!ownerContext.ownerId) return false;
-  return item?.ownerId && String(item.ownerId) === String(ownerContext.ownerId);
+  const ownerId = String(ownerContext.ownerId || "").trim();
+  if (!ownerId) return true;
+  const itemOwner = String(item?.ownerId || "").trim();
+  if (!itemOwner) return true;
+  return itemOwner === ownerId;
 };
 
 const normalizeEntityId = (value) => String(value ?? "").trim();
@@ -4859,9 +4869,11 @@ app.get("/api/stats", (req, res) => {
       failed: failedProxies
     },
     messages: {
-      total: 128,
-      today: 14,
-      unread: 6
+      // Real message stats are computed by the frontend via `/api/messages` in the background.
+      // Keep `/api/stats` fast and avoid showing misleading placeholder numbers.
+      total: 0,
+      today: 0,
+      unread: 0
     }
   });
 });
