@@ -888,17 +888,14 @@ const upload = multer({
   limits: { fileSize: 2 * 1024 * 1024 }
 });
 
-const messageUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024,
-    files: 10
-  }
-});
-
 const adUploadDir = path.join(__dirname, "..", "data", "ad-uploads");
 if (!fs.existsSync(adUploadDir)) {
   fs.mkdirSync(adUploadDir, { recursive: true });
+}
+
+const messageUploadBaseDir = path.join(os.tmpdir(), "kl-message-uploads");
+if (!fs.existsSync(messageUploadBaseDir)) {
+  fs.mkdirSync(messageUploadBaseDir, { recursive: true });
 }
 
 const imageMimeExtensions = {
@@ -910,6 +907,32 @@ const imageMimeExtensions = {
   "image/heic": ".heic",
   "image/heif": ".heif"
 };
+
+const messageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        if (!req.klMessageUploadDir) {
+          req.klMessageUploadDir = fs.mkdtempSync(path.join(messageUploadBaseDir, "req-"));
+        }
+        cb(null, req.klMessageUploadDir);
+      } catch (error) {
+        cb(error);
+      }
+    },
+    filename: (req, file, cb) => {
+      const originalExt = (path.extname(file.originalname || "") || "").toLowerCase();
+      const mimeExt = imageMimeExtensions[file.mimetype] || "";
+      const safeExt = originalExt || mimeExt || "";
+      const base = crypto.randomBytes(16).toString("hex");
+      cb(null, safeExt ? `${base}${safeExt}` : base);
+    }
+  }),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 10
+  }
+});
 
 const adUpload = multer({
   storage: multer.diskStorage({
@@ -940,6 +963,63 @@ const mapAdUploadErrorMessage = (error) => {
     return error.message || "Ошибка загрузки изображений";
   }
   return error.message || "Ошибка загрузки изображений";
+};
+
+const mapMessageUploadErrorMessage = (error) => {
+  if (!error) return "Не удалось загрузить файлы сообщения";
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return "Файл слишком большой. Максимум 10MB на изображение.";
+    }
+    if (error.code === "LIMIT_FILE_COUNT") {
+      return "Слишком много файлов. Максимум 10 изображений.";
+    }
+    if (error.code === "LIMIT_UNEXPECTED_FILE") {
+      return "Некорректный формат загрузки изображений.";
+    }
+    return error.message || "Ошибка загрузки изображений";
+  }
+  return error.message || "Ошибка загрузки изображений";
+};
+
+const cleanupMessageUploadDir = (req) => {
+  const dir = req?.klMessageUploadDir ? String(req.klMessageUploadDir) : "";
+  if (!dir) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    // ignore cleanup errors
+  }
+  req.klMessageUploadDir = "";
+};
+
+const messageUploadMiddleware = (req, res, next) => {
+  messageUpload.array("images", 10)(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+    const debugId = `msg-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const clientRequestId = String(req.get("x-client-request-id") || "");
+    const message = mapMessageUploadErrorMessage(error);
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "upload-error",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      ip: req.ip,
+      errorCode: error.code || "",
+      error: error.message || String(error)
+    });
+    cleanupMessageUploadDir(req);
+    res.status(error instanceof multer.MulterError ? 400 : 500).json({
+      success: false,
+      error: message,
+      code: error.code || "",
+      debugId,
+      requestId: clientRequestId
+    });
+  });
 };
 
 const adUploadMiddleware = (req, res, next) => {
@@ -2098,7 +2178,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   }
 });
 
-app.post("/api/messages/send-media", messageUpload.array("images", 10), async (req, res) => {
+app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) => {
   req.setTimeout(0);
   res.setTimeout(0);
   if (req.socket) {
@@ -2145,6 +2225,19 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       headersSent: res.headersSent
     });
   });
+  const cleanupUploadedFiles = () => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    for (const file of files) {
+      const filePath = file?.path ? String(file.path) : "";
+      if (!filePath) continue;
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch (error) {
+        // ignore per-file cleanup failures
+      }
+    }
+    cleanupMessageUploadDir(req);
+  };
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
@@ -2418,6 +2511,8 @@ app.post("/api/messages/send-media", messageUpload.array("images", 10), async (r
       debugId,
       requestId: clientRequestId
     });
+  } finally {
+    cleanupUploadedFiles();
   }
 });
 

@@ -2131,6 +2131,36 @@ const getSafePageUrl = (page) => {
   }
 };
 
+const isConsentOverlayVisible = async (page) => {
+  if (!page) return false;
+  return page.evaluate(() => {
+    const isVisible = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const consentBanner = document.getElementById("consentBanner");
+    const consentManagement = document.getElementById("consentManagementPage");
+    const gdprDialog = document.querySelector("#gdpr-banner[open]");
+    const gdprContainer = document.querySelector("[data-testid='gdpr-banner-container']");
+    const gdprAccept = document.querySelector("#gdpr-banner-accept, [data-testid='gdpr-banner-accept']");
+
+    return Boolean(
+      isVisible(consentBanner)
+      || isVisible(consentManagement)
+      || isVisible(gdprDialog)
+      || isVisible(gdprContainer)
+      || isVisible(gdprAccept)
+    );
+  }).catch(() => false);
+};
+
 const ensureCookieConsentBeforeMessagingAction = async ({
   page,
   conversationUrl = "",
@@ -2196,19 +2226,34 @@ const ensureCookieConsentBeforeMessagingAction = async ({
     }
 
     if (!isConsentInterruptionUrl(currentUrl)) {
+      const overlayVisible = await isConsentOverlayVisible(page);
+      if (!overlayVisible) {
+        if (acceptedAny && typeof captureArtifact === "function") {
+          await captureArtifact("consent-handled", page, {
+            stage,
+            url: currentUrl
+          });
+        }
+        return true;
+      }
+
+      // Consent overlay can appear without redirecting (e.g. gdpr-banner dialog).
+      // Keep trying until it disappears or we time out.
       try {
-        const accepted = await acceptCookieModal(page, { timeout: 1200 });
+        const accepted = await acceptCookieModal(page, { timeout: Math.min(2500, remaining) });
         if (accepted) acceptedAny = true;
       } catch (error) {
         // ignore consent click errors
       }
-      if (acceptedAny && typeof captureArtifact === "function") {
-        await captureArtifact("consent-handled", page, {
-          stage,
-          url: currentUrl
-        });
+      if (!(await isConsentOverlayVisible(page))) {
+        if (acceptedAny && typeof captureArtifact === "function") {
+          await captureArtifact("consent-handled", page, {
+            stage,
+            url: getSafePageUrl(page)
+          });
+        }
+        return true;
       }
-      return true;
     }
 
     await sleep(220);
@@ -5968,16 +6013,14 @@ const declineConversationOffer = async ({
 
     let confirmed = false;
     for (let attempt = 0; attempt < 5 && hasTimeLeft(5000); attempt += 1) {
-      if (isConsentInterruptionUrl(getSafePageUrl(page))) {
-        await ensureCookieConsentBeforeMessagingAction({
-          page,
-          conversationUrl: resolvedConversationUrl,
-          timeoutMs: 5000,
-          navigationTimeoutMs: 7000,
-          stage: `offer-decline-loop-${attempt + 1}`,
-          captureArtifact: captureDeclineArtifact
-        }).catch(() => {});
-      }
+      await ensureCookieConsentBeforeMessagingAction({
+        page,
+        conversationUrl: resolvedConversationUrl,
+        timeoutMs: 4000,
+        navigationTimeoutMs: 7000,
+        stage: `offer-decline-loop-${attempt + 1}`,
+        captureArtifact: captureDeclineArtifact
+      }).catch(() => {});
       const state = await declineFlowState();
       if (!state.visible) {
         confirmed = true;
@@ -6022,6 +6065,14 @@ const declineConversationOffer = async ({
         break;
       }
       await humanPause(100, 170);
+      await ensureCookieConsentBeforeMessagingAction({
+        page,
+        conversationUrl: resolvedConversationUrl,
+        timeoutMs: 1800,
+        navigationTimeoutMs: 5000,
+        stage: `offer-decline-loop-postclick-${attempt + 1}`,
+        captureArtifact: captureDeclineArtifact
+      }).catch(() => {});
       await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
     }
 
@@ -6032,6 +6083,14 @@ const declineConversationOffer = async ({
 
     if (!confirmed && declineClicksPerformed && hasTimeLeft(4000)) {
       for (let retry = 0; retry < 2 && hasTimeLeft(2500); retry += 1) {
+        await ensureCookieConsentBeforeMessagingAction({
+          page,
+          conversationUrl: resolvedConversationUrl,
+          timeoutMs: 1800,
+          navigationTimeoutMs: 5000,
+          stage: `offer-decline-retry-${retry + 1}`,
+          captureArtifact: captureDeclineArtifact
+        }).catch(() => {});
         let acted = false;
         const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
           timeout: 900,
@@ -6316,14 +6375,49 @@ const sendConversationMedia = async ({
   };
 
   try {
+    const moveIntoTmpDir = (sourcePath, targetPath) => {
+      try {
+        fs.renameSync(sourcePath, targetPath);
+        return true;
+      } catch (error) {
+        if (error?.code === "EXDEV") {
+          fs.copyFileSync(sourcePath, targetPath);
+          fs.rmSync(sourcePath, { force: true });
+          return true;
+        }
+        throw error;
+      }
+    };
+
     for (let index = 0; index < fileList.length; index += 1) {
       const file = fileList[index];
+      const diskPath = file?.path ? String(file.path) : "";
+      if (diskPath) {
+        let stat = null;
+        try {
+          stat = fs.statSync(diskPath);
+        } catch (error) {
+          stat = null;
+        }
+        if (stat && stat.isFile() && stat.size > 0) {
+          const base = sanitizeFilename(file?.originalname || path.basename(diskPath) || `image-${index + 1}`);
+          const ext = guessExtension(file);
+          const safeName = base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`;
+          const uniquePrefix = `${index + 1}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+          const targetPath = path.join(tmpDir, `${uniquePrefix}-${safeName}`);
+          moveIntoTmpDir(diskPath, targetPath);
+          tempPaths.push(targetPath);
+          continue;
+        }
+      }
+
       const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.from(file?.buffer || "");
       if (!buffer.length) continue;
       const base = sanitizeFilename(file?.originalname || `image-${index + 1}`);
       const ext = guessExtension(file);
       const safeName = base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`;
-      const targetPath = path.join(tmpDir, safeName);
+      const uniquePrefix = `${index + 1}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+      const targetPath = path.join(tmpDir, `${uniquePrefix}-${safeName}`);
       fs.writeFileSync(targetPath, buffer);
       tempPaths.push(targetPath);
     }
