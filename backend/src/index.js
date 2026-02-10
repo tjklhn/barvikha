@@ -1293,6 +1293,17 @@ app.get("/api/debug/message-actions/log", (req, res) => {
 
 const getMessageActionArtifactsRootDir = () => path.join(ensureDebugDir(), "message-action-artifacts");
 
+const parseMessageActionsLogLine = (line) => {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === "object") ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+};
+
 const resolveMessageActionDebugIdsFromLog = (requestId, { maxResults = 6 } = {}) => {
   const rid = String(requestId || "").trim();
   if (!rid) return [];
@@ -1303,17 +1314,17 @@ const resolveMessageActionDebugIdsFromLog = (requestId, { maxResults = 6 } = {})
   const seen = new Set();
   const results = [];
   const limit = Math.max(1, Math.min(25, Number(maxResults) || 6));
+  const debugIdPattern = /\"debugId\"\\s*:\\s*\"([^\"]+)\"/i;
 
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
     if (!line.includes(rid)) continue;
-    let parsed = null;
-    try {
-      parsed = JSON.parse(line);
-    } catch (error) {
-      parsed = null;
+    const parsed = parseMessageActionsLogLine(line);
+    let debugId = safeString(parsed?.debugId || "", 240);
+    if (!debugId) {
+      const match = String(line).match(debugIdPattern);
+      if (match) debugId = safeString(match[1], 240);
     }
-    const debugId = safeString(parsed?.debugId || "", 240);
     if (!debugId || seen.has(debugId)) continue;
     seen.add(debugId);
     results.push(debugId);
@@ -1322,6 +1333,44 @@ const resolveMessageActionDebugIdsFromLog = (requestId, { maxResults = 6 } = {})
 
   return results.reverse();
 };
+
+const listRecentMessageActionDebugIds = ({ limit = 20 } = {}) => {
+  const limitRaw = Number(limit || 20);
+  const normalizedLimit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.floor(limitRaw))) : 20;
+
+  const logPath = getMessageActionsLogPath();
+  const tail = readTailText(logPath, 3 * 1024 * 1024);
+  const lines = tail.split(/\\r?\\n/).filter(Boolean);
+
+  const seen = new Set();
+  const recent = [];
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const parsed = parseMessageActionsLogLine(lines[index]);
+    const debugId = safeString(parsed?.debugId || "", 240);
+    if (!debugId || seen.has(debugId)) continue;
+    seen.add(debugId);
+    recent.push({
+      ts: safeString(parsed?.ts || ""),
+      debugId,
+      route: safeString(parsed?.route || ""),
+      event: safeString(parsed?.event || ""),
+      clientRequestId: safeString(parsed?.clientRequestId || "", 240),
+      code: safeString(parsed?.code || "", 120)
+    });
+    if (recent.length >= normalizedLimit) break;
+  }
+  return recent.reverse();
+};
+
+app.get("/api/debug/message-actions/recent", (req, res) => {
+  const limitRaw = Number(req.query.limit || 30);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.floor(limitRaw))) : 30;
+  res.json({
+    success: true,
+    logPath: getMessageActionsLogPath(),
+    recent: listRecentMessageActionDebugIds({ limit })
+  });
+});
 
 const listMessageActionArtifactsForDebugId = (debugIdRaw, limit) => {
   const normalizedDebugId = String(debugIdRaw || "").trim();
@@ -1433,7 +1482,8 @@ app.get("/api/debug/message-actions/artifacts", (req, res) => {
       success: false,
       error: "Артефакты не найдены.",
       requestId: requestIdRaw || requestedId,
-      hint: "Используйте /api/debug/message-actions/log?requestId=... чтобы найти debugId."
+      hint: "Используйте /api/debug/message-actions/log?requestId=... чтобы найти debugId.",
+      recent: listRecentMessageActionDebugIds({ limit: 12 })
     });
     return;
   }
