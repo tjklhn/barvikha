@@ -5685,7 +5685,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
     ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
     : (account?.profileName || account?.username || "Аккаунт");
   const deviceProfile = toDeviceProfile(account.deviceProfile);
-  const cookies = parseCookies(account.cookie).map(normalizeCookie);
+  const cookies = normalizeCookies(parseCookies(account.cookie));
 
   if (!cookies.length) {
     return { success: false, error: "Cookie файл пустой" };
@@ -5696,7 +5696,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
 
   const attemptPublish = async ({ useProxy }) => {
     const proxyServer = useProxy ? buildProxyServer(proxy) : null;
-    const proxyUrl = useProxy ? buildProxyUrl(proxy) : null;
+    const proxyUrl = useProxy ? buildPuppeteerProxyUrl(proxy) : null;
     const needsProxyChain = Boolean(
       proxyUrl && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
     );
@@ -6596,37 +6596,12 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         }
       }
 
-      if (ad?.extraFields && typeof ad.extraFields === "object") {
-        for (const entry of Array.isArray(ad.extraFields) ? ad.extraFields : Object.entries(ad.extraFields).map(([key, value]) => ({
-          name: key,
-          value
-        }))) {
-          const fieldName = entry.name || "";
-          const fieldValue = entry.value;
-          const fieldLabel = entry.label || entry.name || "";
-          if (isBlankValue(fieldValue)) continue;
-          const selectors = [];
-          if (fieldName) {
-            selectors.push(...buildSelectFieldSelectors(fieldName));
-          }
-          let applied = false;
-          if (selectors.length) {
-            applied = await selectOption(formContext, selectors, fieldValue);
-          }
-          if (!applied && formContext !== page && selectors.length) {
-            applied = await selectOption(page, selectors, fieldValue);
-          }
-          if (!applied && fieldLabel) {
-            applied = await selectOptionByLabel(formContext, fieldLabel, fieldValue);
-          }
-          if (!applied && fieldLabel && formContext !== page) {
-            applied = await selectOptionByLabel(page, fieldLabel, fieldValue);
-          }
-          if (applied) {
-            await humanPause(80, 140);
-          }
-        }
-      }
+      const extraFieldsApplied = await applyExtraFieldsToSelects(page, formContext, ad?.extraFields);
+      appendPublishTrace({
+        step: "extra-fields-applied",
+        total: extraFieldsApplied.total,
+        appliedCount: extraFieldsApplied.appliedCount
+      });
 
       // Повторно пытаемся выбрать "Nein" после заполнения полей/селектов
       try {
@@ -6886,6 +6861,154 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         publishState = await waitForPublishState(page, defaultTimeout);
         appendPublishTrace({ step: "publish-state-after-gdpr", publishState });
       }
+
+      // Kleinanzeigen can keep the user on step2 for a short time after submit and then navigate to
+      // the final step (p-anzeige-abschicken) where additional required selects appear (e.g. Art).
+      // waitForPublishState() returns "form" immediately on both steps, so we explicitly wait for
+      // the step transition and fill required selects again on the abschicken page.
+      const tryHandleAbschickenStep = async (reason) => {
+        const url = page.url();
+        if (!/anzeige-abschicken/i.test(url)) return false;
+        appendPublishTrace({ step: "publish-abschicken-detected", reason, url });
+
+        await page.waitForSelector("body", { timeout: 15000 }).catch(() => {});
+
+        try {
+          const refreshed = await getAdFormContext(page);
+          if (refreshed) {
+            formContext = refreshed;
+          }
+        } catch (error) {
+          // ignore context refresh errors
+        }
+
+        const extraApplied = await applyExtraFieldsToSelects(page, formContext, ad?.extraFields);
+        const preferredApplied = await applyPreferredAttributeSelectsAcrossContexts(
+          page,
+          formContext,
+          preferredFieldValues
+        );
+
+        let desiredVersand = "nein";
+        try {
+          const entries = normalizeExtraFieldEntries(ad?.extraFields);
+          for (const entry of entries) {
+            const name = String(entry?.name || "").toLowerCase();
+            const label = String(entry?.label || "").toLowerCase();
+            const rawValue = entry?.value;
+            if (rawValue === undefined || rawValue === null) continue;
+            const value = String(rawValue).trim().toLowerCase();
+            if (!value) continue;
+            const mentionsVersand = name.includes("versand_s") || label.includes("versand");
+            if (!mentionsVersand) continue;
+            if (value === "ja" || value === "nein") {
+              desiredVersand = value;
+              break;
+            }
+            if (value === "shipping" || value.includes("versand möglich") || value.includes("versand moeglich")) {
+              desiredVersand = "ja";
+              break;
+            }
+            if (value === "pickup" || value.includes("abholung")) {
+              desiredVersand = "nein";
+              break;
+            }
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        const versandApplied = await ensureVersandSelectionAcrossContexts(page, formContext, desiredVersand);
+
+        // Try to sync the micro-frontend shipping radio group when it exists.
+        try {
+          const radioLabelSelector = desiredVersand === "ja"
+            ? 'label[for="radio-shipping"]'
+            : 'label[for="radio-pickup"]';
+          const labelHandle = await page.$(radioLabelSelector);
+          if (labelHandle) {
+            await scrollIntoView(labelHandle);
+            await safeClick(labelHandle);
+            await humanPause(120, 220);
+          }
+        } catch (error) {
+          // ignore shipping radio sync errors
+        }
+
+        try {
+          await forceDirectBuyNoAcrossContexts(page, formContext);
+          await ensureBuyNowSelectedFalse(page);
+        } catch (error) {
+          // ignore buy-now repairs
+        }
+
+        try {
+          await acceptTermsIfPresent(formContext || page);
+          if (formContext && formContext !== page) {
+            await acceptTermsIfPresent(page);
+          }
+        } catch (error) {
+          // ignore terms
+        }
+
+        await dumpPublishDebug(page, {
+          accountLabel,
+          step: "abschicken-pre-submit",
+          error: "",
+          extra: {
+            url: page.url(),
+            reason,
+            desiredVersand,
+            extraApplied,
+            preferredApplied,
+            versandApplied
+          }
+        });
+
+        const urlBeforeSubmit = page.url();
+        const clicked = await clickSubmitButton(page, [formContext, page], { allowFallback: false });
+        if (!clicked) {
+          await clickSubmitButton(page, [page], { allowFallback: true });
+        }
+        const submitTransition = await waitForPostSubmitTransition(page, {
+          initialUrl: urlBeforeSubmit,
+          timeoutMs: 60000
+        });
+        appendPublishTrace({ step: "post-submit-transition-after-abschicken-submit", submitTransition });
+        if (submitTransition?.outcome === "success") {
+          publishState = "success";
+          appendPublishTrace({ step: "publish-state-after-abschicken-submit", publishState });
+          return true;
+        }
+        if (submitTransition?.outcome === "preview") {
+          publishState = "preview";
+        } else {
+          publishState = await waitForPublishState(page, defaultTimeout);
+        }
+        appendPublishTrace({ step: "publish-state-after-abschicken-submit", publishState });
+        return true;
+      };
+
+      if (publishState === "form") {
+        const urlAfterSubmit = page.url();
+        const isStep2 = /anzeige-aufgeben/i.test(urlAfterSubmit) && !/anzeige-abschicken/i.test(urlAfterSubmit);
+        if (isStep2) {
+          const transition = await waitForPostSubmitTransition(page, {
+            initialUrl,
+            timeoutMs: 90000
+          });
+          appendPublishTrace({ step: "post-submit-transition", transition });
+          if (transition?.outcome === "success") {
+            publishState = "success";
+          } else if (transition?.outcome === "preview") {
+            publishState = "preview";
+          } else if (transition?.outcome === "abschicken") {
+            await tryHandleAbschickenStep("transition-from-step2");
+          }
+        } else if (/anzeige-abschicken/i.test(urlAfterSubmit)) {
+          await tryHandleAbschickenStep("already-on-abschicken");
+        }
+      }
       if (publishState === "preview") {
         try {
           await dumpPublishDebug(page, {
@@ -6957,7 +7080,69 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
       }
       let resubmitAttempts = 0;
       const maxResubmitAttempts = 1;
+      const isPrimaryPublishSubmitInProgress = async () => {
+        try {
+          return await page.evaluate(() => {
+            const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const tokens = [
+              "anzeige aufgeben",
+              "anzeige veröffentlichen",
+              "anzeige veroeffentlichen",
+              "veröffentlichen",
+              "veroeffentlichen",
+              "jetzt veröffentlichen",
+              "jetzt veroeffentlichen"
+            ];
+            const nodes = Array.from(document.querySelectorAll("button, input[type='submit'], input[type='button']"));
+            const candidates = nodes.filter((node) => {
+              const text = normalize(node.innerText || node.value || node.getAttribute("aria-label") || "");
+              if (!text) return false;
+              return tokens.some((token) => text.includes(token));
+            });
+            if (!candidates.length) return false;
+            return candidates.some((node) => {
+              if (node.disabled) return true;
+              if (node.getAttribute("aria-disabled") === "true") return true;
+              if (node.classList.contains("disabled")) return true;
+              if (node.getAttribute("aria-busy") === "true") return true;
+              const dataBusy = String(node.getAttribute("data-busy") || node.getAttribute("data-loading") || "").toLowerCase();
+              return dataBusy === "true" || dataBusy === "1";
+            });
+          });
+        } catch (error) {
+          return false;
+        }
+      };
       const tryResubmitAfterRepair = async (reason) => {
+        // Avoid double-posting: do not resubmit if the publish attempt is already in-flight or if
+        // the page shows explicit success signals.
+        try {
+          const inferred = await inferPublishSuccess(page);
+          const hasSuccessSignal = Boolean(
+            inferred?.isSuccessUrl ||
+              inferred?.hasPageTypeSuccess ||
+              inferred?.hasSuccessTitle ||
+              inferred?.hasSuccessText ||
+              inferred?.hasShadowSuccessText
+          );
+          if (hasSuccessSignal) {
+            publishState = "success";
+            appendPublishTrace({
+              step: "publish-resubmit-skip-success-signal",
+              reason,
+              url: inferred?.url || page.url()
+            });
+            return false;
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        if (await isPrimaryPublishSubmitInProgress()) {
+          appendPublishTrace({ step: "publish-resubmit-skip-in-progress", reason, url: page.url() });
+          return false;
+        }
+
         if (resubmitAttempts >= maxResubmitAttempts) {
           appendPublishTrace({
             step: "publish-resubmit-skipped",
@@ -6973,8 +7158,20 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           resubmitAttempts
         });
         await humanPause(180, 320);
+        const urlBeforeResubmit = page.url();
         await clickSubmitButton(page, [formContext, page], { allowFallback: false });
-        publishState = await waitForPublishState(page, defaultTimeout);
+        const resubmitTransition = await waitForPostSubmitTransition(page, {
+          initialUrl: urlBeforeResubmit,
+          timeoutMs: 60000
+        });
+        appendPublishTrace({ step: "post-submit-transition-after-resubmit", reason, resubmitTransition });
+        if (resubmitTransition?.outcome === "success") {
+          publishState = "success";
+        } else if (resubmitTransition?.outcome === "preview") {
+          publishState = "preview";
+        } else {
+          publishState = await waitForPublishState(page, defaultTimeout);
+        }
         appendPublishTrace({
           step: "publish-state-after-resubmit",
           reason,
@@ -7011,6 +7208,84 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         const buyNowError = errors.find((text) => /direkt kaufen|beiden optionen/i.test(text));
         let needsResubmit = false;
 
+        // Some categories show additional required selects only on p-anzeige-abschicken (e.g. Art).
+        // Fill them using explicit extraFields and safe category-based hints before trying other repairs.
+        let desiredVersand = "nein";
+        try {
+          const entries = normalizeExtraFieldEntries(ad?.extraFields);
+          for (const entry of entries) {
+            const name = String(entry?.name || "").toLowerCase();
+            const label = String(entry?.label || "").toLowerCase();
+            const rawValue = entry?.value;
+            if (rawValue === undefined || rawValue === null) continue;
+            const value = String(rawValue).trim().toLowerCase();
+            if (!value) continue;
+            const mentionsVersand = name.includes("versand_s") || label.includes("versand");
+            if (!mentionsVersand) continue;
+            if (value === "ja" || value === "nein") {
+              desiredVersand = value;
+              break;
+            }
+            if (value === "shipping" || value.includes("versand möglich") || value.includes("versand moeglich")) {
+              desiredVersand = "ja";
+              break;
+            }
+            if (value === "pickup" || value.includes("abholung")) {
+              desiredVersand = "nein";
+              break;
+            }
+          }
+        } catch (error) {
+          // ignore inference errors
+        }
+
+        const abschickenExtraApplied = await applyExtraFieldsToSelects(page, formContext, ad?.extraFields);
+        const abschickenPreferredApplied = await applyPreferredAttributeSelectsAcrossContexts(
+          page,
+          formContext,
+          preferredFieldValues
+        );
+        const abschickenVersandApplied = await ensureVersandSelectionAcrossContexts(page, formContext, desiredVersand);
+
+        if (
+          errors.length > 0 && (
+            abschickenExtraApplied.appliedCount > 0 ||
+            abschickenPreferredApplied.changed > 0 ||
+            abschickenVersandApplied.changed > 0
+          )
+        ) {
+          needsResubmit = true;
+          await dumpPublishDebug(page, {
+            accountLabel,
+            step: "abschicken-required-selects-applied",
+            error: "",
+            extra: {
+              url: page.url(),
+              desiredVersand,
+              abschickenExtraApplied,
+              abschickenPreferredApplied,
+              abschickenVersandApplied
+            }
+          });
+        }
+
+        // Try to sync the micro-frontend shipping radio group when it exists.
+        if (abschickenVersandApplied.changed > 0) {
+          try {
+            const radioLabelSelector = desiredVersand === "ja"
+              ? 'label[for="radio-shipping"]'
+              : 'label[for="radio-pickup"]';
+            const labelHandle = await page.$(radioLabelSelector);
+            if (labelHandle) {
+              await scrollIntoView(labelHandle);
+              await safeClick(labelHandle);
+              await humanPause(120, 220);
+            }
+          } catch (error) {
+            // ignore shipping radio sync errors
+          }
+        }
+
         if (buyNowError) {
           appendPublishTrace({ step: "publish-form-abschicken-repair-buy-now" });
           try {
@@ -7035,7 +7310,7 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           totalErrors: serverErrorRepair.totalErrors,
           fixedCount: serverErrorRepair.fixedCount
         });
-        if (serverErrorRepair.fixedCount > 0) {
+        if (errors.length > 0 && serverErrorRepair.fixedCount > 0) {
           needsResubmit = true;
           await dumpPublishDebug(page, {
             accountLabel,
@@ -7056,26 +7331,30 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
         }
       }
 
-      if (publishState !== "success") {
-        const progressDetected = await waitForPublishProgress(page, initialUrl, 30000);
-        const errors = await collectFormErrors(page);
-        const submitCandidatesFinal = await collectSubmitCandidatesDebug(page, [formContext]);
-        const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
-        const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
-        const inferred = await inferPublishSuccess(page);
-        const progressedAwayFromForm = Boolean(
-          progressDetected &&
-          inferred.url &&
-          inferred.url !== initialUrl &&
-          !inferred.isKnownForm
-        );
-        const explicitSuccessSignals = {
-          hasSuccessText: Boolean(inferred.hasSuccessText),
-          hasShadowSuccessText: Boolean(inferred.hasShadowSuccessText),
-          hasAdLink: Boolean(inferred.hasAdLink),
-          progressDetected: Boolean(progressDetected),
-          progressedAwayFromForm
-        };
+	      if (publishState !== "success") {
+	        const progressDetected = await waitForPublishProgress(page, initialUrl, 30000);
+	        const errors = await collectFormErrors(page);
+	        const submitCandidatesFinal = await collectSubmitCandidatesDebug(page, [formContext]);
+	        const errorDetails = errors.length ? `: ${errors.join("; ")}` : "";
+	        const stateDetails = publishState === "form" ? " (страница осталась на форме)" : "";
+	        const inferred = await inferPublishSuccess(page);
+	        const progressedAwayFromForm = Boolean(
+	          progressDetected &&
+	          inferred.url &&
+	          inferred.url !== initialUrl &&
+	          !inferred.isKnownForm
+	        );
+	        const explicitSuccessSignals = {
+	          publishStateSuccess: publishState === "success",
+	          isSuccessUrl: Boolean(inferred.isSuccessUrl),
+	          hasPageTypeSuccess: Boolean(inferred.hasPageTypeSuccess),
+	          hasSuccessTitle: Boolean(inferred.hasSuccessTitle),
+	          hasSuccessText: Boolean(inferred.hasSuccessText),
+	          hasShadowSuccessText: Boolean(inferred.hasShadowSuccessText),
+	          hasAdLink: Boolean(inferred.hasAdLink),
+	          progressDetected: Boolean(progressDetected),
+	          progressedAwayFromForm
+	        };
         appendPublishTrace({
           step: "publish-success-signals",
           publishState,
@@ -7083,33 +7362,62 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
           isPreview: Boolean(inferred.isPreview),
           ...explicitSuccessSignals
         });
-        const canTreatAsSuccess = !errors.length &&
-          !inferred.isPreview &&
-          (publishState === "success" ||
-            explicitSuccessSignals.hasSuccessText ||
-            explicitSuccessSignals.hasShadowSuccessText ||
-            (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
-            explicitSuccessSignals.progressedAwayFromForm);
-        if (canTreatAsSuccess) {
-          return {
-            success: true,
-            message: "Объявление отправлено на публикацию",
-            url: inferred.url
-          };
-        }
-        await dumpPublishDebug(page, {
-          accountLabel,
-          step: "publish-not-confirmed",
-          error: "publish-not-confirmed",
-          extra: {
-            publishState,
-            errors,
-            inferred,
-            progressDetected,
-            submitCandidatesFinal,
-            url: page.url()
-          }
-        });
+	        const hardSuccessSignal = explicitSuccessSignals.publishStateSuccess ||
+	          explicitSuccessSignals.isSuccessUrl ||
+	          explicitSuccessSignals.hasPageTypeSuccess ||
+	          explicitSuccessSignals.hasSuccessTitle;
+        const softSuccessSignal = explicitSuccessSignals.hasSuccessText ||
+          explicitSuccessSignals.hasShadowSuccessText ||
+          (explicitSuccessSignals.hasAdLink && !inferred.isKnownForm) ||
+          explicitSuccessSignals.progressDetected ||
+          explicitSuccessSignals.progressedAwayFromForm;
+	        const canTreatAsSuccess = !inferred.isPreview &&
+	          (hardSuccessSignal || (!errors.length && softSuccessSignal));
+	        if (canTreatAsSuccess) {
+	          return {
+	            success: true,
+	            message: "Объявление отправлено на публикацию",
+	            url: inferred.url
+	          };
+	        }
+
+	        // Some Kleinanzeigen flows keep the user on the form even after the submit succeeds.
+	        // When we have no visible errors, do a secondary check by opening "Meine Anzeigen".
+	        let fallbackVerification = null;
+	        if (!errors.length && !inferred.isPreview) {
+	          fallbackVerification = await verifyPublishedByCheckingMyAds(browser, {
+	            title: ad?.title,
+	            deviceProfile,
+	            timeoutMs: 45000
+	          });
+	          appendPublishTrace({
+	            step: "publish-fallback-my-ads-check",
+	            verified: Boolean(fallbackVerification?.verified),
+	            method: fallbackVerification?.method || "",
+	            reason: fallbackVerification?.reason || ""
+	          });
+	          if (fallbackVerification?.verified) {
+	            return {
+	              success: true,
+	              message: "Объявление отправлено на публикацию",
+	              url: fallbackVerification.url || inferred.url || page.url()
+	            };
+	          }
+	        }
+	        await dumpPublishDebug(page, {
+	          accountLabel,
+	          step: "publish-not-confirmed",
+	          error: "publish-not-confirmed",
+	          extra: {
+	            publishState,
+	            errors,
+	            inferred,
+	            fallbackVerification,
+	            progressDetected,
+	            submitCandidatesFinal,
+	            url: page.url()
+	          }
+	        });
         return {
           success: false,
           error: `Публикация не подтверждена${stateDetails}${errorDetails}`,
