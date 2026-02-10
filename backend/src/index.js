@@ -1025,8 +1025,11 @@ const messageUploadMiddleware = (req, res, next) => {
       next();
       return;
     }
-    const debugId = `msg-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const clientRequestId = String(req.get("x-client-request-id") || "");
+    const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+    const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+    const debugId = safeClientRequestId
+      ? safeClientRequestId
+      : `msg-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const message = mapMessageUploadErrorMessage(error);
     appendServerLog(getMessageActionsLogPath(), {
       event: "upload-error",
@@ -2438,8 +2441,11 @@ app.get("/api/messages/thread", async (req, res) => {
 });
 
 app.post("/api/messages/send", async (req, res) => {
-  const debugId = `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const clientRequestId = String(req.get("x-client-request-id") || "");
+  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+  const debugId = safeClientRequestId
+    ? safeClientRequestId
+    : `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
@@ -2543,8 +2549,11 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   if (req.socket) {
     req.socket.setTimeout(0);
   }
-  const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const clientRequestId = String(req.get("x-client-request-id") || "");
+  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+  const debugId = safeClientRequestId
+    ? safeClientRequestId
+    : `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const routeDeadlineMs = resolveMessageRouteDeadlineMs();
   const startedAt = Date.now();
   let messageActionLock = null;
@@ -2858,8 +2867,11 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
   if (req.socket) {
     req.socket.setTimeout(0);
   }
-  const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const clientRequestId = String(req.get("x-client-request-id") || "");
+  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+  const debugId = safeClientRequestId
+    ? safeClientRequestId
+    : `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const routeDeadlineMs = resolveMessageRouteDeadlineMs();
   const startedAt = Date.now();
   let messageActionLock = null;
