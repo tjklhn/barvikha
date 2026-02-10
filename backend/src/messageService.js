@@ -700,6 +700,7 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeo
     }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = "missing-cookie-header";
     throw error;
   }
 
@@ -724,6 +725,7 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeo
     }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = `token-endpoint-status:${response.status}`;
     throw error;
   }
 
@@ -734,6 +736,7 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeo
     }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = `token-missing-authorization-header:status:${response.status}`;
     throw error;
   }
 
@@ -4844,7 +4847,10 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       }
       return { conversations: mapped };
       } catch (error) {
-        console.log(`[messageService] API fetch failed for ${accountLabel}: ${error.message}`);
+        const code = String(error?.code || "").trim();
+        const details = String(error?.details || "").trim();
+        const extra = details ? ` | ${details}` : "";
+        console.log(`[messageService] API fetch failed for ${accountLabel}: ${(error?.message || code || "error")}${extra}`);
       }
     }
   }
@@ -4997,12 +5003,15 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
         }
       } catch (error) {
         const code = String(error?.code || "").trim();
-        const reason = String(error?.message || code || error || "unknown").trim().slice(0, 240);
+        const message = String(error?.message || code || error || "unknown").trim();
+        const details = String(error?.details || "").trim();
+        const reason = (details ? `${message} | ${details}` : message).trim().slice(0, 420);
         failures.push({
           accountId: account?.id,
           accountLabel,
           code,
-          reason
+          reason,
+          details: details ? details.slice(0, 800) : ""
         });
         console.log(`[messageService] Messages fetch failed for ${accountLabel}: ${reason}`);
       }

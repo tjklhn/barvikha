@@ -12,6 +12,8 @@ const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
 const {
   buildProxyUrl,
+  buildPuppeteerProxyUrl,
+  buildProxyServer,
   parseCookies,
   normalizeCookies,
   normalizeCookie,
@@ -187,6 +189,7 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
     }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = "missing-cookie-header";
     throw error;
   }
 
@@ -208,6 +211,7 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
     }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = `token-endpoint-status:${response.status}`;
     throw error;
   }
 
@@ -218,6 +222,7 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
     }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = `token-missing-authorization-header:status:${response.status}`;
     throw error;
   }
 
@@ -1157,6 +1162,372 @@ app.post("/api/auth/validate", (req, res) => {
   }
 });
 
+const maskProxyUrl = (rawUrl) => {
+  const input = String(rawUrl || "").trim();
+  if (!input) return "";
+  try {
+    const parsed = new URL(input);
+    if (parsed.password) parsed.password = "***";
+    return parsed.toString();
+  } catch (error) {
+    // Fallback for non-URL proxy strings: protocol://user:pass@host:port
+    const schemeIndex = input.indexOf("://");
+    if (schemeIndex < 0) return input;
+    const atIndex = input.indexOf("@", schemeIndex + 3);
+    if (atIndex < 0) return input;
+    const creds = input.slice(schemeIndex + 3, atIndex);
+    const colonIndex = creds.indexOf(":");
+    if (colonIndex < 0) return input;
+    const user = creds.slice(0, colonIndex);
+    return `${input.slice(0, schemeIndex + 3)}${user}:***@${input.slice(atIndex + 1)}`;
+  }
+};
+
+const safeString = (value, max = 600) => String(value || "").trim().slice(0, max);
+
+const serializeErrorForDebug = (error) => {
+  if (!error) return null;
+  return {
+    message: safeString(error?.message || String(error)),
+    code: safeString(error?.code || ""),
+    details: safeString(error?.details || ""),
+    originalMessage: safeString(error?.originalMessage || ""),
+    stack: safeString(error?.stack || "", 1200),
+    cause: error?.cause
+      ? {
+        message: safeString(error.cause?.message || String(error.cause)),
+        code: safeString(error.cause?.code || ""),
+        stack: safeString(error.cause?.stack || "", 800)
+      }
+      : null
+  };
+};
+
+const readTailText = (filePath, maxBytes = 400 * 1024) => {
+  try {
+    const stat = fs.statSync(filePath);
+    const size = Number(stat?.size || 0);
+    const start = Math.max(0, size - Math.max(1024, Number(maxBytes) || 0));
+    const length = size - start;
+    if (length <= 0) return "";
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (error) {
+    return "";
+  }
+};
+
+app.get("/api/debug/message-actions/locks", (req, res) => {
+  const items = [];
+  for (const [accountId, entry] of activeMessageActionByAccount.entries()) {
+    if (!entry) continue;
+    items.push({
+      accountId,
+      route: entry.route || "",
+      debugId: entry.debugId || "",
+      requestId: entry.clientRequestId || "",
+      startedAt: entry.startedAt || null,
+      ageMs: entry.startedAt ? Date.now() - Number(entry.startedAt || 0) : null
+    });
+  }
+  res.json({ now: new Date().toISOString(), locks: items });
+});
+
+app.post("/api/debug/message-actions/locks/clear", (req, res) => {
+  const accountId = req.body?.accountId != null ? String(req.body.accountId).trim() : "";
+  const cleared = [];
+  if (accountId) {
+    if (activeMessageActionByAccount.has(accountId)) {
+      activeMessageActionByAccount.delete(accountId);
+      cleared.push(accountId);
+    }
+    res.json({ success: true, cleared });
+    return;
+  }
+  // Require explicit allowAll to avoid accidental clearing.
+  const allowAll = req.body?.allowAll === true || String(req.body?.allowAll || "").trim() === "1";
+  if (!allowAll) {
+    res.status(400).json({ success: false, error: "accountId обязателен (или allowAll=1)." });
+    return;
+  }
+  for (const key of activeMessageActionByAccount.keys()) {
+    cleared.push(key);
+  }
+  activeMessageActionByAccount.clear();
+  res.json({ success: true, cleared });
+});
+
+app.get("/api/debug/message-actions/log", (req, res) => {
+  const requestId = String(req.query.requestId || "").trim();
+  const debugId = String(req.query.debugId || "").trim();
+  const limitRaw = Number(req.query.limit || 200);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 200;
+
+  const logPath = getMessageActionsLogPath();
+  const tail = readTailText(logPath, 900 * 1024);
+  const lines = tail.split(/\\r?\\n/).filter(Boolean);
+
+  const filtered = (requestId || debugId)
+    ? lines.filter((line) => {
+      if (requestId && line.includes(requestId)) return true;
+      if (debugId && line.includes(debugId)) return true;
+      return false;
+    })
+    : lines;
+
+  res.json({
+    logPath,
+    requestId,
+    debugId,
+    totalLines: lines.length,
+    matchedLines: filtered.length,
+    lines: filtered.slice(-limit)
+  });
+});
+
+app.post("/api/debug/account/diagnose", async (req, res) => {
+  const debugId = `diag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
+  const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+  const withPuppeteer = req.body?.withPuppeteer === true || String(req.body?.withPuppeteer || "").trim() === "1";
+  const timeoutMsRaw = Number(req.body?.timeoutMs || 20000);
+  const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(4000, Math.min(60000, Math.floor(timeoutMsRaw))) : 20000;
+
+  if (!accountId) {
+    res.status(400).json({ success: false, error: "accountId обязателен." });
+    return;
+  }
+
+  const account = getAccountForRequest(accountId, req, res);
+  if (!account) return;
+
+  const proxy = requireAccountProxy(account, res, "диагностики аккаунта", getOwnerContext(req));
+  if (!proxy) return;
+
+  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
+  const cookiesParsed = parseCookies(account?.cookie || "");
+  const cookiesNormalized = normalizeCookies(cookiesParsed);
+  const cookieHeader = buildCookieHeaderForUrl(cookiesNormalized, tokenUrl);
+  const cookieNamesInHeader = cookieHeader
+    ? cookieHeader.split(";").map((part) => String(part).trim().split("=")[0]).filter(Boolean).slice(0, 80)
+    : [];
+  const accessCookie = cookiesNormalized.find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  const accessCookieLooksJwt = Boolean(accessCookie?.value && String(accessCookie.value).split(".").length >= 3);
+
+  const proxyUrl = buildProxyUrl(proxy);
+  const proxyUrlForPuppeteer = buildPuppeteerProxyUrl(proxy);
+  const proxyServer = buildProxyServer(proxy);
+
+  const result = {
+    success: true,
+    debugId,
+    startedAt: new Date().toISOString(),
+    elapsedMs: 0,
+    account: {
+      id: accountId,
+      profileName: safeString(account.profileName || ""),
+      profileEmail: safeString(account.profileEmail || ""),
+      username: safeString(account.username || ""),
+      proxyId: safeString(account.proxyId || "")
+    },
+    proxy: {
+      id: safeString(proxy.id || ""),
+      type: safeString(proxy.type || ""),
+      host: safeString(proxy.host || ""),
+      port: Number(proxy.port || 0),
+      hasAuth: Boolean(proxy.username || proxy.password),
+      url: maskProxyUrl(proxyUrl),
+      puppeteerUrl: maskProxyUrl(proxyUrlForPuppeteer),
+      puppeteerServer: maskProxyUrl(proxyServer)
+    },
+    cookies: {
+      parsedCount: Array.isArray(cookiesParsed) ? cookiesParsed.length : 0,
+      normalizedCount: Array.isArray(cookiesNormalized) ? cookiesNormalized.length : 0,
+      hasAccessTokenCookie: Boolean(accessCookie),
+      accessTokenLooksJwt: accessCookieLooksJwt,
+      cookieHeaderLength: cookieHeader.length,
+      cookieNamesInHeader
+    },
+    checks: {
+      proxyConnect: null,
+      robots: null,
+      tokenEndpoint: null,
+      puppeteer: null
+    }
+  };
+
+  const debugDir = ensureDebugDir();
+  const debugPath = path.join(debugDir, `diagnose-account-${accountId}-${debugId}.json`);
+  const writeDebugFile = () => {
+    try {
+      fs.writeFileSync(debugPath, JSON.stringify(result, null, 2), "utf8");
+    } catch (error) {
+      // ignore
+    }
+  };
+
+  try {
+    // 1) Proxy TCP/CONNECT handshake
+    result.checks.proxyConnect = await proxyChecker.checkProxyConnection(proxy, "www.kleinanzeigen.de", 443);
+    writeDebugFile();
+
+    // 2) Simple HTTP fetch through proxy (robots.txt)
+    try {
+      const axiosConfig = proxyChecker.buildAxiosConfig(proxy, timeoutMs);
+      axiosConfig.validateStatus = (status) => status >= 200 && status < 600;
+      const response = await axios.get("https://www.kleinanzeigen.de/robots.txt", {
+        ...axiosConfig,
+        headers: {
+          ...axiosConfig.headers,
+          Accept: "text/plain,*/*",
+          "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"
+        },
+        responseType: "text",
+        maxRedirects: 3
+      });
+      result.checks.robots = {
+        status: response.status,
+        contentType: safeString(response.headers?.["content-type"] || ""),
+        sample: safeString(response.data || "", 220)
+      };
+    } catch (error) {
+      result.checks.robots = { error: serializeErrorForDebug(error) };
+    }
+    writeDebugFile();
+
+    // 3) Token endpoint fetch through proxy
+    try {
+      const axiosConfig = proxyChecker.buildAxiosConfig(proxy, timeoutMs);
+      axiosConfig.validateStatus = (status) => status >= 200 && status < 600;
+      const deviceProfile = toDeviceProfile(account?.deviceProfile);
+      const response = await axios.get(tokenUrl, {
+        ...axiosConfig,
+        headers: {
+          ...axiosConfig.headers,
+          Cookie: cookieHeader,
+          "User-Agent": deviceProfile.userAgent || axiosConfig.headers?.["User-Agent"] || "Mozilla/5.0",
+          "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
+          Accept: "application/json"
+        }
+      });
+
+      const authHeader = response.headers?.authorization || response.headers?.Authorization || "";
+      const messageboxHeader = response.headers?.messagebox || response.headers?.Messagebox || "";
+      result.checks.tokenEndpoint = {
+        status: response.status,
+        hasAuthorizationHeader: Boolean(authHeader),
+        hasMessageboxHeader: Boolean(messageboxHeader),
+        message: safeString(response.data?.message || response.data?.error || "", 240),
+        bodyKeys: response.data && typeof response.data === "object" ? Object.keys(response.data).slice(0, 30) : []
+      };
+    } catch (error) {
+      result.checks.tokenEndpoint = { error: serializeErrorForDebug(error) };
+    }
+    writeDebugFile();
+
+    // 4) Optional: Puppeteer probe (loads home + messages list).
+    if (withPuppeteer) {
+      const proxyUrlValue = proxyUrlForPuppeteer;
+      const needsProxyChain = Boolean(
+        proxyUrlValue && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+      );
+      let anonymizedProxyUrl = "";
+      try {
+        const proxyChain = require("proxy-chain");
+        const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+        if (proxyServer) {
+          if (needsProxyChain) {
+            anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrlValue);
+            launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+          } else {
+            launchArgs.push(`--proxy-server=${proxyServer}`);
+          }
+        }
+        const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-diag-profile-"));
+        const browser = await puppeteerExtra.launch({
+          headless: "new",
+          args: launchArgs,
+          userDataDir: profileDir,
+          timeout: PUPPETEER_LAUNCH_TIMEOUT,
+          protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+        });
+        try {
+          const page = await browser.newPage();
+          page.setDefaultTimeout(Math.min(20000, timeoutMs));
+          page.setDefaultNavigationTimeout(Math.min(20000, timeoutMs));
+          if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+            await page.authenticate({ username: proxy.username || "", password: proxy.password || "" });
+          }
+          const deviceProfile = toDeviceProfile(account?.deviceProfile);
+          await page.setUserAgent(deviceProfile.userAgent || "Mozilla/5.0");
+          await page.setViewport(deviceProfile.viewport || { width: 1366, height: 768 });
+          await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8" });
+          await page.emulateTimezone(deviceProfile.timezone || "Europe/Berlin").catch(() => {});
+          await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded", timeout: Math.min(20000, timeoutMs) });
+          await acceptCookieModal(page, { timeout: 2500 }).catch(() => {});
+          if (isGdprPage(page.url())) {
+            await acceptGdprConsent(page, { timeout: 5000 }).catch(() => {});
+          }
+          await page.setCookie(...cookiesNormalized);
+          await page.goto("https://www.kleinanzeigen.de/m-nachrichten.html", { waitUntil: "domcontentloaded", timeout: Math.min(25000, timeoutMs + 5000) });
+          await acceptCookieModal(page, { timeout: 2500 }).catch(() => {});
+          if (isGdprPage(page.url())) {
+            await acceptGdprConsent(page, { timeout: 5000 }).catch(() => {});
+          }
+          const url = page.url();
+          const title = await page.title().catch(() => "");
+          const screenshotPath = path.join(debugDir, `diagnose-account-${accountId}-${debugId}.png`);
+          await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+          result.checks.puppeteer = {
+            url: safeString(url, 500),
+            title: safeString(title, 200),
+            screenshotPath
+          };
+        } finally {
+          await browser.close().catch(() => {});
+          try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (e) {}
+        }
+      } catch (error) {
+        result.checks.puppeteer = { error: serializeErrorForDebug(error) };
+      } finally {
+        if (anonymizedProxyUrl) {
+          try {
+            const proxyChain = require("proxy-chain");
+            await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true).catch(() => {});
+          } catch (e) {}
+        }
+      }
+      writeDebugFile();
+    }
+  } catch (error) {
+    result.success = false;
+    result.error = safeString(error?.message || String(error));
+    result.errorInfo = serializeErrorForDebug(error);
+  } finally {
+    result.elapsedMs = Date.now() - startedAt;
+    writeDebugFile();
+  }
+
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "account-diagnose",
+    debugId,
+    accountId,
+    elapsedMs: result.elapsedMs,
+    proxyId: result.proxy?.id || "",
+    proxyType: result.proxy?.type || "",
+    tokenEndpointStatus: result.checks?.tokenEndpoint?.status || null,
+    robotsStatus: result.checks?.robots?.status || null
+  });
+
+  res.json({ ...result, debugPath });
+});
+
 app.get("/api/accounts", (req, res) => {
   const ownerContext = getOwnerContext(req);
   const accounts = filterByOwner(listAccounts(), ownerContext);
@@ -2021,6 +2392,10 @@ app.post("/api/messages/offer/decline", async (req, res) => {
         success: false,
         error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
         code: "MESSAGE_ACTION_IN_PROGRESS",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
         debugId,
         requestId: clientRequestId
       });
@@ -2360,6 +2735,10 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
         success: false,
         error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
         code: "MESSAGE_ACTION_IN_PROGRESS",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
         debugId,
         requestId: clientRequestId
       });

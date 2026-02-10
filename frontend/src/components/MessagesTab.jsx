@@ -486,15 +486,39 @@ const MessagesTab = () => {
 
   const formatRequestError = (error, fallbackText) => {
     const baseMessage = String(error?.message || fallbackText || "Ошибка запроса").trim();
-    const debugId = error?.data?.debugId || error?.debugId || "";
-    const requestId = error?.data?.requestId || error?.requestId || "";
+    const data = error?.data && typeof error.data === "object" ? error.data : {};
+    const debugId = data?.debugId || error?.debugId || "";
+    const requestId = data?.requestId || error?.requestId || "";
+    const parts = [];
+
     if (debugId) {
-      return `${baseMessage} (debugId: ${debugId})`;
+      parts.push(`debugId: ${debugId}`);
+    } else if (requestId) {
+      parts.push(`requestId: ${requestId}`);
     }
-    if (requestId) {
-      return `${baseMessage} (requestId: ${requestId})`;
+
+    if (data?.code === "MESSAGE_ACTION_IN_PROGRESS") {
+      if (data?.activeRoute) parts.push(`activeRoute=${data.activeRoute}`);
+      if (data?.activeDebugId) parts.push(`activeDebugId=${data.activeDebugId}`);
+      if (data?.activeSinceMs != null) {
+        const seconds = Math.max(0, Math.round(Number(data.activeSinceMs || 0) / 1000));
+        parts.push(`activeFor=${seconds}s`);
+      }
     }
-    return baseMessage;
+
+    const url = String(error?.url || "").trim();
+    const code = String(error?.code || "").trim();
+    const shouldShowUrl = Boolean(url) && (
+      /failed to fetch/i.test(baseMessage)
+      || code === "FETCH_FAILED"
+      || code === "REQUEST_TIMEOUT"
+    );
+    if (shouldShowUrl) {
+      parts.push(`url=${url}`);
+    }
+
+    const suffix = parts.length ? ` (${parts.join(", ")})` : "";
+    return baseMessage + suffix;
   };
 
   const confirmDeclineOffer = async () => {
