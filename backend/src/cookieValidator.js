@@ -47,7 +47,16 @@ const pickDeviceProfile = () => {
 const proxyChain = require("proxy-chain");
 const axios = require("axios");
 const proxyChecker = require("./proxyChecker");
-const { parseCookies, normalizeCookies, normalizeCookie, filterKleinanzeigenCookies, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const {
+  parseCookies,
+  normalizeCookies,
+  normalizeCookie,
+  filterKleinanzeigenCookies,
+  buildCookieHeaderForUrl,
+  buildProxyServer,
+  buildProxyUrl,
+  buildPuppeteerProxyUrl
+} = require("./cookieUtils");
 const createTempProfileDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "kl-profile-"));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const humanPause = (min = 120, max = 260) => sleep(Math.floor(min + Math.random() * (max - min)));
@@ -130,19 +139,8 @@ const decodeJwtPayload = (token) => {
   }
 };
 
-const buildCookieHeader = (cookies) => {
-  const byName = new Map();
-  for (const cookie of cookies || []) {
-    if (!cookie?.name) continue;
-    if (cookie.value === undefined || cookie.value === null) continue;
-    const value = String(cookie.value);
-    if (!value) continue;
-    byName.set(cookie.name, value);
-  }
-  return Array.from(byName.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
-};
+const buildCookieHeader = (cookies) =>
+  buildCookieHeaderForUrl(cookies, "https://www.kleinanzeigen.de/m-access-token.json");
 
 const extractProfileFromCookies = (cookies) => {
   const accessToken = (cookies || []).find((cookie) => cookie?.name === "access_token" && cookie?.value);

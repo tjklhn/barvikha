@@ -10,7 +10,14 @@ const crypto = require("crypto");
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
-const { buildProxyUrl, parseCookies, normalizeCookie, filterKleinanzeigenCookies } = require("./cookieUtils");
+const {
+  buildProxyUrl,
+  parseCookies,
+  normalizeCookies,
+  normalizeCookie,
+  filterKleinanzeigenCookies,
+  buildCookieHeaderForUrl
+} = require("./cookieUtils");
 const {
   publishAd,
   parseExtraSelectFields,
@@ -155,23 +162,14 @@ const sanitizeFilename = (value) => (value || "account")
   .replace(/[^a-z0-9._-]+/gi, "_")
   .slice(0, 60);
 
-const buildCookieHeaderFromAccount = (account) => {
-  const cookies = filterKleinanzeigenCookies(parseCookies(account?.cookie)).map(normalizeCookie);
-  const byName = new Map();
-  for (const cookie of cookies || []) {
-    if (!cookie?.name) continue;
-    if (cookie.value === undefined || cookie.value === null) continue;
-    const value = String(cookie.value);
-    if (!value) continue;
-    byName.set(cookie.name, value);
-  }
-  return Array.from(byName.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
+const buildCookieHeaderFromAccount = (account, targetUrl = "https://www.kleinanzeigen.de/") => {
+  const cookies = normalizeCookies(parseCookies(account?.cookie));
+  return buildCookieHeaderForUrl(cookies, targetUrl);
 };
 
 const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
-  const cookieHeader = buildCookieHeaderFromAccount(account);
+  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
+  const cookieHeader = buildCookieHeaderFromAccount(account, tokenUrl);
   if (!cookieHeader) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -188,7 +186,7 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
   };
   axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
 
-  const response = await axios.get("https://www.kleinanzeigen.de/m-access-token.json", axiosConfig);
+  const response = await axios.get(tokenUrl, axiosConfig);
   if (response.status === 401 || response.status === 403) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -1601,7 +1599,9 @@ app.get("/api/messages/image", async (req, res) => {
     if (isMessageboxAttachment) {
       const auth = await getMessageboxAccessTokenForAccount({ account, proxy, timeoutMs: 20000 });
       requestHeaders.Authorization = auth.token;
-      requestHeaders.Cookie = auth.cookieHeader || buildCookieHeaderFromAccount(account);
+      // Build cookies for the actual upstream host to avoid mixing host-only cookies for kleinanzeigen.de/www.
+      const cookieHeader = buildCookieHeaderFromAccount(account, baseUrl.toString());
+      requestHeaders.Cookie = cookieHeader || auth.cookieHeader || buildCookieHeaderFromAccount(account);
       requestHeaders["X-ECG-USER-AGENT"] = "messagebox-1";
     }
 

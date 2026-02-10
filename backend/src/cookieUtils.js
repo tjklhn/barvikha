@@ -376,12 +376,146 @@ const buildProxyServer = (proxy) => {
   return proxyUrl;
 };
 
+const normalizeHostname = (value) => String(value || "").trim().toLowerCase();
+
+const getCookieHost = (cookie) => {
+  if (!cookie) return "";
+  if (cookie.url) {
+    try {
+      return new URL(String(cookie.url)).hostname.toLowerCase();
+    } catch (error) {
+      return normalizeHostname(cookie.url);
+    }
+  }
+  if (cookie.domain) {
+    return normalizeHostname(cookie.domain).replace(/^\./, "");
+  }
+  return "";
+};
+
+const domainMatchesHost = (cookieDomain, host) => {
+  const normalizedHost = normalizeHostname(host);
+  const normalizedDomain = normalizeHostname(cookieDomain).replace(/^\./, "");
+  if (!normalizedHost || !normalizedDomain) return false;
+  if (normalizedHost === normalizedDomain) return true;
+  return normalizedHost.endsWith(`.${normalizedDomain}`);
+};
+
+const pathMatchesRequest = (cookiePath, requestPath) => {
+  const normalizedCookiePath = String(cookiePath || "/") || "/";
+  const normalizedRequestPath = String(requestPath || "/") || "/";
+  if (normalizedCookiePath === "/") return true;
+  if (!normalizedRequestPath.startsWith(normalizedCookiePath)) return false;
+  if (normalizedCookiePath.endsWith("/")) return true;
+  const nextChar = normalizedRequestPath.charAt(normalizedCookiePath.length);
+  return nextChar === "" || nextChar === "/";
+};
+
+// Build a Cookie header for a specific request URL.
+// Important: avoid picking the wrong value when the cookie jar contains multiple cookies with the same name
+// (e.g. host-only cookies for both kleinanzeigen.de and www.kleinanzeigen.de).
+const buildCookieHeaderForUrl = (cookies, targetUrl) => {
+  const list = Array.isArray(cookies) ? cookies : [];
+  if (!list.length) return "";
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(String(targetUrl || ""));
+  } catch (error) {
+    parsedUrl = null;
+  }
+  const hostname = normalizeHostname(parsedUrl?.hostname);
+  const protocol = normalizeHostname(parsedUrl?.protocol);
+  const requestPath = parsedUrl?.pathname || "/";
+  const isHttps = protocol === "https:";
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  // Pick the most specific cookie per name (host-only > domain, longest path, most specific domain).
+  const bestByName = new Map();
+  const entries = list
+    .map((cookie, index) => ({ cookie, index }))
+    .filter(({ cookie }) => cookie && cookie.name);
+
+  for (const { cookie, index } of entries) {
+    const name = String(cookie.name || "").trim();
+    if (!name) continue;
+    if (cookie.value === undefined || cookie.value === null) continue;
+    const value = String(cookie.value);
+    if (!value) continue;
+
+    const expires = cookie.expires !== undefined && cookie.expires !== null ? Number(cookie.expires) : null;
+    if (Number.isFinite(expires) && expires > 0 && expires < nowSeconds) continue;
+    if (cookie.secure === true && !isHttps) continue;
+
+    const cookiePath = String(cookie.path || "/") || "/";
+    if (!pathMatchesRequest(cookiePath, requestPath)) continue;
+
+    let matchType = 0;
+    let domainSpecificity = 0;
+    if (cookie.url) {
+      if (!hostname) continue;
+      const cookieHost = getCookieHost(cookie);
+      if (!cookieHost) continue;
+      if (cookieHost !== hostname) continue;
+      matchType = 2;
+      domainSpecificity = cookieHost.length;
+    } else if (cookie.domain) {
+      if (!hostname) continue;
+      if (!domainMatchesHost(cookie.domain, hostname)) continue;
+      matchType = 1;
+      domainSpecificity = String(cookie.domain || "").trim().replace(/^\./, "").length;
+    } else {
+      // Cookie without explicit scope (rare); include it for compatibility.
+      matchType = 0;
+      domainSpecificity = 0;
+    }
+
+    const score = {
+      matchType,
+      pathLength: cookiePath.length,
+      domainSpecificity,
+      index
+    };
+
+    const existing = bestByName.get(name);
+    if (!existing) {
+      bestByName.set(name, { name, value, score });
+      continue;
+    }
+
+    const better = (
+      score.matchType > existing.score.matchType
+      || (score.matchType === existing.score.matchType && score.pathLength > existing.score.pathLength)
+      || (
+        score.matchType === existing.score.matchType
+        && score.pathLength === existing.score.pathLength
+        && score.domainSpecificity > existing.score.domainSpecificity
+      )
+      || (
+        score.matchType === existing.score.matchType
+        && score.pathLength === existing.score.pathLength
+        && score.domainSpecificity === existing.score.domainSpecificity
+        && score.index > existing.score.index
+      )
+    );
+
+    if (better) {
+      bestByName.set(name, { name, value, score });
+    }
+  }
+
+  return Array.from(bestByName.values())
+    .map((entry) => `${entry.name}=${entry.value}`)
+    .join("; ");
+};
+
 module.exports = {
   parseCookies,
   normalizeCookies,
   normalizeCookie,
   isKleinanzeigenCookie,
   filterKleinanzeigenCookies,
+  buildCookieHeaderForUrl,
   buildProxyUrl,
   buildPuppeteerProxyUrl,
   buildProxyServer

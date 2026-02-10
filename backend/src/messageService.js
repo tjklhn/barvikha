@@ -6,7 +6,15 @@ const ProxyAgent = require("proxy-agent");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const {
+  parseCookies,
+  normalizeCookies,
+  normalizeCookie,
+  buildCookieHeaderForUrl,
+  buildProxyServer,
+  buildProxyUrl,
+  buildPuppeteerProxyUrl
+} = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 const { acceptCookieModal, acceptGdprConsent, isGdprPage } = require("./adPublisher");
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
@@ -614,19 +622,7 @@ const getUserIdFromAccessToken = (token) => {
   return payload?.preferred_username || payload?.uid || payload?.sub || "";
 };
 
-const buildCookieHeader = (cookies) => {
-  const byName = new Map();
-  for (const cookie of cookies || []) {
-    if (!cookie?.name) continue;
-    if (cookie.value === undefined || cookie.value === null) continue;
-    const value = String(cookie.value);
-    if (!value) continue;
-    byName.set(cookie.name, value);
-  }
-  return Array.from(byName.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
-};
+const buildCookieHeader = (cookies, targetUrl) => buildCookieHeaderForUrl(cookies, targetUrl);
 
 const buildAxiosConfig = ({ proxy, headers = {}, timeout = 20000 } = {}) => {
   const config = {
@@ -682,7 +678,8 @@ const ensureProxyCanReachKleinanzeigen = async (proxy, timeoutMs = 12000) => {
 };
 
 const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeoutMs = 20000 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
+  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
+  const cookieHeader = buildCookieHeader(cookies, tokenUrl);
   if (!cookieHeader) {
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
@@ -691,7 +688,7 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeo
 
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const response = await axios.get(
-    "https://www.kleinanzeigen.de/m-access-token.json",
+    tokenUrl,
     buildAxiosConfig({
       proxy,
       timeout: timeoutMs,
@@ -732,10 +729,10 @@ const fetchConversationListViaApi = async ({
   page = 0,
   size = 20
 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations`
     + `?page=${page}&size=${size}`;
+  const cookieHeader = buildCookieHeader(cookies, url);
 
   const response = await axios.get(
     url,
@@ -773,10 +770,10 @@ const fetchConversationDetailViaApi = async ({
   deviceProfile,
   timeoutMs = 20000
 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations/${encodeURIComponent(conversationId)}`
     + "?contentWarnings=true";
+  const cookieHeader = buildCookieHeader(cookies, url);
 
   const response = await axios.get(
     url,
@@ -815,9 +812,9 @@ const sendConversationMessageViaApi = async ({
   deviceProfile,
   text
 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations/${encodeURIComponent(conversationId)}`;
+  const cookieHeader = buildCookieHeader(cookies, url);
 
   const response = await axios.post(
     url,
