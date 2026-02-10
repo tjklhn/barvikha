@@ -147,10 +147,12 @@ const AdModal = ({
       const mergedChildren = nextChildren.length
         ? mergeCategoryTrees(prevChildren, nextChildren)
         : prevChildren;
+      const childrenLoaded = Boolean(node?.childrenLoaded || prevNode?.childrenLoaded);
       return {
         ...(prevNode || {}),
         ...node,
-        children: mergedChildren
+        children: mergedChildren,
+        childrenLoaded
       };
     });
     for (const [key, node] of prevMap.entries()) {
@@ -445,22 +447,29 @@ const AdModal = ({
     setCategoryPath(newPath);
     setCategoryChildrenError("");
 
-    // ВСЕГДА пытаемся загрузить детей, даже если они есть
-    // (это обеспечит загрузку 3+ уровней)
-    const childrenResult = await requestChildren(category);
+    const knownChildren = Array.isArray(category?.children)
+      ? filterCategoryChildren(category.children, category)
+      : [];
+    const childrenAlreadyLoaded = Boolean(category?.childrenLoaded);
+    const shouldFetchChildren = knownChildren.length === 0 && !childrenAlreadyLoaded;
+    let childrenResult;
+    let requestAttempted = false;
+    if (shouldFetchChildren) {
+      requestAttempted = true;
+      childrenResult = await requestChildren(category);
+    }
 
     // Обновляем выбранную категорию в форме только если она конечная
     const { selectedNode, numericNode } = resolveCategorySelection(newPath);
-    const knownChildren = Array.isArray(category?.children) ? category.children : [];
     const selectedChildren = Array.isArray(selectedNode?.children) ? selectedNode.children : [];
     const fetchedChildren = Array.isArray(childrenResult) ? childrenResult : null;
     const hasFetchedChildren = fetchedChildren
       ? filterCategoryChildren(fetchedChildren, category).length > 0
       : null;
     const hasKnownChildren =
-      filterCategoryChildren(knownChildren, category).length > 0 ||
+      knownChildren.length > 0 ||
       filterCategoryChildren(selectedChildren, selectedNode).length > 0;
-    const childrenLoadFailed = childrenResult === null && !hasKnownChildren;
+    const childrenLoadFailed = requestAttempted && childrenResult === null;
     const isLeaf = childrenLoadFailed
       ? false
       : (hasFetchedChildren !== null ? !hasFetchedChildren : !hasKnownChildren);
@@ -490,7 +499,7 @@ const AdModal = ({
     nodes.map((node) => {
       const matches = String(node.id) === String(targetValue) || String(node.url) === String(targetValue);
       if (matches) {
-        return { ...node, children };
+        return { ...node, children, childrenLoaded: true };
       }
       if (node.children?.length) {
         return { ...node, children: updateNodeChildren(node.children, targetValue, children) };
@@ -506,6 +515,9 @@ const AdModal = ({
     if (!idValue && !urlValue) return;
     const targetValue = getCategoryValue(node) || idValue || urlValue;
     if (!targetValue) return;
+    if (node?.childrenLoaded && Array.isArray(node?.children)) {
+      return node.children;
+    }
 
     const pending = pendingChildrenRef.current.get(targetValue);
     if (pending) return pending;
@@ -516,14 +528,12 @@ const AdModal = ({
       else params.set("url", urlValue);
       if (newAd?.accountId) params.set("accountId", newAd.accountId);
       try {
-        let data = await apiFetchJson(`/api/categories/children?${params.toString()}`);
-        let rawChildren = Array.isArray(data?.children) ? data.children : null;
-        if (Array.isArray(rawChildren) && rawChildren.length === 0) {
-          const refreshParams = new URLSearchParams(params.toString());
-          refreshParams.set("refresh", "true");
-          data = await apiFetchJson(`/api/categories/children?${refreshParams.toString()}`);
-          rawChildren = Array.isArray(data?.children) ? data.children : rawChildren;
-        }
+        const data = await apiFetchJson(`/api/categories/children?${params.toString()}`, {
+          timeoutMs: 30000,
+          retry: true,
+          allowBaseFallback: true
+        });
+        const rawChildren = Array.isArray(data?.children) ? data.children : null;
         if (!Array.isArray(rawChildren)) return null;
         const filteredChildren = filterCategoryChildren(rawChildren, node);
         const count = Array.isArray(filteredChildren) ? filteredChildren.length : 0;
@@ -606,9 +616,8 @@ const AdModal = ({
         if (!key) continue;
         if (prefetchedTargetsRef.current.has(key)) continue;
         prefetchedTargetsRef.current.add(key);
-        if (node.children?.length) continue;
+        if (node.children?.length || node.childrenLoaded) continue;
         await requestChildren(node);
-        await new Promise((resolve) => setTimeout(resolve, 120));
       }
     })().finally(() => {
       if (prefetchTokenRef.current === token) {

@@ -577,12 +577,12 @@ function App() {
       setLoadingExtraFields(true);
       setExtraFieldsError("");
       try {
-        const buildFieldsRequestUrl = (forceRefresh = false) => {
+        const buildFieldsRequestUrl = ({ forceRefresh = false, includeCategoryPath = true } = {}) => {
           const params = new URLSearchParams();
           params.set("accountId", newAd.accountId);
           if (newAd.categoryId) params.set("categoryId", newAd.categoryId);
           if (!newAd.categoryId && newAd.categoryUrl) params.set("categoryUrl", newAd.categoryUrl);
-          if (Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0) {
+          if (includeCategoryPath && Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0) {
             params.set("categoryPath", JSON.stringify(newAd.categoryPath));
           }
           if (forceRefresh) {
@@ -596,11 +596,35 @@ function App() {
 
         const requestOptions = {
           signal: controller.signal,
-          timeoutMs: 0,
-          retry: false
+          timeoutMs: 45000,
+          retry: true,
+          allowBaseFallback: true
         };
 
-        let data = await apiFetchJson(buildFieldsRequestUrl(false), requestOptions);
+        const hasCategoryPath = Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0;
+        const isNetworkFetchError = (error) =>
+          /failed to fetch|network error|networkerror|load failed|timeout/i.test(
+            String(error?.message || "")
+          );
+
+        const requestFields = async ({ forceRefresh = false } = {}) => {
+          try {
+            return await apiFetchJson(
+              buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: true }),
+              requestOptions
+            );
+          } catch (error) {
+            // Some reverse proxies choke on JSON-like query params in GET.
+            // Fallback to a lean query without categoryPath.
+            if (!hasCategoryPath || !isNetworkFetchError(error)) throw error;
+            return apiFetchJson(
+              buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: false }),
+              requestOptions
+            );
+          }
+        };
+
+        let data = await requestFields({ forceRefresh: false });
         if (cancelled) return;
         if (data?.success === false) {
           const errorMessage = data?.error || "Ошибка загрузки параметров категории";
@@ -613,7 +637,7 @@ function App() {
 
         if (fields.length === 0) {
           try {
-            const refreshed = await apiFetchJson(buildFieldsRequestUrl(true), requestOptions);
+            const refreshed = await requestFields({ forceRefresh: true });
             if (!cancelled && refreshed?.success !== false) {
               data = refreshed;
               fields = Array.isArray(refreshed?.fields) ? refreshed.fields : [];

@@ -10,13 +10,20 @@ const getRuntimeOrigin = () => {
 const resolveDefaultApiBases = () => {
   const origin = getRuntimeOrigin();
   const isLocal = origin.includes("localhost") || origin.includes("127.0.0.1");
-  const protocol = typeof window !== "undefined" && window.location ? window.location.protocol : "";
-  const canUseHttpFallback = protocol !== "https:";
+  const runtimeHostname = typeof window !== "undefined" && window.location
+    ? String(window.location.hostname || "").trim()
+    : "";
 
   const bases = [""];
-  if (isLocal || canUseHttpFallback) {
-    bases.push("http://95.81.100.250");
+  // Keep explicit HTTP fallbacks even when app is served over HTTPS:
+  // in some deployments "/api" is not routed, while direct backend base still works.
+  if (runtimeHostname) {
+    bases.push(`http://${runtimeHostname}:5000`);
   }
+  if (isLocal) {
+    bases.push("http://127.0.0.1:5000");
+  }
+  bases.push("http://95.81.100.250");
   return bases;
 };
 
