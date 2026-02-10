@@ -617,6 +617,19 @@ const getUserIdFromCookies = (cookies) => {
   return payload?.preferred_username || payload?.uid || payload?.sub || "";
 };
 
+// Kleinanzeigen often stores an access JWT directly in the `access_token` cookie. When the token endpoint
+// (m-access-token.json) rejects cookies (401/403) but the cookie still contains a JWT, we can try using it
+// directly for messagebox API requests.
+const deriveMessageboxBearerFromCookies = (cookies) => {
+  const accessToken = (cookies || []).find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  const raw = String(accessToken?.value || "").trim();
+  if (!raw) return "";
+  if (/^Bearer\\s+/i.test(raw)) return raw;
+  // Basic JWT-ish heuristic: three base64url segments separated by dots.
+  if (raw.split(".").length >= 3) return `Bearer ${raw}`;
+  return raw;
+};
+
 const getUserIdFromAccessToken = (token) => {
   const payload = decodeJwtPayload(extractJwtToken(token));
   return payload?.preferred_username || payload?.uid || payload?.sub || "";
@@ -680,7 +693,11 @@ const ensureProxyCanReachKleinanzeigen = async (proxy, timeoutMs = 12000) => {
 const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeoutMs = 20000 }) => {
   const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
   const cookieHeader = buildCookieHeader(cookies, tokenUrl);
+  const derivedBearer = deriveMessageboxBearerFromCookies(cookies);
   if (!cookieHeader) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxKey: "", expiration: Date.now() + 10 * 60 * 1000 };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
     throw error;
@@ -695,12 +712,16 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeo
       headers: {
         Cookie: cookieHeader,
         "User-Agent": userAgent,
+        "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9,en;q=0.8",
         Accept: "application/json"
       }
     })
   );
 
   if (response.status === 401 || response.status === 403) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxKey: "", expiration: Date.now() + 10 * 60 * 1000 };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
     throw error;
@@ -708,6 +729,9 @@ const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeo
 
   const token = response.headers?.authorization || response.headers?.Authorization || "";
   if (!token) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxKey: "", expiration: Date.now() + 10 * 60 * 1000 };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
     throw error;
@@ -2106,12 +2130,12 @@ const isLikelyMessagingMutationRequest = (requestUrl, method = "", postData = ""
     return false;
   }
 
-  const payloadHintsMutation = /(mutation|send|reply|upload|attachment|image|media|picture|photo)/i.test(payload);
+  const payloadHintsMutation = /(mutation|send|reply|upload|attachment|image|media|picture|photo|decline|reject|ablehnen|anfrage|angebot|offer|payment|shipping)/i.test(payload);
   if (payload) {
     return payloadHintsMutation;
   }
 
-  return /(\/send|\/reply|\/upload|\/attachment|\/media|bilder|photos?)/i.test(href);
+  return /(\/send|\/reply|\/upload|\/attachment|\/media|\/decline|\/reject|ablehnen|angebot|anfrage|offer|payment|shipping|bilder|photos?)/i.test(href);
 };
 
 const isConsentInterruptionUrl = (url) => {
@@ -4872,7 +4896,12 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       });
     }, deviceProfile.platform);
 
-    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await gotoWithProxyHandling(
+      page,
+      "https://www.kleinanzeigen.de/",
+      { waitUntil: "domcontentloaded", timeout: 20000 },
+      "MESSAGES_HOME_GOTO"
+    );
     await humanPause();
     await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
     if (isGdprPage(page.url())) {
@@ -4881,7 +4910,12 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
     await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
-    await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+    await gotoWithProxyHandling(
+      page,
+      MESSAGE_LIST_URL,
+      { waitUntil: "domcontentloaded", timeout: 25000 },
+      "MESSAGES_LIST_GOTO"
+    );
     await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
     if (isGdprPage(page.url())) {
       await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
@@ -4979,6 +5013,10 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
   await Promise.all(workers);
   if (!collected.length && failures.length) {
     const allAuth = failures.every((item) => item?.code === "AUTH_REQUIRED" || item?.reason === "AUTH_REQUIRED");
+    const allProxyTunnel = failures.every((item) => (
+      item?.code === PROXY_TUNNEL_ERROR_CODE
+      || /err_tunnel_connection_failed|err_proxy_connection_failed|err_no_supported_proxies|tunneling socket could not be established/i.test(String(item?.reason || ""))
+    ));
     const sample = failures
       .slice(0, 3)
       .map((item) => `${item.accountLabel}: ${item.reason || item.code || "error"}`)
@@ -4986,6 +5024,8 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
     const error = new Error(`Не удалось загрузить сообщения ни для одного аккаунта. ${sample}`.trim());
     if (allAuth) {
       error.code = "AUTH_REQUIRED";
+    } else if (allProxyTunnel) {
+      error.code = PROXY_TUNNEL_ERROR_CODE;
     }
     error.details = JSON.stringify(failures.slice(0, 8));
     throw error;
@@ -5525,6 +5565,12 @@ const declineConversationOffer = async ({
     })
   );
   let beforeSnapshot = null;
+  let firstDeclineClickStartedAt = 0;
+  let observedDeclineMutationAfterClick = false;
+  let observedDeclineMutationUrl = "";
+  let observedDeclineMutationOkAfterClick = false;
+  let observedDeclineMutationOkUrl = "";
+  let observedDeclineMutationOkStatus = null;
   const fetchAfterSnapshotIfAvailable = async () => {
     if (!hasTimeLeft(2200)) return null;
     const timeoutForSnapshot = Math.max(1200, Math.min(snapshotTimeoutMs, Math.max(1400, remainingMs() - 1200)));
@@ -5594,10 +5640,64 @@ const declineConversationOffer = async ({
   }
 
   let page = null;
+  let requestListener = null;
+  let responseListener = null;
   try {
     throwIfAborted("offer-decline-before-new-page");
     page = await browser.newPage();
     pageEventCollector = createMessageActionPageEventCollector(page, { maxEntries: 140 });
+    let lastLikelyMutationAt = 0;
+    let lastLikelyMutationUrl = "";
+    let lastLikelyMutationOkAt = 0;
+    let lastLikelyMutationOkUrl = "";
+    let lastLikelyMutationOkStatus = 0;
+    requestListener = (request) => {
+      const requestUrl = typeof request?.url === "function" ? request.url() : "";
+      const requestMethod = typeof request?.method === "function" ? request.method() : "";
+      const requestBody = typeof request?.postData === "function" ? request.postData() : "";
+      if (!isLikelyMessagingMutationRequest(requestUrl, requestMethod, requestBody)) return;
+      lastLikelyMutationAt = Date.now();
+      lastLikelyMutationUrl = requestUrl;
+    };
+    responseListener = (response) => {
+      const responseUrl = typeof response?.url === "function" ? response.url() : "";
+      const status = typeof response?.status === "function" ? response.status() : null;
+      const request = typeof response?.request === "function" ? response.request() : null;
+      const requestMethod = request && typeof request.method === "function" ? request.method() : "";
+      const requestBody = request && typeof request.postData === "function" ? request.postData() : "";
+      if (!isLikelyMessagingMutationRequest(responseUrl, requestMethod, requestBody)) return;
+      if (Number.isFinite(status) && status < 400) {
+        lastLikelyMutationOkAt = Date.now();
+        lastLikelyMutationOkUrl = responseUrl;
+        lastLikelyMutationOkStatus = status;
+      }
+    };
+    page.on("request", requestListener);
+    page.on("response", responseListener);
+
+    const syncObservedDeclineNetworkSince = (minTimestamp) => {
+      if (!minTimestamp) return;
+      if (!observedDeclineMutationAfterClick && lastLikelyMutationAt >= minTimestamp) {
+        observedDeclineMutationAfterClick = true;
+        observedDeclineMutationUrl = lastLikelyMutationUrl;
+      }
+      if (!observedDeclineMutationOkAfterClick && lastLikelyMutationOkAt >= minTimestamp) {
+        observedDeclineMutationOkAfterClick = true;
+        observedDeclineMutationOkUrl = lastLikelyMutationOkUrl;
+        observedDeclineMutationOkStatus = lastLikelyMutationOkStatus;
+      }
+    };
+
+    const waitForDeclineNetworkSince = async (minTimestamp, timeoutMs = 3500) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        syncObservedDeclineNetworkSince(minTimestamp);
+        if (observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick) return true;
+        await sleep(160);
+      }
+      syncObservedDeclineNetworkSince(minTimestamp);
+      return observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick;
+    };
     const localTimeout = getStepTimeout(
       Math.min(PUPPETEER_NAV_TIMEOUT, 18000),
       4500,
@@ -5962,6 +6062,9 @@ const declineConversationOffer = async ({
       await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
     }
 
+    if (!firstDeclineClickStartedAt) {
+      firstDeclineClickStartedAt = Date.now();
+    }
     const clicked = await clickVisibleButtonByText(page, declineLabels, {
       timeout: 4200,
       preferDialog: true,
@@ -6010,6 +6113,7 @@ const declineConversationOffer = async ({
     }
     await humanPause(100, 170);
     await performHumanLikePageActivity(page, { intensity: "light" });
+    await waitForDeclineNetworkSince(firstDeclineClickStartedAt, 2800).catch(() => false);
 
     const declineFlowState = async () => {
       const hasInline = await hasInlineDeclineButtons();
@@ -6183,16 +6287,31 @@ const declineConversationOffer = async ({
         if (isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined)) {
           return maybeAlreadyDeclined;
         }
-        const uiState = await readMessagingConversationUiState(page, resolvedConversationId);
-        const bootstrapState = await readMessageboxBootstrapState(page);
-        const notAppliedError = new Error("DECLINE_NOT_APPLIED");
-        notAppliedError.details = `decline-flow-still-visible;ui-state:${JSON.stringify(uiState || {}).slice(0, 400)};bootstrap:${JSON.stringify(bootstrapState || {}).slice(0, 400)}`;
-        await captureDeclineArtifact("decline-not-applied", page, {
-          flowVisible: true,
-          uiState,
-          bootstrapState
-        }, notAppliedError);
-        throw notAppliedError;
+        syncObservedDeclineNetworkSince(firstDeclineClickStartedAt);
+        if (declineClicksPerformed && (observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick)) {
+          // Network request went out (and potentially succeeded), but the UI still shows the decline flow.
+          // This can happen when Kleinanzeigen keeps rendering stale offer controls. Treat as success to avoid
+          // false-negative DECLINE_NOT_APPLIED errors.
+          await captureDeclineArtifact("decline-confirmed-by-network", page, {
+            flowVisible: true,
+            observedRequest: observedDeclineMutationAfterClick,
+            observedOk: observedDeclineMutationOkAfterClick,
+            observedUrl: observedDeclineMutationOkUrl || observedDeclineMutationUrl,
+            observedStatus: observedDeclineMutationOkStatus
+          });
+          confirmed = true;
+        } else {
+          const uiState = await readMessagingConversationUiState(page, resolvedConversationId);
+          const bootstrapState = await readMessageboxBootstrapState(page);
+          const notAppliedError = new Error("DECLINE_NOT_APPLIED");
+          notAppliedError.details = `decline-flow-still-visible;ui-state:${JSON.stringify(uiState || {}).slice(0, 400)};bootstrap:${JSON.stringify(bootstrapState || {}).slice(0, 400)}`;
+          await captureDeclineArtifact("decline-not-applied", page, {
+            flowVisible: true,
+            uiState,
+            bootstrapState
+          }, notAppliedError);
+          throw notAppliedError;
+        }
         }
       }
     }
@@ -6210,6 +6329,24 @@ const declineConversationOffer = async ({
   } finally {
     if (abortSignal && abortListener) {
       abortSignal.removeEventListener("abort", abortListener);
+    }
+    if (page && requestListener) {
+      try {
+        if (typeof page.off === "function") {
+          page.off("request", requestListener);
+        } else if (typeof page.removeListener === "function") {
+          page.removeListener("request", requestListener);
+        }
+      } catch (error) {}
+    }
+    if (page && responseListener) {
+      try {
+        if (typeof page.off === "function") {
+          page.off("response", responseListener);
+        } else if (typeof page.removeListener === "function") {
+          page.removeListener("response", responseListener);
+        }
+      } catch (error) {}
     }
     try { pageEventCollector?.dispose?.(); } catch (e) {}
     await safeCloseBrowser(browser);

@@ -167,10 +167,24 @@ const buildCookieHeaderFromAccount = (account, targetUrl = "https://www.kleinanz
   return buildCookieHeaderForUrl(cookies, targetUrl);
 };
 
+const deriveMessageboxBearerFromAccount = (account) => {
+  const cookies = normalizeCookies(parseCookies(account?.cookie));
+  const accessToken = cookies.find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  const raw = String(accessToken?.value || "").trim();
+  if (!raw) return "";
+  if (/^Bearer\s+/i.test(raw)) return raw;
+  if (raw.split(".").length >= 3) return `Bearer ${raw}`;
+  return raw;
+};
+
 const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
   const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
   const cookieHeader = buildCookieHeaderFromAccount(account, tokenUrl);
+  const derivedBearer = deriveMessageboxBearerFromAccount(account);
   if (!cookieHeader) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader: "" };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
     throw error;
@@ -182,12 +196,16 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
     ...axiosConfig.headers,
     Cookie: cookieHeader,
     "User-Agent": deviceProfile.userAgent || "Mozilla/5.0",
+    "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
     Accept: "application/json"
   };
   axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
 
   const response = await axios.get(tokenUrl, axiosConfig);
   if (response.status === 401 || response.status === 403) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
     throw error;
@@ -195,6 +213,9 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
 
   const token = response.headers?.authorization || response.headers?.Authorization || "";
   if (!token) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
     throw error;
@@ -1580,6 +1601,15 @@ app.get("/api/messages", async (req, res) => {
       });
       return;
     }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || ""
+      });
+      return;
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1896,6 +1926,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     if (abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
+    // Client went away; do not keep the per-account lock stuck.
+    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "request-aborted",
       route: "offer-decline",
@@ -1908,6 +1940,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     if (!res.writableEnded && abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
+    // Response was closed early (nginx/client timeout). Release lock so the user can retry.
+    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "response-close",
       route: "offer-decline",
@@ -2025,6 +2059,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       serviceTimer = setTimeout(() => {
         timedOut = true;
         try { abortController.abort(); } catch (error) {}
+        releaseMessageActionLock(messageActionLock);
         const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
         timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
         timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
@@ -2202,6 +2237,8 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
     if (abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
+    // Client went away; do not keep the per-account lock stuck.
+    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "request-aborted",
       route: "send-media",
@@ -2214,6 +2251,8 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
     if (!res.writableEnded && abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
+    // Response was closed early (nginx/client timeout). Release lock so the user can retry.
+    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "response-close",
       route: "send-media",
@@ -2361,6 +2400,7 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       serviceTimer = setTimeout(() => {
         timedOut = true;
         try { abortController.abort(); } catch (error) {}
+        releaseMessageActionLock(messageActionLock);
         const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
         timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
         timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;

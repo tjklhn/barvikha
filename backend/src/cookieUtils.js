@@ -185,7 +185,19 @@ const normalizeDomain = (domain) => {
   const raw = String(domain || "").trim();
   if (!raw) return ".kleinanzeigen.de";
   const hostname = raw.replace(/^\./, "");
-  if (hostname === "kleinanzeigen.de" || hostname === "www.kleinanzeigen.de") {
+  const lowered = hostname.toLowerCase();
+  // Cookie exports can still reference legacy hosts (ebay-kleinanzeigen.de) or mobile subdomains.
+  // Normalize all Kleinanzeigen-related domains to the canonical cookie scope.
+  if (
+    lowered === "kleinanzeigen.de"
+    || lowered === "www.kleinanzeigen.de"
+    || lowered === "m.kleinanzeigen.de"
+    || lowered === "ebay-kleinanzeigen.de"
+    || lowered === "www.ebay-kleinanzeigen.de"
+    || lowered === "m.ebay-kleinanzeigen.de"
+    || lowered.endsWith(".kleinanzeigen.de")
+    || lowered.endsWith(".ebay-kleinanzeigen.de")
+  ) {
     return ".kleinanzeigen.de";
   }
   return raw;
@@ -205,14 +217,22 @@ const normalizeExpires = (value) => {
 const inferCookieUrl = (domain) => {
   const raw = String(domain || "").trim().replace(/^\./, "");
   if (!raw) return "https://www.kleinanzeigen.de";
+  const lowered = raw.toLowerCase();
+  if (lowered === "www.ebay-kleinanzeigen.de") return "https://www.kleinanzeigen.de";
+  if (lowered === "ebay-kleinanzeigen.de") return "https://kleinanzeigen.de";
+  if (lowered === "m.ebay-kleinanzeigen.de") return "https://m.kleinanzeigen.de";
   return `https://${raw}`;
 };
 
-const KLEINANZEIGEN_HOSTS = ["kleinanzeigen.de", "www.kleinanzeigen.de"];
-const isKleinanzeigenHostname = (hostname) =>
-  KLEINANZEIGEN_HOSTS.includes(String(hostname || "").trim().toLowerCase());
-
 const KLEINANZEIGEN_DOMAIN_SUFFIX = "kleinanzeigen.de";
+const KLEINANZEIGEN_CANONICAL_HOSTS = ["kleinanzeigen.de", "www.kleinanzeigen.de"];
+const KLEINANZEIGEN_LOGIN_HOSTS = new Set([
+  ...KLEINANZEIGEN_CANONICAL_HOSTS,
+  "m.kleinanzeigen.de",
+  "ebay-kleinanzeigen.de",
+  "www.ebay-kleinanzeigen.de",
+  "m.ebay-kleinanzeigen.de"
+]);
 
 const extractHostname = (value) => {
   const raw = String(value || "").trim();
@@ -229,6 +249,21 @@ const extractHostname = (value) => {
     .replace(/^\./, "")
     .split("/")[0]
     .toLowerCase();
+};
+
+const canonicalizeKleinanzeigenHostname = (hostname) => {
+  const host = extractHostname(hostname);
+  if (!host) return "";
+  if (host === "www.ebay-kleinanzeigen.de") return "www.kleinanzeigen.de";
+  if (host === "ebay-kleinanzeigen.de") return "kleinanzeigen.de";
+  if (host === "m.ebay-kleinanzeigen.de") return "m.kleinanzeigen.de";
+  return host;
+};
+
+const isKleinanzeigenLoginHostname = (hostname) => {
+  const host = canonicalizeKleinanzeigenHostname(hostname);
+  if (!host) return false;
+  return KLEINANZEIGEN_LOGIN_HOSTS.has(host);
 };
 
 const isKleinanzeigenCookie = (cookie) => {
@@ -255,7 +290,7 @@ const normalizeCookie = (cookie) => {
   const name = String(cookie?.name || "").trim();
   const value = cookie?.value === undefined || cookie?.value === null ? "" : String(cookie.value);
   const hostOnly = Boolean(cookie?.hostOnly) || name.startsWith("__Host-");
-  const url = cookie?.url ? String(cookie.url).trim() : "";
+  let url = cookie?.url ? String(cookie.url).trim() : "";
   const domain = normalizeDomain(cookie?.domain);
   const normalized = {
     name,
@@ -276,7 +311,8 @@ const normalizeCookie = (cookie) => {
 
   // Chromium enforces __Host- rules. Use host-only cookie injection via `url` for these.
   if (url) {
-    normalized.url = url;
+    const canonicalHost = canonicalizeKleinanzeigenHostname(url);
+    normalized.url = canonicalHost ? `https://${canonicalHost}` : url;
   } else if (hostOnly) {
     normalized.url = inferCookieUrl(domain);
     normalized.path = "/";
@@ -311,12 +347,12 @@ const normalizeCookies = (rawCookies, { onlyKleinanzeigen = true } = {}) => {
       hostname = "";
     }
 
-    if (!isKleinanzeigenHostname(hostname)) {
+    if (!isKleinanzeigenLoginHostname(hostname)) {
       expanded.push(cookie);
       continue;
     }
 
-    for (const targetHost of KLEINANZEIGEN_HOSTS) {
+    for (const targetHost of KLEINANZEIGEN_CANONICAL_HOSTS) {
       expanded.push({
         ...cookie,
         url: `https://${targetHost}`
@@ -347,6 +383,9 @@ const buildProxyUrlInternal = (proxy, { forPuppeteer = false } = {}) => {
   }
 
   let protocol = (proxy.type || "http").toLowerCase();
+  // Most "HTTPS proxies" in the wild are actually classic HTTP CONNECT proxies (no TLS to the proxy itself).
+  // Treat `https` as `http` to avoid Chromium / agent incompatibilities that manifest as ERR_TUNNEL... errors.
+  if (protocol === "https") protocol = "http";
   if (forPuppeteer) {
     // Chromium does not support the `socks5h://` URL scheme in `--proxy-server`.
     // Use `socks5://` for Puppeteer/Chromium, DNS will still be resolved via SOCKS5 hostname type.

@@ -22,7 +22,9 @@ class ProxyChecker {
   buildProxyUrl(proxyConfig) {
     if (!proxyConfig) return null;
 
-    const rawType = (proxyConfig.type || 'http').toLowerCase();
+    let rawType = (proxyConfig.type || 'http').toLowerCase();
+    // Many providers label classic HTTP CONNECT proxies as "HTTPS". We still connect to the proxy over plain HTTP.
+    if (rawType === 'https') rawType = 'http';
     if (!proxyConfig.host || !proxyConfig.port) return null;
 
     const auth = proxyConfig.username && proxyConfig.password
