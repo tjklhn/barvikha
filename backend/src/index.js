@@ -1266,11 +1266,11 @@ app.post("/api/debug/message-actions/locks/clear", (req, res) => {
 app.get("/api/debug/message-actions/log", (req, res) => {
   const requestId = String(req.query.requestId || "").trim();
   const debugId = String(req.query.debugId || "").trim();
-  const limitRaw = Number(req.query.limit || 200);
-  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.floor(limitRaw))) : 200;
+  const limitRaw = Number(req.query.limit || 400);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.floor(limitRaw))) : 400;
 
   const logPath = getMessageActionsLogPath();
-  const tail = readTailText(logPath, 900 * 1024);
+  const tail = readTailText(logPath, 3 * 1024 * 1024);
   const lines = tail.split(/\\r?\\n/).filter(Boolean);
 
   const filtered = (requestId || debugId)
@@ -1289,6 +1289,130 @@ app.get("/api/debug/message-actions/log", (req, res) => {
     matchedLines: filtered.length,
     lines: filtered.slice(-limit)
   });
+});
+
+const getMessageActionArtifactsRootDir = () => path.join(ensureDebugDir(), "message-action-artifacts");
+
+app.get("/api/debug/message-actions/artifacts", (req, res) => {
+  const debugIdRaw = String(req.query.debugId || "").trim();
+  const safeDebugId = sanitizeFilename(debugIdRaw);
+  const limitRaw = Number(req.query.limit || 30);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 30;
+
+  if (!safeDebugId) {
+    res.status(400).json({ success: false, error: "debugId обязателен." });
+    return;
+  }
+
+  const root = getMessageActionArtifactsRootDir();
+  const actionDir = path.join(root, safeDebugId);
+  if (!fs.existsSync(actionDir)) {
+    res.status(404).json({ success: false, error: "Артефакты не найдены.", debugId: debugIdRaw, dir: actionDir });
+    return;
+  }
+
+  let metaFiles = [];
+  try {
+    metaFiles = fs.readdirSync(actionDir).filter((name) => name.endsWith(".json")).sort();
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Не удалось прочитать директорию артефактов." });
+    return;
+  }
+
+  const pickError = (value) => {
+    if (!value || typeof value !== "object") return null;
+    const code = safeString(value.code || "", 120);
+    const message = safeString(value.message || "", 240);
+    const details = safeString(value.details || "", 400);
+    const out = {};
+    if (code) out.code = code;
+    if (message) out.message = message;
+    if (details) out.details = details;
+    return Object.keys(out).length ? out : null;
+  };
+
+  const toSummary = (file) => {
+    const full = path.join(actionDir, file);
+    let parsed = null;
+    try {
+      parsed = JSON.parse(fs.readFileSync(full, "utf8"));
+    } catch (error) {
+      parsed = null;
+    }
+
+    const screenshotPath = String(parsed?.files?.screenshotPath || "");
+    const htmlPath = String(parsed?.files?.htmlPath || "");
+    const metaPath = String(parsed?.files?.metaPath || "");
+    return {
+      file,
+      stage: safeString(parsed?.stage || ""),
+      ts: safeString(parsed?.ts || ""),
+      page: parsed?.page
+        ? {
+          url: safeString(parsed.page?.url || "", 800),
+          title: safeString(parsed.page?.title || "", 240),
+          isClosed: Boolean(parsed.page?.isClosed)
+        }
+        : null,
+      error: pickError(parsed?.error),
+      screenshotFile: screenshotPath ? path.basename(screenshotPath) : "",
+      htmlFile: htmlPath ? path.basename(htmlPath) : "",
+      metaFile: metaPath ? path.basename(metaPath) : file
+    };
+  };
+
+  const selected = metaFiles.slice(-limit);
+  const artifacts = selected.map(toSummary);
+  res.json({
+    success: true,
+    debugId: debugIdRaw,
+    dir: actionDir,
+    totalArtifacts: metaFiles.length,
+    returned: artifacts.length,
+    artifacts
+  });
+});
+
+app.get("/api/debug/message-actions/artifacts/file", (req, res) => {
+  const debugIdRaw = String(req.query.debugId || "").trim();
+  const safeDebugId = sanitizeFilename(debugIdRaw);
+  const fileRaw = String(req.query.file || "").trim();
+  const safeFile = path.basename(fileRaw);
+
+  if (!safeDebugId || !safeFile) {
+    res.status(400).json({ success: false, error: "debugId и file обязательны." });
+    return;
+  }
+  if (!/^[a-z0-9._-]{1,220}$/i.test(safeFile)) {
+    res.status(400).json({ success: false, error: "Некорректное имя файла." });
+    return;
+  }
+
+  const root = getMessageActionArtifactsRootDir();
+  const actionDir = path.join(root, safeDebugId);
+  const fullPath = path.join(actionDir, safeFile);
+  const resolvedActionDir = path.resolve(actionDir);
+  const resolvedFullPath = path.resolve(fullPath);
+  if (!resolvedFullPath.startsWith(resolvedActionDir + path.sep)) {
+    res.status(400).json({ success: false, error: "Некорректный путь." });
+    return;
+  }
+  if (!fs.existsSync(resolvedFullPath)) {
+    res.status(404).json({ success: false, error: "Файл не найден." });
+    return;
+  }
+
+  const ext = path.extname(safeFile).toLowerCase();
+  if (ext === ".png") {
+    res.setHeader("Content-Type", "image/png");
+  } else if (ext === ".html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+  } else if (ext === ".json") {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+  } else {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  }
+  res.sendFile(resolvedFullPath);
 });
 
 app.post("/api/debug/account/diagnose", async (req, res) => {

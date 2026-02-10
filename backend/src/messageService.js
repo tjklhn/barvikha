@@ -2516,25 +2516,63 @@ const tryRecoverMessageboxBundle = async (page, timeoutMs = 9000) => {
       const noHash = raw.split("#")[0];
       return noHash.split("?")[0];
     };
-    const tryRender = () => {
+    const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const isVisible = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const spinnerVisible = () => {
+      const spinner = document.querySelector("#messagebox-bundle .spinner-big");
+      return Boolean(spinner && isVisible(spinner));
+    };
+    const replyUiVisible = () => Boolean(document.querySelector(
+      ".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht'], input[data-testid='reply-box-file-input'], button[aria-label*='Bilder hochladen']"
+    ));
+    const hasRenderEngine = () => Boolean(window.ekMessageboxWeb && typeof window.ekMessageboxWeb.render === "function");
+    const tryRender = async () => {
       try {
         const props = window.messageboxRenderProps;
         if (!props) return false;
-        if (typeof window.renderMessagebox === "function") {
-          window.renderMessagebox(props);
-          return true;
-        }
-        if (window.ekMessageboxWeb && typeof window.ekMessageboxWeb.render === "function") {
+
+        const uiBefore = replyUiVisible();
+        const spinnerBefore = spinnerVisible();
+        const engineBefore = hasRenderEngine();
+
+        // Prefer direct render when the bundle already loaded.
+        if (hasRenderEngine()) {
           window.ekMessageboxWeb.render(props);
-          return true;
+        } else if (typeof window.renderMessagebox === "function") {
+          // NOTE: On Kleinanzeigen, `renderMessagebox` can be a thin inline wrapper that
+          // is a no-op until `ekMessageboxWeb` is available. Do not treat the call itself
+          // as "rendered" unless we observe UI/progress.
+          window.renderMessagebox(props);
+        } else {
+          return false;
         }
+
+        const waitMs = Math.max(250, Math.min(1400, Math.floor(maxWaitMs * 0.25)));
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < waitMs) {
+          if (!uiBefore && replyUiVisible()) return true;
+          if (spinnerBefore && !spinnerVisible()) return true;
+          if (!engineBefore && hasRenderEngine()) return true;
+          await sleep(120);
+        }
+
+        return replyUiVisible() || (spinnerBefore && !spinnerVisible()) || hasRenderEngine();
       } catch (error) {
         outcome.error = String(error?.message || error || "");
       }
       return false;
     };
 
-    outcome.renderedBeforeReload = tryRender();
+    outcome.renderedBeforeReload = await tryRender();
     if (outcome.renderedBeforeReload) return outcome;
 
     const existingScripts = Array.from(document.querySelectorAll("script[src*='/bffstatic/messagebox-web/bundle.js']"));
@@ -2569,7 +2607,7 @@ const tryRecoverMessageboxBundle = async (page, timeoutMs = 9000) => {
       (document.head || document.body || document.documentElement).appendChild(script);
     });
 
-    outcome.renderedAfterReload = tryRender();
+    outcome.renderedAfterReload = await tryRender();
     return outcome;
   }, timeoutMs).catch((error) => ({
     attempted: true,
@@ -2963,6 +3001,7 @@ const waitForConversationUiReady = async ({
   timeoutMs = 18000,
   gotoTimeoutMs = 9000,
   captureArtifact = null,
+  abortSignal = null,
   consentHandler = null,
   dismissHandler = null
 } = {}) => {
@@ -3001,6 +3040,28 @@ const waitForConversationUiReady = async ({
 
   while (Date.now() - startedAt < effectiveTimeout) {
     attempt += 1;
+    if (abortSignal?.aborted) {
+      const abortedError = buildActionTimeoutError(`conversation-ui-${normalizedMode}-aborted`);
+      if (typeof captureArtifact === "function") {
+        await captureArtifact(`${normalizedMode}-ui-aborted`, page, { attempt }, abortedError);
+      }
+      throw abortedError;
+    }
+    if (typeof page?.isClosed === "function") {
+      let closed = false;
+      try {
+        closed = Boolean(page.isClosed());
+      } catch (error) {
+        closed = true;
+      }
+      if (closed) {
+        const closedError = buildActionTimeoutError(`conversation-ui-${normalizedMode}-page-closed`);
+        if (typeof captureArtifact === "function") {
+          await captureArtifact(`${normalizedMode}-ui-page-closed`, null, { attempt }, closedError);
+        }
+        throw closedError;
+      }
+    }
     if (typeof consentHandler === "function") {
       await consentHandler(`pass-${attempt}`);
     }
@@ -5819,6 +5880,7 @@ const declineConversationOffer = async ({
       timeoutMs: uiReadyTimeoutMs,
       gotoTimeoutMs: 9000,
       captureArtifact: captureDeclineArtifact,
+      abortSignal,
       consentHandler: async (suffix) => {
         await ensureCookieConsentBeforeMessagingAction({
           page,
@@ -6744,6 +6806,7 @@ const sendConversationMedia = async ({
         timeoutMs: uiReadyTimeoutMs,
         gotoTimeoutMs: 9000,
         captureArtifact: captureMediaArtifact,
+        abortSignal,
         consentHandler: async (suffix) => {
           await ensureCookieConsentBeforeMessagingAction({
             page,
