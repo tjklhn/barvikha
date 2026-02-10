@@ -1293,30 +1293,59 @@ app.get("/api/debug/message-actions/log", (req, res) => {
 
 const getMessageActionArtifactsRootDir = () => path.join(ensureDebugDir(), "message-action-artifacts");
 
-app.get("/api/debug/message-actions/artifacts", (req, res) => {
-  const debugIdRaw = String(req.query.debugId || "").trim();
-  const safeDebugId = sanitizeFilename(debugIdRaw);
-  const limitRaw = Number(req.query.limit || 30);
-  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 30;
+const resolveMessageActionDebugIdsFromLog = (requestId, { maxResults = 6 } = {}) => {
+  const rid = String(requestId || "").trim();
+  if (!rid) return [];
+
+  const logPath = getMessageActionsLogPath();
+  const tail = readTailText(logPath, 3 * 1024 * 1024);
+  const lines = tail.split(/\\r?\\n/).filter(Boolean);
+  const seen = new Set();
+  const results = [];
+  const limit = Math.max(1, Math.min(25, Number(maxResults) || 6));
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.includes(rid)) continue;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(line);
+    } catch (error) {
+      parsed = null;
+    }
+    const debugId = safeString(parsed?.debugId || "", 240);
+    if (!debugId || seen.has(debugId)) continue;
+    seen.add(debugId);
+    results.push(debugId);
+    if (results.length >= limit) break;
+  }
+
+  return results.reverse();
+};
+
+const listMessageActionArtifactsForDebugId = (debugIdRaw, limit) => {
+  const normalizedDebugId = String(debugIdRaw || "").trim();
+  const safeDebugId = sanitizeFilename(normalizedDebugId);
+  const limitRaw = Number(limit || 30);
+  const normalizedLimit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(200, Math.floor(limitRaw)))
+    : 30;
 
   if (!safeDebugId) {
-    res.status(400).json({ success: false, error: "debugId обязателен." });
-    return;
+    return { ok: false, status: 400, error: "debugId обязателен.", debugId: normalizedDebugId };
   }
 
   const root = getMessageActionArtifactsRootDir();
   const actionDir = path.join(root, safeDebugId);
   if (!fs.existsSync(actionDir)) {
-    res.status(404).json({ success: false, error: "Артефакты не найдены.", debugId: debugIdRaw, dir: actionDir });
-    return;
+    return { ok: false, status: 404, error: "Артефакты не найдены.", debugId: normalizedDebugId, dir: actionDir };
   }
 
   let metaFiles = [];
   try {
     metaFiles = fs.readdirSync(actionDir).filter((name) => name.endsWith(".json")).sort();
   } catch (error) {
-    res.status(500).json({ success: false, error: "Не удалось прочитать директорию артефактов." });
-    return;
+    return { ok: false, status: 500, error: "Не удалось прочитать директорию артефактов.", debugId: normalizedDebugId, dir: actionDir };
   }
 
   const pickError = (value) => {
@@ -1361,15 +1390,76 @@ app.get("/api/debug/message-actions/artifacts", (req, res) => {
     };
   };
 
-  const selected = metaFiles.slice(-limit);
+  const selected = metaFiles.slice(-normalizedLimit);
   const artifacts = selected.map(toSummary);
-  res.json({
-    success: true,
-    debugId: debugIdRaw,
+  return {
+    ok: true,
+    status: 200,
+    debugId: normalizedDebugId,
     dir: actionDir,
     totalArtifacts: metaFiles.length,
     returned: artifacts.length,
     artifacts
+  };
+};
+
+app.get("/api/debug/message-actions/artifacts", (req, res) => {
+  const debugIdRaw = String(req.query.debugId || "").trim();
+  const requestIdRaw = String(req.query.requestId || "").trim();
+  const limitRaw = Number(req.query.limit || 30);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 30;
+
+  const requestedId = debugIdRaw || requestIdRaw;
+  if (!requestedId) {
+    res.status(400).json({ success: false, error: "debugId или requestId обязателен." });
+    return;
+  }
+
+  const direct = listMessageActionArtifactsForDebugId(requestedId, limit);
+  if (direct.ok) {
+    res.json({ success: true, ...direct });
+    return;
+  }
+
+  const shouldResolveFromRequestId = Boolean(requestIdRaw) || /^req-[a-z0-9-]+$/i.test(requestedId);
+  if (!shouldResolveFromRequestId) {
+    res.status(direct.status || 500).json({ success: false, ...direct });
+    return;
+  }
+
+  const resolvedDebugIds = resolveMessageActionDebugIdsFromLog(requestIdRaw || requestedId, { maxResults: 6 });
+  if (!resolvedDebugIds.length) {
+    res.status(404).json({
+      success: false,
+      error: "Артефакты не найдены.",
+      requestId: requestIdRaw || requestedId,
+      hint: "Используйте /api/debug/message-actions/log?requestId=... чтобы найти debugId."
+    });
+    return;
+  }
+
+  const artifactsByDebugId = {};
+  const errors = [];
+  for (const resolvedDebugId of resolvedDebugIds) {
+    const listing = listMessageActionArtifactsForDebugId(resolvedDebugId, limit);
+    if (listing.ok) {
+      artifactsByDebugId[resolvedDebugId] = listing;
+    } else {
+      errors.push({
+        debugId: resolvedDebugId,
+        error: listing.error || "Не удалось получить артефакты.",
+        dir: listing.dir || ""
+      });
+    }
+  }
+
+  res.json({
+    success: true,
+    resolvedFromRequestId: true,
+    requestId: requestIdRaw || requestedId,
+    debugIds: resolvedDebugIds,
+    artifactsByDebugId,
+    errors
   });
 });
 

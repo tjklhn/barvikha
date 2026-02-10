@@ -5812,11 +5812,21 @@ const declineConversationOffer = async ({
       await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
     }
     await humanPause(40, 120);
+    if (hasTimeLeft(12000)) {
+      await captureDeclineArtifact("home-opened", page, {
+        url: getSafePageUrl(page)
+      });
+    }
 
     ensureDeadline("offer-decline-before-set-cookie-after-home");
     throwIfAborted("offer-decline-before-set-cookie-after-home");
     await page.setCookie(...cookies);
     await humanPause(35, 90);
+    if (hasTimeLeft(12000)) {
+      await captureDeclineArtifact("cookies-set", page, {
+        url: getSafePageUrl(page)
+      });
+    }
     const conversationGotoTimeout = getStepTimeout(
       localTimeout,
       4500,
@@ -5830,6 +5840,11 @@ const declineConversationOffer = async ({
       "DECLINE_CONVERSATION_GOTO"
     );
     throwIfAborted("offer-decline-after-conversation-goto");
+    if (hasTimeLeft(12000)) {
+      await captureDeclineArtifact("conversation-domcontentloaded", page, {
+        url: getSafePageUrl(page)
+      });
+    }
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
       error.code = "AUTH_REQUIRED";
@@ -6736,11 +6751,21 @@ const sendConversationMedia = async ({
         await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
       }
       await humanPause(40, 120);
+      if (hasTimeLeft(12000)) {
+        await captureMediaArtifact("home-opened", page, {
+          url: getSafePageUrl(page)
+        });
+      }
 
       ensureDeadline("send-media-before-set-cookie-after-home");
       throwIfAborted("send-media-before-set-cookie-after-home");
       await page.setCookie(...cookies);
       await humanPause(35, 90);
+      if (hasTimeLeft(12000)) {
+        await captureMediaArtifact("cookies-set", page, {
+          url: getSafePageUrl(page)
+        });
+      }
       const conversationGotoTimeout = getStepTimeout(
         localTimeout,
         4500,
@@ -6754,6 +6779,11 @@ const sendConversationMedia = async ({
         "MEDIA_CONVERSATION_GOTO"
       );
       throwIfAborted("send-media-after-conversation-goto");
+      if (hasTimeLeft(12000)) {
+        await captureMediaArtifact("conversation-domcontentloaded", page, {
+          url: getSafePageUrl(page)
+        });
+      }
       if (await isAuthFailure(page)) {
         const error = new Error("AUTH_REQUIRED");
         error.code = "AUTH_REQUIRED";
