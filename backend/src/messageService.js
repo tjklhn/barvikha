@@ -5679,7 +5679,13 @@ const declineConversationOffer = async ({
       stage: "offer-decline-after-open",
       captureArtifact: captureDeclineArtifact
     }).catch(() => false);
-    if (!consentHandledAfterOpen && isConsentInterruptionUrl(getSafePageUrl(page))) {
+    if (
+      !consentHandledAfterOpen
+      && (
+        isConsentInterruptionUrl(getSafePageUrl(page))
+        || (await isConsentOverlayVisible(page))
+      )
+    ) {
       const error = new Error("CONSENT_REQUIRED");
       error.code = "CONSENT_REQUIRED";
       error.details = `offer-decline-after-open:${getSafePageUrl(page)}`;
@@ -5755,14 +5761,20 @@ const declineConversationOffer = async ({
       "Weiterlesen"
     ];
 
-    await ensureCookieConsentBeforeMessagingAction({
+    const consentHandledBeforeClicks = await ensureCookieConsentBeforeMessagingAction({
       page,
       conversationUrl: resolvedConversationUrl,
       timeoutMs: 5500,
       navigationTimeoutMs: 8000,
       stage: "offer-decline-before-clicks",
       captureArtifact: captureDeclineArtifact
-    }).catch(() => {});
+    }).catch(() => false);
+    if (!consentHandledBeforeClicks && (await isConsentOverlayVisible(page))) {
+      const error = new Error("CONSENT_REQUIRED");
+      error.code = "CONSENT_REQUIRED";
+      error.details = `offer-decline-before-clicks:${getSafePageUrl(page)}`;
+      throw error;
+    }
 
     const hasVisibleButtonsOutsidePayment = async (labels) => {
       const contexts = getPageContexts(page, { mainFrameOnly: false });
@@ -6553,7 +6565,13 @@ const sendConversationMedia = async ({
         stage: "send-media-after-open",
         captureArtifact: captureMediaArtifact
       }).catch(() => false);
-      if (!consentHandledAfterOpen && isConsentInterruptionUrl(getSafePageUrl(page))) {
+      if (
+        !consentHandledAfterOpen
+        && (
+          isConsentInterruptionUrl(getSafePageUrl(page))
+          || (await isConsentOverlayVisible(page))
+        )
+      ) {
         const error = new Error("CONSENT_REQUIRED");
         error.code = "CONSENT_REQUIRED";
         error.details = `send-media-after-open:${getSafePageUrl(page)}`;
@@ -6638,7 +6656,13 @@ const sendConversationMedia = async ({
           stage: "send-media-before-upload-controls",
           captureArtifact: captureMediaArtifact
         }).catch(() => false);
-        if (!consentHandledBeforeUpload && isConsentInterruptionUrl(getSafePageUrl(page))) {
+        if (
+          !consentHandledBeforeUpload
+          && (
+            isConsentInterruptionUrl(getSafePageUrl(page))
+            || (await isConsentOverlayVisible(page))
+          )
+        ) {
           const error = new Error("CONSENT_REQUIRED");
           error.code = "CONSENT_REQUIRED";
           error.details = `send-media-before-upload-controls:${getSafePageUrl(page)}`;
@@ -7040,14 +7064,26 @@ const sendConversationMedia = async ({
         "button[data-testid='submit-button']",
         "button[aria-label*='Senden']"
       ];
-      await ensureCookieConsentBeforeMessagingAction({
+      const consentHandledBeforeSendClick = await ensureCookieConsentBeforeMessagingAction({
         page,
         conversationUrl: resolvedConversationUrl,
         timeoutMs: 5000,
         navigationTimeoutMs: 7000,
         stage: "send-media-before-send-click",
         captureArtifact: captureMediaArtifact
-      }).catch(() => {});
+      }).catch(() => false);
+      if (
+        !consentHandledBeforeSendClick
+        && (
+          isConsentInterruptionUrl(getSafePageUrl(page))
+          || (await isConsentOverlayVisible(page))
+        )
+      ) {
+        const error = new Error("CONSENT_REQUIRED");
+        error.code = "CONSENT_REQUIRED";
+        error.details = `send-media-before-send-click:${getSafePageUrl(page)}`;
+        throw error;
+      }
       ensureDeadline("send-media-before-send-click");
       const sendAttemptStartedAt = Date.now();
       await waitForDynamicContent(page, sendSelectors, 4500);
