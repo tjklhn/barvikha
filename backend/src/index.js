@@ -4902,31 +4902,63 @@ app.get("/api/ads/fields", async (req, res) => {
         .map((item) => item.trim())
         .filter(Boolean);
     };
-    const extractNumericId = (item) => {
+    const extractCategoryToken = (item) => {
       const raw = String(item || "").trim();
       if (!raw) return "";
       if (/^\d+$/.test(raw)) return raw;
-      const pathMatch = raw.match(/path=([^&]+)/i);
+      const pathMatch = raw.match(/(?:[?&]|^)path=([^&]+)/i);
       if (pathMatch) {
         try {
           const decoded = decodeURIComponent(pathMatch[1]);
-          const parts = decoded.split("/").filter(Boolean);
+          const parts = decoded.split("/").map((part) => part.trim()).filter(Boolean);
           const last = parts[parts.length - 1];
-          if (last && /^\d+$/.test(last)) return last;
+          if (last) return last;
         } catch (error) {
           // ignore decode errors
         }
       }
+      const fromUrl = extractCategoryIdFromUrl(raw);
+      if (fromUrl) return fromUrl;
+      try {
+        const parsed = new URL(raw, "https://www.kleinanzeigen.de");
+        const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
+        const last = parts[parts.length - 1];
+        if (last) return last;
+      } catch (error) {
+        // ignore URL parse errors
+      }
+      return raw;
+    };
+    const extractNumericId = (item) => {
+      const raw = extractCategoryToken(item);
+      if (!raw) return "";
+      if (/^\d+$/.test(raw)) return raw;
       const idMatch = raw.match(/\/c(\d+)(?:\/|$)/i) || raw.match(/(\d{2,})/);
       return idMatch ? idMatch[1] : "";
     };
     const categoryPathItems = parseCategoryPath(categoryPathRaw);
     const categoryPathIdsFromRequest = categoryPathItems
+      .map(extractCategoryToken)
+      .filter(Boolean);
+    const categoryPathIdsNumericFromRequest = categoryPathIdsFromRequest
       .map(extractNumericId)
       .filter(Boolean);
-    const resolvedCategoryId = categoryIdParam
-      || (categoryPathIdsFromRequest.length ? categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] : "")
-      || extractCategoryIdFromUrl(categoryUrl);
+    const lastCategoryPathToken = categoryPathIdsFromRequest.length
+      ? String(categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] || "")
+      : "";
+    const resolvedCategoryId = (() => {
+      if (categoryIdParam) {
+        const categoryIdIsNumeric = /^\d+$/.test(categoryIdParam);
+        const lastPathIsNumeric = /^\d+$/.test(lastCategoryPathToken);
+        if (categoryIdIsNumeric && lastCategoryPathToken && !lastPathIsNumeric) {
+          // Some clients still send L2 numeric categoryId while L3 slug is in categoryPath.
+          // Prefer the explicit leaf token from categoryPath to avoid falling back to parent fields.
+          return lastCategoryPathToken;
+        }
+        return categoryIdParam;
+      }
+      return lastCategoryPathToken || extractCategoryIdFromUrl(categoryUrl);
+    })();
     const forceRefresh = req.query.refresh === "true";
     const allowStaleCache = req.query.allowStale !== "0";
     const allowLiveFetch = req.query.live === "1" || forceRefresh || DEFAULT_FIELDS_LIVE_FETCH;
@@ -5163,8 +5195,11 @@ app.get("/api/ads/fields", async (req, res) => {
     const categoryPathIds = categoryPathIdsFromRequest.length
       ? categoryPathIdsFromRequest
       : (resolveCategoryPathFromCache(categoryId) || (categoryId ? [categoryId] : []));
-    const selectionUrl = categoryPathIds.length > 1
-      ? `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(categoryPathIds.join("/"))}`
+    const categoryPathIdsNumeric = categoryPathIds.length
+      ? categoryPathIds.map(extractNumericId).filter(Boolean)
+      : categoryPathIdsNumericFromRequest;
+    const selectionUrl = categoryPathIdsNumeric.length > 1
+      ? `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(categoryPathIdsNumeric.join("/"))}`
       : getCategorySelectionUrl(categoryId, categoryUrl);
 
       const injectCategoryId = async () => {
@@ -5262,17 +5297,21 @@ app.get("/api/ads/fields", async (req, res) => {
       const submitCategoryViaStep2Form = async () => {
         try {
           const submitted = await page.evaluate(({ categoryId, categoryPathIds }) => {
-            const sanitize = (value) => {
-              const raw = String(value || "").trim();
+            const normalize = (value) => String(value || "").trim();
+            const extractNumeric = (value) => {
+              const raw = normalize(value);
               const match = raw.match(/\d+/);
               return match ? match[0] : "";
             };
-            const ids = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
-              .map(sanitize)
+            const pathTokens = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
+              .map(normalize)
               .filter(Boolean);
-            const fallbackId = sanitize(categoryId);
-            if (!ids.length && fallbackId) ids.push(fallbackId);
-            if (!ids.length) return false;
+            const fallbackToken = normalize(categoryId);
+            if (!pathTokens.length && fallbackToken) pathTokens.push(fallbackToken);
+            if (!pathTokens.length) return false;
+            const numericIds = pathTokens.map(extractNumeric).filter(Boolean);
+            const finalCategoryToken = pathTokens[pathTokens.length - 1] || fallbackToken;
+            if (!finalCategoryToken) return false;
 
             const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
             if (!form) return false;
@@ -5288,10 +5327,10 @@ app.get("/api/ads/fields", async (req, res) => {
               field.value = String(value ?? "");
             };
 
-            if (ids.length > 1) {
-              applyField("parentCategoryId", ids[0]);
+            if (numericIds.length > 1) {
+              applyField("parentCategoryId", numericIds[0]);
             }
-            applyField("categoryId", ids[ids.length - 1]);
+            applyField("categoryId", finalCategoryToken);
             applyField("submitted", "true");
             form.submit();
             return true;

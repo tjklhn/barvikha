@@ -65,24 +65,42 @@ const normalizeCategoryPathInput = (value) => {
   return [];
 };
 
-const extractCategoryIdFromPathItem = (item) => {
+const extractCategoryTokenFromPathItem = (item) => {
   const raw = String(item || "").trim();
   if (!raw) return "";
   if (/^\d+$/.test(raw)) return raw;
+  const pathMatch = raw.match(/(?:[?&]|^)path=([^&]+)/i);
+  if (pathMatch) {
+    try {
+      const decoded = decodeURIComponent(pathMatch[1]);
+      const parts = decoded.split("/").map((part) => part.trim()).filter(Boolean);
+      const last = parts[parts.length - 1];
+      if (last) return last;
+    } catch (error) {
+      // ignore decode errors
+    }
+  }
   const fromUrl = extractCategoryIdFromUrl(raw);
   if (fromUrl) return fromUrl;
-  const fallback = raw.match(/(\d{2,})/);
-  return fallback ? fallback[1] : "";
+  try {
+    const parsed = new URL(raw, "https://www.kleinanzeigen.de");
+    const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
+    const last = parts[parts.length - 1];
+    if (last) return last;
+  } catch (error) {
+    // ignore url parsing errors
+  }
+  return raw;
 };
 
 const normalizeCategoryPathIds = (pathInput) => {
   const rawItems = normalizeCategoryPathInput(pathInput);
   const result = [];
   for (const item of rawItems) {
-    const id = extractCategoryIdFromPathItem(item);
-    if (!id) continue;
-    if (result.length && result[result.length - 1] === id) continue;
-    result.push(id);
+    const token = extractCategoryTokenFromPathItem(item);
+    if (!token) continue;
+    if (result.length && String(result[result.length - 1]).toLowerCase() === String(token).toLowerCase()) continue;
+    result.push(token);
   }
   return result;
 };
@@ -5809,9 +5827,21 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
 
       const categoryPathFromAd = normalizeCategoryPathIds(ad?.categoryPath);
       const categoryPathNumeric = categoryPathFromAd.filter((item) => /^\d+$/.test(String(item)));
-      const resolvedCategoryId = normalizeCategoryId(ad.categoryId) ||
-        (categoryPathNumeric.length ? String(categoryPathNumeric[categoryPathNumeric.length - 1]) : "") ||
-        extractCategoryIdFromUrl(ad.categoryUrl);
+      const categoryIdFromInput = extractCategoryTokenFromPathItem(ad.categoryId);
+      const lastCategoryPathToken = categoryPathFromAd.length
+        ? String(categoryPathFromAd[categoryPathFromAd.length - 1] || "")
+        : "";
+      const resolvedCategoryId = (() => {
+        if (categoryIdFromInput) {
+          const categoryIdIsNumeric = /^\d+$/.test(String(categoryIdFromInput));
+          const lastPathIsNumeric = /^\d+$/.test(lastCategoryPathToken);
+          if (categoryIdIsNumeric && lastCategoryPathToken && !lastPathIsNumeric) {
+            return lastCategoryPathToken;
+          }
+          return categoryIdFromInput;
+        }
+        return lastCategoryPathToken || extractCategoryIdFromUrl(ad.categoryUrl);
+      })();
       const categoryPathIds = categoryPathFromAd.length
         ? categoryPathFromAd
         : (resolveCategoryPathFromCache(resolvedCategoryId) || []);
