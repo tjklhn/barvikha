@@ -1695,7 +1695,7 @@ function App() {
 
   return (
     <div className={`app-root${isPhoneView ? " phone-view" : ""}`} style={{
-      minHeight: "100vh",
+      minHeight: "100dvh",
       background: "radial-gradient(circle at top, #111827 0%, #0b1220 45%, #070b14 100%)",
       fontFamily: "Inter, 'Segoe UI', sans-serif",
       color: textPrimary
