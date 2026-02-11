@@ -1,0 +1,7510 @@
+﻿const express = require("express");
+const cors = require("cors");
+const proxyChecker = require("./proxyChecker");
+const axios = require("axios");
+const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const ProxyAgent = require("proxy-agent");
+const puppeteerExtra = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
+const {
+  buildProxyUrl,
+  buildPuppeteerProxyUrl,
+  buildProxyServer,
+  parseCookies,
+  normalizeCookies,
+  normalizeCookie,
+  filterKleinanzeigenCookies,
+  buildCookieHeaderForUrl
+} = require("./cookieUtils");
+const {
+  publishAd,
+  parseExtraSelectFields,
+  parseExtraSelectFieldsAcrossContexts,
+  acceptCookieModal,
+  acceptGdprConsent,
+  isGdprPage,
+  extractCategoryIdFromUrl,
+  resolveCategoryPathFromCache,
+  getCategorySelectionUrl,
+  openCategorySelection,
+  openCategorySelectionByPost,
+  waitForCategorySelectionReady,
+  selectCategoryPathOnSelectionPage,
+  applyCategoryPathViaTree,
+  hasCategoryTree,
+  clickCategoryWeiter
+} = require("./adPublisher");
+const { validateCookies, pickDeviceProfile } = require("./cookieValidator");
+const { fetchActiveAds, performAdAction } = require("./adsService");
+const { upsertAd } = require("./adsStore");
+const { getCategories, getCategoryChildren } = require("./categoryService");
+const {
+  fetchMessages,
+  fetchThreadMessages,
+  summarizeConversations,
+  sendConversationMessage,
+  declineConversationOffer,
+  sendConversationMedia
+} = require("./messageService");
+const { translateText } = require("./translateService");
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
+const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
+const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
+
+const proxies = [];
+const proxiesPath = path.join(__dirname, "..", "data", "proxies.json");
+const subscriptionTokensPath = path.join(__dirname, "..", "data", "subscription-tokens.json");
+const categoryChildrenCachePath = path.join(__dirname, "..", "data", "category-children.json");
+const categoryFieldsCachePath = path.join(__dirname, "..", "data", "category-fields.json");
+const categoriesPath = path.join(__dirname, "..", "data", "categories.json");
+const CATEGORY_CHILDREN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CATEGORY_CHILDREN_EMPTY_TTL_MS = 60 * 60 * 1000;
+const CATEGORY_FIELDS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CATEGORY_FIELDS_EMPTY_TTL_MS = 5 * 60 * 1000;
+const CATEGORY_CHILDREN_STALE_MAX_MS = Number(
+  process.env.KL_CATEGORY_CHILDREN_STALE_MAX_MS || (45 * 24 * 60 * 60 * 1000)
+);
+const CATEGORY_FIELDS_STALE_MAX_MS = Number(
+  process.env.KL_CATEGORY_FIELDS_STALE_MAX_MS || (45 * 24 * 60 * 60 * 1000)
+);
+const DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH = process.env.KL_CATEGORY_CHILDREN_LIVE_FETCH === "1";
+const DEFAULT_FIELDS_LIVE_FETCH = process.env.KL_FIELDS_LIVE_FETCH === "1";
+const DEBUG_FEATURES_ENABLED = false;
+const isDebugFlagEnabled = (name) => DEBUG_FEATURES_ENABLED && process.env[name] === "1";
+const categoryChildrenCache = { items: {} };
+let categoryChildrenCacheSaveTimer = null;
+const categoryFieldsCache = { items: {} };
+let categoryFieldsCacheSaveTimer = null;
+let categorySlugLookupById = null;
+const DEBUG_FIELDS = isDebugFlagEnabled("KL_DEBUG_FIELDS");
+const DEBUG_CATEGORIES = isDebugFlagEnabled("KL_DEBUG_CATEGORIES");
+const DEBUG_PUBLISH = isDebugFlagEnabled("KL_DEBUG_PUBLISH");
+const DEBUG_LOG_FILES = isDebugFlagEnabled("KL_DEBUG_LOG_FILES");
+let puppeteerStealthReady = false;
+const subscriptionTokens = { items: [] };
+const activePublishByAccount = new Map();
+const recentSuccessfulPublishes = new Map();
+const RECENT_PUBLISH_TTL_MS = 30 * 60 * 1000;
+const ADS_ACTIVE_CACHE_TTL_MS = Number(process.env.KL_ACTIVE_ADS_CACHE_TTL_MS || 90 * 1000);
+const activeAdsCache = new Map();
+// Message actions can be slow behind proxies (GDPR, messagebox bundle, uploads).
+// Frontend uses long timeouts (up to 240s) so keep backend deadline aligned.
+const MESSAGE_ROUTE_DEADLINE_DEFAULT_MS = 120000;
+const MESSAGE_ROUTE_DEADLINE_MIN_MS = 15000;
+const MESSAGE_ROUTE_DEADLINE_MAX_MS = 240000;
+const MESSAGE_ACTION_LOCK_STALE_MS = 8 * 60 * 1000;
+const activeMessageActionByAccount = new Map();
+const messageboxAccessTokenCacheByAccount = new Map();
+const MESSAGEBOX_ACCESS_TOKEN_SKEW_MS = 60 * 1000;
+const ACCOUNT_SAFETY_STATE_TTL_MS = Math.max(
+  10 * 60 * 1000,
+  Number(process.env.KL_ACCOUNT_SAFETY_STATE_TTL_MS || 6 * 60 * 60 * 1000)
+);
+const ACCOUNT_PROXY_SETTLE_MS = Math.max(
+  0,
+  Number(process.env.KL_ACCOUNT_PROXY_SETTLE_MS || 45000)
+);
+const ACCOUNT_COOLDOWN_MAX_MS = Math.max(
+  60 * 1000,
+  Number(process.env.KL_ACCOUNT_COOLDOWN_MAX_MS || 20 * 60 * 1000)
+);
+const ACCOUNT_ACTION_PACE_MS = Object.freeze({
+  "send-message": Math.max(0, Number(process.env.KL_PACE_SEND_MESSAGE_MS || 2500)),
+  "offer-decline": Math.max(0, Number(process.env.KL_PACE_OFFER_DECLINE_MS || 5000)),
+  "send-media": Math.max(0, Number(process.env.KL_PACE_SEND_MEDIA_MS || 5000)),
+  "ads-create": Math.max(0, Number(process.env.KL_PACE_ADS_CREATE_MS || 12000))
+});
+const accountLastActionByAccount = new Map();
+const accountCooldownByAccount = new Map();
+const accountProxyBindingByAccount = new Map();
+
+const resolveMessageRouteDeadlineMs = () => {
+  const configured = Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || MESSAGE_ROUTE_DEADLINE_DEFAULT_MS);
+  if (!Number.isFinite(configured)) return MESSAGE_ROUTE_DEADLINE_DEFAULT_MS;
+  return Math.max(
+    MESSAGE_ROUTE_DEADLINE_MIN_MS,
+    Math.min(MESSAGE_ROUTE_DEADLINE_MAX_MS, configured)
+  );
+};
+
+const tryAcquireMessageActionLock = ({ accountId, route, debugId, clientRequestId }) => {
+  const key = String(accountId || "").trim();
+  if (!key) {
+    return { acquired: false, key: "", reason: "INVALID_ACCOUNT" };
+  }
+
+  const now = Date.now();
+  const current = activeMessageActionByAccount.get(key);
+  if (current && now - Number(current.startedAt || 0) > MESSAGE_ACTION_LOCK_STALE_MS) {
+    activeMessageActionByAccount.delete(key);
+  }
+
+  const existing = activeMessageActionByAccount.get(key);
+  if (existing) {
+    return { acquired: false, key, reason: "BUSY", existing };
+  }
+
+  const token = `${now}-${Math.random().toString(36).slice(2, 8)}`;
+  activeMessageActionByAccount.set(key, {
+    token,
+    route: String(route || ""),
+    debugId: String(debugId || ""),
+    clientRequestId: String(clientRequestId || ""),
+    startedAt: now
+  });
+  return { acquired: true, key, token };
+};
+
+const releaseMessageActionLock = (lockInfo) => {
+  if (!lockInfo?.acquired) return;
+  const key = String(lockInfo.key || "");
+  const token = String(lockInfo.token || "");
+  if (!key || !token) return;
+  const existing = activeMessageActionByAccount.get(key);
+  if (existing?.token === token) {
+    activeMessageActionByAccount.delete(key);
+  }
+};
+
+const toAccountSafetyKey = (accountId) => String(accountId || "").trim();
+
+const resolveActionPaceMs = (actionKey) => {
+  const value = Number(ACCOUNT_ACTION_PACE_MS[actionKey] || 0);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value;
+};
+
+const toRetryAfterMs = (value, fallbackMs = 1000) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return Math.max(1000, Number(fallbackMs) || 1000);
+  }
+  return Math.max(1000, Math.ceil(numeric));
+};
+
+const toRetryAfterSeconds = (retryAfterMs) => Math.max(1, Math.ceil(toRetryAfterMs(retryAfterMs) / 1000));
+
+const pruneAccountSafetyState = () => {
+  const now = Date.now();
+  for (const [key, entry] of accountCooldownByAccount.entries()) {
+    if (!entry || Number(entry.until || 0) <= now) {
+      accountCooldownByAccount.delete(key);
+    }
+  }
+  for (const [key, entry] of accountLastActionByAccount.entries()) {
+    if (!entry || (now - Number(entry.updatedAt || 0)) > ACCOUNT_SAFETY_STATE_TTL_MS) {
+      accountLastActionByAccount.delete(key);
+    }
+  }
+  for (const [key, entry] of accountProxyBindingByAccount.entries()) {
+    if (!entry || (now - Number(entry.lastSeenAt || 0)) > ACCOUNT_SAFETY_STATE_TTL_MS) {
+      accountProxyBindingByAccount.delete(key);
+    }
+  }
+};
+
+const readActiveAccountCooldown = (accountId, now = Date.now()) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key) return null;
+  const entry = accountCooldownByAccount.get(key);
+  if (!entry) return null;
+  const until = Number(entry.until || 0);
+  if (!until || until <= now) {
+    accountCooldownByAccount.delete(key);
+    return null;
+  }
+  return {
+    ...entry,
+    retryAfterMs: toRetryAfterMs(until - now)
+  };
+};
+
+const registerAccountCooldown = ({
+  accountId,
+  cooldownMs,
+  reason = "",
+  code = "",
+  source = "",
+  details = ""
+} = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key) return null;
+  const normalizedMs = Math.max(1000, Math.min(ACCOUNT_COOLDOWN_MAX_MS, Number(cooldownMs) || 0));
+  if (!normalizedMs) return null;
+  const now = Date.now();
+  const until = now + normalizedMs;
+  const entry = {
+    until,
+    reason: String(reason || ""),
+    code: String(code || ""),
+    source: String(source || ""),
+    details: String(details || "").slice(0, 500),
+    updatedAt: now
+  };
+  accountCooldownByAccount.set(key, entry);
+  return {
+    ...entry,
+    retryAfterMs: normalizedMs
+  };
+};
+
+const registerAccountActionAttempt = ({ accountId, actionKey, now = Date.now() } = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key || !actionKey) return;
+  const current = accountLastActionByAccount.get(key) || { lastByAction: {}, updatedAt: now };
+  current.lastByAction = current.lastByAction || {};
+  current.lastByAction[actionKey] = now;
+  current.updatedAt = now;
+  accountLastActionByAccount.set(key, current);
+};
+
+const checkAccountActionPace = ({ accountId, actionKey, now = Date.now() } = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key || !actionKey) return null;
+  const paceMs = resolveActionPaceMs(actionKey);
+  if (!paceMs) return null;
+  const current = accountLastActionByAccount.get(key);
+  const lastAt = Number(current?.lastByAction?.[actionKey] || 0);
+  if (!lastAt) return null;
+  const elapsedMs = now - lastAt;
+  if (elapsedMs >= paceMs) return null;
+  return {
+    status: 429,
+    code: "ACCOUNT_ACTION_RATE_LIMIT",
+    reason: "action-pace",
+    retryAfterMs: toRetryAfterMs(paceMs - elapsedMs),
+    error: "Слишком частые действия для аккаунта. Подождите немного и повторите попытку."
+  };
+};
+
+const checkAccountProxyStability = ({ accountId, proxyId, now = Date.now() } = {}) => {
+  if (!ACCOUNT_PROXY_SETTLE_MS) return null;
+  const key = toAccountSafetyKey(accountId);
+  const normalizedProxyId = String(proxyId || "").trim();
+  if (!key || !normalizedProxyId) return null;
+
+  const current = accountProxyBindingByAccount.get(key);
+  if (!current) {
+    accountProxyBindingByAccount.set(key, {
+      proxyId: normalizedProxyId,
+      lastChangeAt: 0,
+      lastSeenAt: now
+    });
+    return null;
+  }
+
+  if (String(current.proxyId || "") !== normalizedProxyId) {
+    accountProxyBindingByAccount.set(key, {
+      proxyId: normalizedProxyId,
+      lastChangeAt: now,
+      lastSeenAt: now
+    });
+    return {
+      status: 429,
+      code: "ACCOUNT_PROXY_SWITCH_COOLDOWN",
+      reason: "proxy-switch",
+      retryAfterMs: toRetryAfterMs(ACCOUNT_PROXY_SETTLE_MS),
+      error: "Прокси аккаунта недавно изменился. Подождите немного и повторите действие."
+    };
+  }
+
+  const lastChangeAt = Number(current.lastChangeAt || 0);
+  const elapsedSinceChange = now - lastChangeAt;
+  current.lastSeenAt = now;
+  if (lastChangeAt > 0 && elapsedSinceChange < ACCOUNT_PROXY_SETTLE_MS) {
+    accountProxyBindingByAccount.set(key, current);
+    return {
+      status: 429,
+      code: "ACCOUNT_PROXY_SWITCH_COOLDOWN",
+      reason: "proxy-switch",
+      retryAfterMs: toRetryAfterMs(ACCOUNT_PROXY_SETTLE_MS - elapsedSinceChange),
+      error: "Прокси аккаунта недавно изменился. Подождите немного и повторите действие."
+    };
+  }
+
+  if (lastChangeAt > 0 && elapsedSinceChange >= ACCOUNT_PROXY_SETTLE_MS) {
+    current.lastChangeAt = 0;
+  }
+  accountProxyBindingByAccount.set(key, current);
+  return null;
+};
+
+const evaluateAccountSafetyPrecheck = ({ accountId, actionKey, proxyId, touchAction = true } = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key || !actionKey) return { ok: true };
+  pruneAccountSafetyState();
+  const now = Date.now();
+
+  const cooldown = readActiveAccountCooldown(key, now);
+  if (cooldown) {
+    return {
+      ok: false,
+      rejection: {
+        status: 429,
+        code: "ACCOUNT_COOLDOWN_ACTIVE",
+        reason: cooldown.reason || "risk-cooldown",
+        retryAfterMs: cooldown.retryAfterMs,
+        error: "Для этого аккаунта включена пауза безопасности. Подождите и повторите попытку."
+      }
+    };
+  }
+
+  const paceRejection = checkAccountActionPace({ accountId: key, actionKey, now });
+  if (paceRejection) {
+    return { ok: false, rejection: paceRejection };
+  }
+
+  const proxyRejection = checkAccountProxyStability({ accountId: key, proxyId, now });
+  if (proxyRejection) {
+    return { ok: false, rejection: proxyRejection };
+  }
+
+  if (touchAction) {
+    registerAccountActionAttempt({ accountId: key, actionKey, now });
+  }
+  return { ok: true };
+};
+
+const detectAccountRiskCooldown = ({ error, statusCode } = {}) => {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || statusCode || 0);
+  const code = String(error?.code || "").trim().toUpperCase();
+  const message = String(error?.message || "").toLowerCase();
+  const details = String(error?.details || "").toLowerCase();
+  const combined = `${message} ${details}`.trim();
+
+  if (
+    status === 429
+    || code === "TOO_MANY_REQUESTS"
+    || combined.includes("too many requests")
+    || combined.includes("rate limit")
+  ) {
+    return { cooldownMs: 8 * 60 * 1000, reason: "rate-limit", code: "RISK_RATE_LIMIT" };
+  }
+
+  if (
+    code === "AUTH_REQUIRED"
+    || status === 401
+    || status === 403
+    || combined.includes("redirected-to-login")
+    || combined.includes("m-einloggen")
+    || combined.includes("cookie файл")
+    || combined.includes("cookies")
+    || combined.includes("cookie file")
+    || combined.includes("session expired")
+  ) {
+    return { cooldownMs: 15 * 60 * 1000, reason: "auth", code: "RISK_AUTH" };
+  }
+
+  if (
+    code === "CONSENT_REQUIRED"
+    || combined.includes("gdpr")
+    || combined.includes("consent")
+    || combined.includes("alle akzeptieren")
+  ) {
+    return { cooldownMs: 6 * 60 * 1000, reason: "consent", code: "RISK_CONSENT" };
+  }
+
+  if (
+    code === "PROXY_TUNNEL_CONNECTION_FAILED"
+    || code === "PROXY_REQUIRED"
+    || combined.includes("proxy")
+    || combined.includes("tunnel_connection_failed")
+  ) {
+    return { cooldownMs: 4 * 60 * 1000, reason: "proxy", code: "RISK_PROXY" };
+  }
+
+  if (
+    code === "MESSAGE_ACTION_TIMEOUT"
+    || status === 504
+    || code === "ETIMEDOUT"
+    || code === "ECONNABORTED"
+    || combined.includes("timeout")
+  ) {
+    return { cooldownMs: 2 * 60 * 1000, reason: "timeout", code: "RISK_TIMEOUT" };
+  }
+
+  return null;
+};
+
+const applyAccountRiskCooldown = ({
+  accountId,
+  route = "",
+  error,
+  statusCode = 0,
+  debugId = "",
+  requestId = "",
+  logPath = ""
+} = {}) => {
+  const risk = detectAccountRiskCooldown({ error, statusCode });
+  if (!risk) return null;
+  const message = String(error?.message || "");
+  const details = String(error?.details || "");
+  const cooldown = registerAccountCooldown({
+    accountId,
+    cooldownMs: risk.cooldownMs,
+    reason: risk.reason,
+    code: risk.code,
+    source: route,
+    details: `${message}${details ? ` | ${details}` : ""}`
+  });
+  if (cooldown && logPath) {
+    appendServerLog(logPath, {
+      event: "account-safety-cooldown-set",
+      route,
+      debugId,
+      requestId,
+      accountId,
+      cooldownCode: cooldown.code || "",
+      cooldownReason: cooldown.reason || "",
+      retryAfterMs: cooldown.retryAfterMs
+    });
+  }
+  return cooldown;
+};
+
+const sendAccountSafetyRejection = (res, rejection, { debugId = "", requestId = "" } = {}) => {
+  const status = Number(rejection?.status || 429);
+  const retryAfterMs = toRetryAfterMs(rejection?.retryAfterMs || 1000);
+  if (retryAfterMs > 0) {
+    res.setHeader("Retry-After", String(toRetryAfterSeconds(retryAfterMs)));
+  }
+  res.status(status).json({
+    success: false,
+    error: String(rejection?.error || "Действие временно ограничено для защиты аккаунта."),
+    code: String(rejection?.code || "ACCOUNT_ACTION_BLOCKED"),
+    reason: String(rejection?.reason || ""),
+    retryAfterMs,
+    debugId,
+    requestId
+  });
+};
+
+const withCooldownHint = (payload, cooldown) => {
+  if (!cooldown) return payload;
+  return {
+    ...payload,
+    retryAfterMs: cooldown.retryAfterMs,
+    cooldownCode: cooldown.code || ""
+  };
+};
+
+const getPuppeteer = () => {
+  if (!puppeteerStealthReady) {
+    puppeteerExtra.use(StealthPlugin());
+    puppeteerStealthReady = true;
+  }
+  return puppeteerExtra;
+};
+
+const toDeviceProfile = (rawProfile) => {
+  if (!rawProfile) {
+    return pickDeviceProfile();
+  }
+  if (typeof rawProfile === "string") {
+    try {
+      return JSON.parse(rawProfile);
+    } catch (error) {
+      return pickDeviceProfile();
+    }
+  }
+  return rawProfile;
+};
+
+const sanitizeFilename = (value) => (value || "account")
+  .toString()
+  .replace(/[^a-z0-9._-]+/gi, "_")
+  .slice(0, 60);
+
+const buildCookieHeaderFromAccount = (account, targetUrl = "https://www.kleinanzeigen.de/") => {
+  const cookies = normalizeCookies(parseCookies(account?.cookie));
+  return buildCookieHeaderForUrl(cookies, targetUrl);
+};
+
+const deriveMessageboxBearerFromAccount = (account) => {
+  const cookies = normalizeCookies(parseCookies(account?.cookie));
+  const accessToken = cookies.find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  const raw = String(accessToken?.value || "").trim();
+  if (!raw) return "";
+  if (/^Bearer\s+/i.test(raw)) return raw;
+  if (raw.split(".").length >= 3) return `Bearer ${raw}`;
+  return raw;
+};
+
+const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
+  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
+  const cookieHeader = buildCookieHeaderFromAccount(account, tokenUrl);
+  const derivedBearer = deriveMessageboxBearerFromAccount(account);
+  if (!cookieHeader) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader: "" };
+    }
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    error.details = "missing-cookie-header";
+    throw error;
+  }
+
+  const deviceProfile = toDeviceProfile(account?.deviceProfile);
+  const axiosConfig = proxyChecker.buildAxiosConfig(proxy, Math.max(4000, Number(timeoutMs) || 20000));
+  axiosConfig.headers = {
+    ...axiosConfig.headers,
+    Cookie: cookieHeader,
+    "User-Agent": deviceProfile.userAgent || "Mozilla/5.0",
+    "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
+    Accept: "application/json"
+  };
+  axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
+
+  const response = await axios.get(tokenUrl, axiosConfig);
+  if (response.status === 401 || response.status === 403) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader };
+    }
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    error.details = `token-endpoint-status:${response.status}`;
+    throw error;
+  }
+
+  const token = response.headers?.authorization || response.headers?.Authorization || "";
+  if (!token) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader };
+    }
+    const error = new Error("AUTH_REQUIRED");
+    error.code = "AUTH_REQUIRED";
+    error.details = `token-missing-authorization-header:status:${response.status}`;
+    throw error;
+  }
+
+  const messageboxHeader = response.headers?.messagebox || response.headers?.Messagebox || "";
+  const expirationRaw = response.data?.expiration;
+  const expiration = expirationRaw !== undefined && expirationRaw !== null ? Number(expirationRaw) : null;
+
+  return { token, messageboxHeader, expiration, cookieHeader };
+};
+
+const getMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
+  const accountKey = account?.id != null ? String(account.id) : "";
+  if (!accountKey) {
+    const error = new Error("ACCOUNT_REQUIRED");
+    error.code = "ACCOUNT_REQUIRED";
+    throw error;
+  }
+
+  const cached = messageboxAccessTokenCacheByAccount.get(accountKey);
+  const now = Date.now();
+  if (cached?.token && cached?.expiresAt && (now + MESSAGEBOX_ACCESS_TOKEN_SKEW_MS) < cached.expiresAt) {
+    return cached;
+  }
+
+  const fresh = await fetchMessageboxAccessTokenForAccount({ account, proxy, timeoutMs });
+  const expiresAt = Number.isFinite(fresh.expiration) && fresh.expiration > 0 ? fresh.expiration : (now + 10 * 60 * 1000);
+  const entry = {
+    token: fresh.token,
+    messageboxHeader: fresh.messageboxHeader || "",
+    expiresAt,
+    cookieHeader: fresh.cookieHeader || ""
+  };
+  messageboxAccessTokenCacheByAccount.set(accountKey, entry);
+  return entry;
+};
+
+const safeJsonStringify = (value) => {
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    return String(value ?? "");
+  }
+};
+
+const buildPublishRequestFingerprint = ({
+  accountId,
+  title,
+  description,
+  price,
+  currency,
+  postalCode,
+  categoryId,
+  categoryUrl,
+  categoryPath,
+  extraFields,
+  uploadedFiles
+}) => {
+  const payload = {
+    accountId: String(accountId || "").trim(),
+    title: String(title || "").trim(),
+    description: String(description || "").trim(),
+    price: String(price || "").trim(),
+    currency: String(currency || "").trim(),
+    postalCode: String(postalCode || "").trim(),
+    categoryId: String(categoryId || "").trim(),
+    categoryUrl: String(categoryUrl || "").trim(),
+    categoryPath: safeJsonStringify(categoryPath || null),
+    extraFields: safeJsonStringify(extraFields || null),
+    files: (uploadedFiles || []).map((file) => ({
+      originalname: String(file?.originalname || ""),
+      size: Number(file?.size || 0),
+      mimetype: String(file?.mimetype || "")
+    }))
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+};
+
+const cleanupRecentSuccessfulPublishes = () => {
+  const now = Date.now();
+  for (const [fingerprint, item] of recentSuccessfulPublishes.entries()) {
+    if (!item || !item.finishedAt || (now - item.finishedAt) > RECENT_PUBLISH_TTL_MS) {
+      recentSuccessfulPublishes.delete(fingerprint);
+    }
+  }
+};
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withTimeout = (promise, timeoutMs, label = "timeout") => {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(label)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+};
+
+const ensureDebugDir = () => {
+  const debugDir = path.join(__dirname, "..", "data", "debug");
+  if (!fs.existsSync(debugDir)) {
+    fs.mkdirSync(debugDir, { recursive: true });
+  }
+  return debugDir;
+};
+
+const getPublishRequestLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "publish-requests.log") : "");
+const getServerErrorLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "server-errors.log") : "");
+const getFieldsRequestLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "fields-requests.log") : "");
+const getMessageActionsLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "message-actions.log") : "");
+
+const normalizeTokenValue = (value) => String(value || "").trim();
+const parseEnvTokenList = (value) => String(value || "")
+  .split(/[,\n;]/)
+  .map((item) => normalizeTokenValue(item))
+  .filter(Boolean);
+
+const getEnvTokens = () => {
+  const tokens = [
+    ...parseEnvTokenList(process.env.KL_ACCESS_TOKENS),
+    ...parseEnvTokenList(process.env.KL_VALID_TOKENS),
+    ...parseEnvTokenList(process.env.ACCESS_TOKENS),
+    ...parseEnvTokenList(process.env.VALID_TOKENS)
+  ];
+  return Array.from(new Set(tokens));
+};
+
+const findEnvToken = (token) => {
+  const normalized = normalizeTokenValue(token);
+  if (!normalized) return null;
+  const tokens = getEnvTokens();
+  if (!tokens.length) return null;
+  if (!tokens.includes(normalized)) return null;
+  return { token: normalized, role: "user" };
+};
+
+const parseTokenExpiryMs = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const asNumber = Number(value);
+  if (!Number.isNaN(asNumber) && String(value).trim() !== "") {
+    // Guard against out-of-range timestamps that crash Date#toISOString.
+    if (!Number.isFinite(asNumber) || Math.abs(asNumber) > 8640000000000000) {
+      return null;
+    }
+    return asNumber;
+  }
+  const asDate = new Date(value);
+  if (!Number.isNaN(asDate.getTime())) return asDate.getTime();
+  return null;
+};
+
+const toIsoStringOrNull = (value) => {
+  const expiryMs = parseTokenExpiryMs(value);
+  if (expiryMs === null) return null;
+  const parsed = new Date(expiryMs);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const loadSubscriptionTokens = () => {
+  try {
+    if (!fs.existsSync(subscriptionTokensPath)) {
+      fs.writeFileSync(subscriptionTokensPath, JSON.stringify({ items: [] }, null, 2), "utf8");
+    }
+    const raw = fs.readFileSync(subscriptionTokensPath, "utf8");
+    const parsed = JSON.parse(raw);
+    subscriptionTokens.items = Array.isArray(parsed.items) ? parsed.items : [];
+  } catch (error) {
+    subscriptionTokens.items = [];
+  }
+};
+
+const saveSubscriptionTokens = () => {
+  try {
+    fs.writeFileSync(
+      subscriptionTokensPath,
+      JSON.stringify({ items: subscriptionTokens.items }, null, 2),
+      "utf8"
+    );
+  } catch (error) {
+    // ignore save errors
+  }
+};
+
+const findSubscriptionToken = (token) => {
+  const normalized = normalizeTokenValue(token);
+  if (!normalized) return null;
+  return subscriptionTokens.items.find((entry) => entry?.token === normalized) || null;
+};
+
+const getTokenOwnerId = (entry) => {
+  if (!entry) return "";
+  if (entry.ownerId) return String(entry.ownerId);
+  if (!entry.token) return "";
+  return crypto.createHash("sha256").update(String(entry.token)).digest("hex").slice(0, 16);
+};
+
+const isAdminToken = (entry) => {
+  if (!entry) return false;
+  if (entry.role && String(entry.role).toLowerCase() === "admin") return true;
+  return Boolean(entry.isAdmin);
+};
+
+const getSubscriptionTokenStatus = (token) => {
+  loadSubscriptionTokens();
+  const normalized = normalizeTokenValue(token);
+  if (!normalized) {
+    return { valid: false, reason: "Токен не указан" };
+  }
+  const entry = findSubscriptionToken(normalized) || findEnvToken(normalized);
+  if (!entry) {
+    return { valid: false, reason: "Токен не найден" };
+  }
+  const expiryMs = parseTokenExpiryMs(entry.expiresAt);
+  if (entry.expiresAt !== undefined && entry.expiresAt !== null && expiryMs === null) {
+    return { valid: false, reason: "Некорректный срок действия токена" };
+  }
+  if (expiryMs && Date.now() > expiryMs) {
+    return { valid: false, reason: "Срок действия токена истек", expiresAt: expiryMs };
+  }
+  const ownerId = getTokenOwnerId(entry);
+  return {
+    valid: true,
+    expiresAt: expiryMs || null,
+    label: entry.label || "",
+    ownerId,
+    role: isAdminToken(entry) ? "admin" : "user",
+    isAdmin: isAdminToken(entry)
+  };
+};
+
+const extractAccessToken = (req) => {
+  const header = req.headers?.authorization || "";
+  if (header.toLowerCase().startsWith("bearer ")) {
+    return normalizeTokenValue(header.slice(7));
+  }
+  const headerToken = req.headers?.["x-access-token"];
+  if (headerToken) return normalizeTokenValue(headerToken);
+  const queryToken = req.query?.accessToken || req.query?.token;
+  if (queryToken) return normalizeTokenValue(queryToken);
+  const bodyToken = req.body?.accessToken || req.body?.token;
+  if (bodyToken) return normalizeTokenValue(bodyToken);
+  return "";
+};
+
+const appendServerLog = (pathTarget, payload) => {
+  if (!pathTarget) return;
+  try {
+    const entry = {
+      ts: new Date().toISOString(),
+      ...payload
+    };
+    fs.appendFileSync(pathTarget, JSON.stringify(entry) + "\n", "utf8");
+  } catch (error) {
+    // ignore logging failures
+  }
+};
+
+const appendFieldsRequestLog = (payload) => {
+  const pathTarget = getFieldsRequestLogPath();
+  if (!pathTarget) return;
+  try {
+    const entry = {
+      ts: new Date().toISOString(),
+      ...payload
+    };
+    fs.appendFileSync(pathTarget, JSON.stringify(entry) + "\n", "utf8");
+  } catch (error) {
+    // ignore logging failures
+  }
+};
+
+const escapeHtml = (value) =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+// 1x1 transparent PNG for fallback artifacts when page screenshot is unavailable.
+const DEBUG_PLACEHOLDER_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlH0z0AAAAASUVORK5CYII=",
+  "base64"
+);
+
+const writeFileAtomic = (targetPath, content, encoding = "utf8") => {
+  const dir = path.dirname(targetPath);
+  const ext = path.extname(targetPath);
+  const base = path.basename(targetPath, ext);
+  const tmpName = `${base}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const tmpPath = path.join(dir, tmpName);
+  try {
+    if (encoding) {
+      fs.writeFileSync(tmpPath, content, encoding);
+    } else {
+      fs.writeFileSync(tmpPath, content);
+    }
+    fs.renameSync(tmpPath, targetPath);
+  } finally {
+    if (fs.existsSync(tmpPath)) {
+      try {
+        fs.rmSync(tmpPath, { force: true });
+      } catch (error) {
+        // ignore cleanup errors
+      }
+    }
+  }
+};
+
+process.on("uncaughtException", (error) => {
+  const message = error?.message || String(error);
+  if (error?.code === "EADDRINUSE") {
+    console.error(`[fatal] Порт ${PORT} уже занят. Остановите другой backend на этом порту и запустите снова.`);
+  } else {
+    console.error(`[fatal] ${message}`);
+  }
+  appendServerLog(getServerErrorLogPath(), {
+    type: "uncaughtException",
+    message,
+    stack: error?.stack || ""
+  });
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  appendServerLog(getServerErrorLogPath(), {
+    type: "unhandledRejection",
+    message: reason?.message || String(reason),
+    stack: reason?.stack || ""
+  });
+});
+
+const dumpFieldsDebug = async (page, { accountLabel = "account", step = "unknown", error = "", extra = {}, force = false } = {}) => {
+  if (!DEBUG_FIELDS || !page) return null;
+  let screenshotTmpPath = "";
+  try {
+    const debugDir = ensureDebugDir();
+
+    const safeLabel = sanitizeFilename(accountLabel);
+    const safeStep = sanitizeFilename(step);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const nonce = Math.random().toString(36).slice(2, 8);
+    const base = `fields-${safeLabel}-${safeStep}-${timestamp}-${nonce}`;
+    const htmlPath = path.join(debugDir, `${base}.html`);
+    const screenshotPath = path.join(debugDir, `${base}.png`);
+    const metaPath = path.join(debugDir, `${base}.json`);
+    screenshotTmpPath = path.join(debugDir, `${base}.tmp.png`);
+
+    const [html, meta] = await Promise.all([
+      withTimeout(page.content().catch(() => ""), 5000, "debug-content-timeout").catch(() => ""),
+      withTimeout(page.evaluate(() => ({
+        url: window.location.href,
+        title: document.title,
+        bodyTextSample: (document.body?.innerText || "").slice(0, 2000),
+        readyState: document.readyState,
+        formCount: document.querySelectorAll("form").length,
+        selectCount: document.querySelectorAll("select").length
+      })).catch(() => ({})), 5000, "debug-eval-timeout").catch(() => ({}))
+    ]);
+
+    if (html && String(html).trim()) {
+      writeFileAtomic(htmlPath, html, "utf8");
+    } else {
+      const fallbackHtml = `<!doctype html><html><head><meta charset="utf-8"><title>fields debug fallback</title></head><body><pre>${escapeHtml(JSON.stringify({
+        step,
+        error,
+        extra,
+        meta,
+        note: "HTML snapshot unavailable (timeout or detached context)"
+      }, null, 2))}</pre></body></html>`;
+      writeFileAtomic(htmlPath, fallbackHtml, "utf8");
+    }
+    await withTimeout(
+      page.screenshot({ path: screenshotTmpPath, fullPage: true }).catch(() => {}),
+      8000,
+      "debug-screenshot-timeout"
+    ).catch(() => {});
+    if (fs.existsSync(screenshotTmpPath)) {
+      fs.renameSync(screenshotTmpPath, screenshotPath);
+    } else {
+      writeFileAtomic(screenshotPath, DEBUG_PLACEHOLDER_PNG, null);
+    }
+    writeFileAtomic(
+      metaPath,
+      JSON.stringify(
+        {
+          step,
+          error,
+          ...meta,
+          extra
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    console.log(`[fields] Debug saved: ${metaPath}`);
+    return {
+      htmlPath,
+      screenshotPath: fs.existsSync(screenshotPath) ? screenshotPath : "",
+      metaPath
+    };
+  } catch (dumpError) {
+    console.log(`[fields] Debug dump failed: ${dumpError.message}`);
+    return null;
+  } finally {
+    if (screenshotTmpPath && fs.existsSync(screenshotTmpPath)) {
+      try {
+        fs.rmSync(screenshotTmpPath, { force: true });
+      } catch (error) {
+        // ignore cleanup errors
+      }
+    }
+  }
+};
+
+const dumpFieldsDebugMeta = ({ accountLabel = "account", step = "unknown", error = "", extra = {}, force = false } = {}) => {
+  if (!DEBUG_FIELDS) return;
+  try {
+    const debugDir = ensureDebugDir();
+    const safeLabel = sanitizeFilename(accountLabel);
+    const safeStep = sanitizeFilename(step);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const nonce = Math.random().toString(36).slice(2, 8);
+    const base = `fields-${safeLabel}-${safeStep}-${timestamp}-${nonce}-meta`;
+    const htmlPath = path.join(debugDir, `${base}.html`);
+    const screenshotPath = path.join(debugDir, `${base}.png`);
+    const metaPath = path.join(debugDir, `${base}.json`);
+    const payload = {
+      step,
+      error,
+      extra,
+      createdAt: new Date().toISOString(),
+      fallback: true
+    };
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>fields debug meta</title></head><body><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></body></html>`;
+    writeFileAtomic(htmlPath, html, "utf8");
+    writeFileAtomic(screenshotPath, DEBUG_PLACEHOLDER_PNG, null);
+    writeFileAtomic(
+      metaPath,
+      JSON.stringify(payload, null, 2),
+      "utf8"
+    );
+    console.log(`[fields] Debug meta saved: ${metaPath}`);
+  } catch (dumpError) {
+    console.log(`[fields] Debug meta dump failed: ${dumpError.message}`);
+  }
+};
+
+const attachFieldsDialogGuard = (page, { accountLabel = "account", requestId = "", force = false } = {}) => {
+  if (!page || page.__klFieldsDialogGuardAttached) return;
+  page.__klFieldsDialogGuardAttached = true;
+  page.on("dialog", async (dialog) => {
+    const type = typeof dialog?.type === "function" ? dialog.type() : "unknown";
+    const messageRaw = typeof dialog?.message === "function" ? dialog.message() : "";
+    const message = String(messageRaw || "").replace(/\s+/g, " ").trim().slice(0, 500);
+    const defaultValue = typeof dialog?.defaultValue === "function" ? dialog.defaultValue() : "";
+    let action = "accept";
+    try {
+      // Always accept modal dialogs to prevent navigation deadlocks (beforeunload/confirm/prompt).
+      await dialog.accept(defaultValue || undefined);
+    } catch (acceptError) {
+      action = "dismiss";
+      try {
+        await dialog.dismiss();
+      } catch (dismissError) {
+        action = "unhandled";
+      }
+    }
+
+    const currentUrl = (() => {
+      try {
+        return page.url();
+      } catch (error) {
+        return "";
+      }
+    })();
+
+    dumpFieldsDebugMeta({
+      accountLabel,
+      step: `fields-dialog-${sanitizeFilename(type || "unknown")}`,
+      error: action === "accept" ? "" : action,
+      extra: {
+        requestId,
+        dialogType: type,
+        dialogAction: action,
+        dialogMessage: message,
+        url: currentUrl
+      },
+      force: force || DEBUG_FIELDS
+    });
+  });
+};
+
+const installFieldsBeforeUnloadBypass = async (page, { accountLabel = "account", requestId = "", force = false } = {}) => {
+  if (!page || page.__klFieldsBeforeUnloadBypassInstalled) return;
+  page.__klFieldsBeforeUnloadBypassInstalled = true;
+
+  const bypassScript = () => {
+    const marker = "__klBeforeUnloadBypassInstalled";
+    if (window[marker]) return;
+    window[marker] = true;
+
+    const nativeAdd = window.addEventListener ? window.addEventListener.bind(window) : null;
+    const nativeRemove = window.removeEventListener ? window.removeEventListener.bind(window) : null;
+
+    if (nativeAdd) {
+      window.addEventListener = function patchedAddEventListener(type, listener, options) {
+        if (String(type || "").toLowerCase() === "beforeunload") return;
+        return nativeAdd(type, listener, options);
+      };
+    }
+    if (nativeRemove) {
+      window.removeEventListener = function patchedRemoveEventListener(type, listener, options) {
+        if (String(type || "").toLowerCase() === "beforeunload") return;
+        return nativeRemove(type, listener, options);
+      };
+    }
+
+    try {
+      Object.defineProperty(window, "onbeforeunload", {
+        configurable: true,
+        enumerable: true,
+        get() {
+          return null;
+        },
+        set() {
+          return null;
+        }
+      });
+    } catch (error) {
+      // ignore defineProperty failures
+    }
+
+    if (nativeAdd) {
+      nativeAdd("beforeunload", (event) => {
+        try {
+          if (event && typeof event.stopImmediatePropagation === "function") {
+            event.stopImmediatePropagation();
+          }
+          if (event && "returnValue" in event) {
+            event.returnValue = undefined;
+          }
+        } catch (error) {
+          // ignore event mutation errors
+        }
+        return undefined;
+      }, true);
+    }
+  };
+
+  try {
+    await page.evaluateOnNewDocument(bypassScript);
+  } catch (error) {
+    dumpFieldsDebugMeta({
+      accountLabel,
+      step: "fields-beforeunload-bypass-eond-failed",
+      error: error?.message || "beforeunload-bypass-eond-failed",
+      extra: { requestId },
+      force: force || DEBUG_FIELDS
+    });
+  }
+
+  try {
+    await page.evaluate(bypassScript);
+  } catch (error) {
+    dumpFieldsDebugMeta({
+      accountLabel,
+      step: "fields-beforeunload-bypass-eval-failed",
+      error: error?.message || "beforeunload-bypass-eval-failed",
+      extra: { requestId, url: (() => { try { return page.url(); } catch (_) { return ""; } })() },
+      force: force || DEBUG_FIELDS
+    });
+    return;
+  }
+
+  dumpFieldsDebugMeta({
+    accountLabel,
+    step: "fields-beforeunload-bypass-installed",
+    error: "",
+    extra: { requestId, url: (() => { try { return page.url(); } catch (_) { return ""; } })() },
+    force: force || DEBUG_FIELDS
+  });
+};
+
+const loadProxies = () => {
+  try {
+    const raw = fs.readFileSync(proxiesPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      proxies.push(...parsed);
+    }
+  } catch (error) {
+    // ignore missing or invalid proxy cache
+  }
+};
+
+const saveProxies = () => {
+  try {
+    fs.writeFileSync(proxiesPath, JSON.stringify(proxies, null, 2));
+  } catch (error) {
+    // ignore persistence errors
+  }
+};
+
+loadProxies();
+const loadCategoryChildrenCache = () => {
+  try {
+    const raw = fs.readFileSync(categoryChildrenCachePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && parsed.items && typeof parsed.items === "object") {
+      categoryChildrenCache.items = parsed.items;
+    }
+  } catch (error) {
+    // ignore missing or invalid cache
+  }
+};
+
+const loadCategoryFieldsCache = () => {
+  try {
+    const raw = fs.readFileSync(categoryFieldsCachePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && parsed.items && typeof parsed.items === "object") {
+      categoryFieldsCache.items = parsed.items;
+    }
+  } catch (error) {
+    // ignore missing or invalid cache
+  }
+};
+
+const scheduleCategoryChildrenCacheSave = () => {
+  if (categoryChildrenCacheSaveTimer) return;
+  categoryChildrenCacheSaveTimer = setTimeout(() => {
+    categoryChildrenCacheSaveTimer = null;
+    try {
+      fs.writeFileSync(categoryChildrenCachePath, JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        items: categoryChildrenCache.items
+      }, null, 2));
+    } catch (error) {
+      // ignore persistence errors
+    }
+  }, 1000);
+};
+
+const scheduleCategoryFieldsCacheSave = () => {
+  if (categoryFieldsCacheSaveTimer) return;
+  categoryFieldsCacheSaveTimer = setTimeout(() => {
+    categoryFieldsCacheSaveTimer = null;
+    try {
+      fs.writeFileSync(categoryFieldsCachePath, JSON.stringify({
+        updatedAt: new Date().toISOString(),
+        items: categoryFieldsCache.items
+      }, null, 2));
+    } catch (error) {
+      // ignore persistence errors
+    }
+  }, 1000);
+};
+
+const normalizeCategoryUrlForCache = (value) =>
+  String(value || "")
+    .replace(/^https?:\/\/www\.kleinanzeigen\.de/i, "")
+    .replace(/\/$/, "");
+
+const normalizeCategorySlugToken = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
+    .replace(/ß/g, "ss")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const extractCategorySlugFromNode = (node) => {
+  const url = String(node?.url || "");
+  const slugFromUrl = url.match(/\/s-([^/]+)\/c\d+/i)?.[1] || "";
+  if (slugFromUrl) {
+    return normalizeCategorySlugToken(slugFromUrl.replace(/-/g, "_"));
+  }
+  return normalizeCategorySlugToken(node?.name || "");
+};
+
+const loadCategorySlugLookup = () => {
+  if (categorySlugLookupById) return categorySlugLookupById;
+  const lookup = new Map();
+  try {
+    const raw = fs.readFileSync(categoriesPath, "utf8");
+    const parsed = JSON.parse(raw);
+    const roots = Array.isArray(parsed?.categories)
+      ? parsed.categories
+      : (Array.isArray(parsed) ? parsed : []);
+    const stack = [...roots];
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || typeof node !== "object") continue;
+      const id = String(node.id || "").trim();
+      if (id && !lookup.has(id)) {
+        const slug = extractCategorySlugFromNode(node);
+        if (slug) {
+          lookup.set(id, slug);
+        }
+      }
+      const children = Array.isArray(node.children) ? node.children : [];
+      children.forEach((child) => stack.push(child));
+    }
+  } catch (error) {
+    // ignore file read/parse errors
+  }
+  categorySlugLookupById = lookup;
+  return categorySlugLookupById;
+};
+
+const resolveCategorySlugById = (categoryId) => {
+  const key = String(categoryId || "").trim();
+  if (!key) return "";
+  return String(loadCategorySlugLookup().get(key) || "");
+};
+
+const buildCategoryChildrenCacheKey = ({ id, url }) => {
+  if (id) return `id:${id}`;
+  if (url) return `url:${normalizeCategoryUrlForCache(url)}`;
+  return "";
+};
+
+const getCachedCategoryChildrenEntry = (key, { allowStale = false } = {}) => {
+  if (!key) return null;
+  const entry = categoryChildrenCache.items[key];
+  if (!entry) return null;
+  const now = Date.now();
+  if (entry.expiresAt && entry.expiresAt < now) {
+    const savedAt = Number(entry.savedAt || 0);
+    const isStaleUsable = allowStale && savedAt > 0 && (now - savedAt) <= CATEGORY_CHILDREN_STALE_MAX_MS;
+    if (isStaleUsable) {
+      return { ...entry, _stale: true };
+    }
+    delete categoryChildrenCache.items[key];
+    scheduleCategoryChildrenCacheSave();
+    return null;
+  }
+  return { ...entry, _stale: false };
+};
+
+const setCachedCategoryChildren = (key, children, { empty = false } = {}) => {
+  if (!key) return;
+  const now = Date.now();
+  const ttl = empty ? CATEGORY_CHILDREN_EMPTY_TTL_MS : CATEGORY_CHILDREN_CACHE_TTL_MS;
+  categoryChildrenCache.items[key] = {
+    savedAt: now,
+    expiresAt: now + ttl,
+    children: Array.isArray(children) ? children : []
+  };
+  scheduleCategoryChildrenCacheSave();
+};
+
+loadCategoryChildrenCache();
+loadCategoryFieldsCache();
+
+const getCachedCategoryFieldsEntry = (categoryId, { allowStale = false } = {}) => {
+  const key = String(categoryId || "");
+  if (!key) return null;
+  const entry = categoryFieldsCache.items[key];
+  if (!entry) return null;
+  const now = Date.now();
+  if (entry.expiresAt && entry.expiresAt < now) {
+    const savedAt = Number(entry.savedAt || 0);
+    const isStaleUsable = allowStale && savedAt > 0 && (now - savedAt) <= CATEGORY_FIELDS_STALE_MAX_MS;
+    if (isStaleUsable) {
+      return {
+        fields: Array.isArray(entry.fields) ? entry.fields : [],
+        stale: true
+      };
+    }
+    delete categoryFieldsCache.items[key];
+    scheduleCategoryFieldsCacheSave();
+    return null;
+  }
+  return {
+    fields: Array.isArray(entry.fields) ? entry.fields : [],
+    stale: false
+  };
+};
+
+const getCachedCategoryFields = (categoryId, options = {}) => {
+  const entry = getCachedCategoryFieldsEntry(categoryId, options);
+  return entry ? entry.fields : null;
+};
+
+const setCachedCategoryFields = (categoryId, fields) => {
+  const key = String(categoryId || "");
+  if (!key) return;
+  const now = Date.now();
+  const list = Array.isArray(fields) ? fields : [];
+  const ttl = list.length ? CATEGORY_FIELDS_CACHE_TTL_MS : CATEGORY_FIELDS_EMPTY_TTL_MS;
+  categoryFieldsCache.items[key] = {
+    savedAt: now,
+    expiresAt: now + ttl,
+    fields: list
+  };
+  scheduleCategoryFieldsCacheSave();
+};
+
+const getOwnerContext = (req) => ({
+  ownerId: req?.subscription?.ownerId || "",
+  isAdmin: Boolean(req?.subscription?.isAdmin)
+});
+
+const filterByOwner = (items, ownerContext = {}) => {
+  const list = Array.isArray(items) ? items : [];
+  if (ownerContext.isAdmin) return list;
+  const ownerId = String(ownerContext.ownerId || "").trim();
+  // Backward compat: legacy data created before owner scoping might not have ownerId set.
+  // Treat ownerless entries as belonging to the current owner to avoid "empty UI" regressions.
+  if (!ownerId) return list;
+  return list.filter((item) => {
+    const itemOwner = String(item?.ownerId || "").trim();
+    if (!itemOwner) return true;
+    return itemOwner === ownerId;
+  });
+};
+
+const isOwnerMatch = (item, ownerContext = {}) => {
+  if (ownerContext.isAdmin) return true;
+  const ownerId = String(ownerContext.ownerId || "").trim();
+  if (!ownerId) return true;
+  const itemOwner = String(item?.ownerId || "").trim();
+  if (!itemOwner) return true;
+  return itemOwner === ownerId;
+};
+
+const normalizeEntityId = (value) => String(value ?? "").trim();
+
+const getActiveAdsCacheScope = (ownerContext = {}) => {
+  if (ownerContext?.isAdmin) return "admin";
+  const ownerId = String(ownerContext?.ownerId || "").trim();
+  return `owner:${ownerId || "none"}`;
+};
+
+const buildActiveAdsCacheKey = ({ ownerContext = {}, accounts = [] } = {}) => {
+  const scope = getActiveAdsCacheScope(ownerContext);
+  const accountSignature = (Array.isArray(accounts) ? accounts : [])
+    .map((account) => `${normalizeEntityId(account?.id)}:${normalizeEntityId(account?.proxyId)}`)
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  return `${scope}|${accountSignature || "none"}`;
+};
+
+const pruneActiveAdsCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of activeAdsCache.entries()) {
+    if (!entry) {
+      activeAdsCache.delete(key);
+      continue;
+    }
+    if (entry.inFlight) continue;
+    if (entry.expiresAt && entry.expiresAt > now) continue;
+    activeAdsCache.delete(key);
+  }
+};
+
+const getCachedActiveAdsEntry = (cacheKey) => {
+  if (!cacheKey) return null;
+  pruneActiveAdsCache();
+  const entry = activeAdsCache.get(cacheKey);
+  if (!entry) return null;
+  if (entry.inFlight) return null;
+  if (!entry.expiresAt || entry.expiresAt < Date.now()) {
+    activeAdsCache.delete(cacheKey);
+    return null;
+  }
+  return entry;
+};
+
+const setCachedActiveAdsEntry = (cacheKey, ads) => {
+  if (!cacheKey) return;
+  const now = Date.now();
+  activeAdsCache.set(cacheKey, {
+    ads: Array.isArray(ads) ? ads : [],
+    cachedAt: now,
+    expiresAt: now + Math.max(5000, ADS_ACTIVE_CACHE_TTL_MS),
+    inFlight: null
+  });
+};
+
+const setActiveAdsInFlight = (cacheKey, inFlight) => {
+  if (!cacheKey) return;
+  const current = activeAdsCache.get(cacheKey) || {};
+  activeAdsCache.set(cacheKey, {
+    ...current,
+    inFlight
+  });
+};
+
+const clearActiveAdsInFlight = (cacheKey) => {
+  if (!cacheKey) return;
+  const current = activeAdsCache.get(cacheKey);
+  if (!current) return;
+  if (!current.ads || !current.expiresAt) {
+    activeAdsCache.delete(cacheKey);
+    return;
+  }
+  current.inFlight = null;
+  activeAdsCache.set(cacheKey, current);
+};
+
+const invalidateActiveAdsCacheForOwner = (ownerContext = {}) => {
+  const scopePrefix = `${getActiveAdsCacheScope(ownerContext)}|`;
+  for (const key of activeAdsCache.keys()) {
+    if (key.startsWith(scopePrefix)) {
+      activeAdsCache.delete(key);
+    }
+  }
+};
+
+const isSameEntityId = (left, right) => {
+  const leftId = normalizeEntityId(left);
+  const rightId = normalizeEntityId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+};
+
+const findProxyById = (proxyId) => proxies.find((item) => isSameEntityId(item?.id, proxyId));
+
+const findProxyIndexById = (proxyId) => proxies.findIndex((item) => isSameEntityId(item?.id, proxyId));
+
+const hasProxyWithId = (proxyList, proxyId) => {
+  const list = Array.isArray(proxyList) ? proxyList : [];
+  return list.some((item) => isSameEntityId(item?.id, proxyId));
+};
+
+const getProxyLabel = (proxyId, ownerContext = {}) => {
+  const proxy = findProxyById(proxyId);
+  if (!proxy) return "Нет";
+  if (!isOwnerMatch(proxy, ownerContext)) return "Нет";
+  return `${proxy.name} (${proxy.host}:${proxy.port})`;
+};
+
+const requireAccountProxy = (account, res, contextLabel = "операция", ownerContext = {}) => {
+  if (res?.headersSent) return null;
+  if (!account?.proxyId) {
+    res.status(400).json({
+      success: false,
+      error: `Аккаунт должен быть привязан к прокси для ${contextLabel}.`
+    });
+    return null;
+  }
+  const proxy = findProxyById(account.proxyId);
+  if (!proxy) {
+    res.status(400).json({
+      success: false,
+      error: `Прокси для аккаунта не найден. ${contextLabel} остановлена.`
+    });
+    return null;
+  }
+  if (!isOwnerMatch(proxy, ownerContext)) {
+    res.status(403).json({
+      success: false,
+      error: "Недостаточно прав для использования прокси."
+    });
+    return null;
+  }
+  // Hard fail early if proxy is misconfigured. We must not fall back to server IP.
+  if (!buildProxyUrl(proxy)) {
+    res.status(400).json({
+      success: false,
+      error: `Прокси аккаунта настроен некорректно (host/port). ${contextLabel} остановлена.`
+    });
+    return null;
+  }
+  return proxy;
+};
+
+const getAccountForRequest = (accountId, req, res) => {
+  const account = getAccountById(Number(accountId));
+  if (!account) {
+    res.status(404).json({ success: false, error: "Аккаунт не найден" });
+    return null;
+  }
+  const ownerContext = getOwnerContext(req);
+  if (!isOwnerMatch(account, ownerContext)) {
+    res.status(404).json({ success: false, error: "Аккаунт не найден" });
+    return null;
+  }
+  return account;
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 }
+});
+
+const adUploadDir = path.join(__dirname, "..", "data", "ad-uploads");
+if (!fs.existsSync(adUploadDir)) {
+  fs.mkdirSync(adUploadDir, { recursive: true });
+}
+
+const messageUploadBaseDir = path.join(os.tmpdir(), "kl-message-uploads");
+if (!fs.existsSync(messageUploadBaseDir)) {
+  fs.mkdirSync(messageUploadBaseDir, { recursive: true });
+}
+
+const imageMimeExtensions = {
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/png": ".png",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/heic": ".heic",
+  "image/heif": ".heif"
+};
+
+const messageUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        if (!req.klMessageUploadDir) {
+          req.klMessageUploadDir = fs.mkdtempSync(path.join(messageUploadBaseDir, "req-"));
+        }
+        cb(null, req.klMessageUploadDir);
+      } catch (error) {
+        cb(error);
+      }
+    },
+    filename: (req, file, cb) => {
+      const originalExt = (path.extname(file.originalname || "") || "").toLowerCase();
+      const mimeExt = imageMimeExtensions[file.mimetype] || "";
+      const safeExt = originalExt || mimeExt || "";
+      const base = crypto.randomBytes(16).toString("hex");
+      cb(null, safeExt ? `${base}${safeExt}` : base);
+    }
+  }),
+  limits: {
+    fileSize: 10 * 1024 * 1024,
+    files: 10
+  }
+});
+
+const adUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, adUploadDir),
+    filename: (req, file, cb) => {
+      const originalExt = (path.extname(file.originalname || "") || "").toLowerCase();
+      const mimeExt = imageMimeExtensions[file.mimetype] || "";
+      const safeExt = originalExt || mimeExt || "";
+      const base = crypto.randomBytes(16).toString("hex");
+      cb(null, safeExt ? `${base}${safeExt}` : base);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024, files: 20 }
+});
+
+const mapAdUploadErrorMessage = (error) => {
+  if (!error) return "Не удалось загрузить файлы объявления";
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return "Файл слишком большой. Максимум 10MB на изображение.";
+    }
+    if (error.code === "LIMIT_FILE_COUNT") {
+      return "Слишком много файлов. Максимум 20 изображений.";
+    }
+    if (error.code === "LIMIT_UNEXPECTED_FILE") {
+      return "Некорректный формат загрузки изображений.";
+    }
+    return error.message || "Ошибка загрузки изображений";
+  }
+  return error.message || "Ошибка загрузки изображений";
+};
+
+const mapMessageUploadErrorMessage = (error) => {
+  if (!error) return "Не удалось загрузить файлы сообщения";
+  if (error instanceof multer.MulterError) {
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return "Файл слишком большой. Максимум 10MB на изображение.";
+    }
+    if (error.code === "LIMIT_FILE_COUNT") {
+      return "Слишком много файлов. Максимум 10 изображений.";
+    }
+    if (error.code === "LIMIT_UNEXPECTED_FILE") {
+      return "Некорректный формат загрузки изображений.";
+    }
+    return error.message || "Ошибка загрузки изображений";
+  }
+  return error.message || "Ошибка загрузки изображений";
+};
+
+const cleanupMessageUploadDir = (req) => {
+  const dir = req?.klMessageUploadDir ? String(req.klMessageUploadDir) : "";
+  if (!dir) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    // ignore cleanup errors
+  }
+  req.klMessageUploadDir = "";
+};
+
+const messageUploadMiddleware = (req, res, next) => {
+  messageUpload.array("images", 10)(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+    const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+    const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+    const debugId = safeClientRequestId
+      ? safeClientRequestId
+      : `msg-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const message = mapMessageUploadErrorMessage(error);
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "upload-error",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      ip: req.ip,
+      errorCode: error.code || "",
+      error: error.message || String(error)
+    });
+    cleanupMessageUploadDir(req);
+    res.status(error instanceof multer.MulterError ? 400 : 500).json({
+      success: false,
+      error: message,
+      code: error.code || "",
+      debugId,
+      requestId: clientRequestId
+    });
+  });
+};
+
+const adUploadMiddleware = (req, res, next) => {
+  adUpload.array("images", 20)(req, res, (error) => {
+    if (!error) {
+      next();
+      return;
+    }
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const message = mapAdUploadErrorMessage(error);
+    appendServerLog(getPublishRequestLogPath(), {
+      event: "upload-error",
+      requestId,
+      ip: req.ip,
+      errorCode: error.code || "",
+      error: error.message || String(error)
+    });
+    res.status(error instanceof multer.MulterError ? 400 : 500).json({
+      success: false,
+      error: message,
+      debugId: requestId
+    });
+  });
+};
+
+// Middleware
+const parseOriginList = (value) => String(value || "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const defaultOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"];
+const envOrigins = [
+  ...parseOriginList(process.env.KL_CORS_ORIGINS),
+  ...parseOriginList(process.env.CORS_ORIGINS),
+  process.env.RENDER_EXTERNAL_URL
+].filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+const allowAllOrigins = String(process.env.KL_ALLOW_ALL_ORIGINS || "").trim() === "1";
+const allowAnyOriginByDefault = !allowAllOrigins
+  && envOrigins.length === 0
+  && String(process.env.KL_ALLOW_ALL_ORIGINS || "").trim() !== "0";
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowAllOrigins || allowAnyOriginByDefault) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  // Frontend always adds X-Client-Request-Id for diagnostics. If the UI is served from a different origin
+  // (e.g. API base points to an IP/domain), this header triggers a preflight and must be allowed.
+  allowedHeaders: ["Content-Type", "Authorization", "X-Access-Token", "X-Client-Request-Id"],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+app.use(express.json());
+loadSubscriptionTokens();
+
+const requireAccessToken = (req, res, next) => {
+  if (process.env.KL_REQUIRE_TOKEN === "0") return next();
+  if (req.method === "OPTIONS") return next();
+  if (!req.path.startsWith("/api")) return next();
+  if (req.path.startsWith("/api/auth/")) return next();
+
+  const token = extractAccessToken(req);
+  const status = getSubscriptionTokenStatus(token);
+  if (!status.valid) {
+    res.status(401).json({ success: false, error: status.reason });
+    return;
+  }
+  req.subscription = status;
+  req.subscription.token = token;
+  next();
+};
+
+app.use(requireAccessToken);
+
+// Маршруты
+app.get("/", (req, res) => {
+  res.json({ 
+    message: "✅ Kleinanzeigen Backend работает!",
+    endpoints: [
+      "/api/accounts - список аккаунтов",
+      "/api/proxies - список прокси",
+      "/health - статус сервиса"
+    ]
+  });
+});
+
+app.post("/api/auth/validate", (req, res) => {
+  try {
+    const token = extractAccessToken(req);
+    const status = getSubscriptionTokenStatus(token);
+    res.json({
+      valid: status.valid,
+      error: status.valid ? "" : status.reason,
+      expiresAt: toIsoStringOrNull(status.expiresAt),
+      label: status.label || "",
+      role: status.role || "user",
+      ownerId: status.ownerId || ""
+    });
+  } catch (error) {
+    appendServerLog(getServerErrorLogPath(), {
+      type: "auth-validate-error",
+      message: error?.message || String(error),
+      stack: error?.stack || ""
+    });
+    res.status(500).json({ valid: false, error: "Ошибка проверки токена" });
+  }
+});
+
+const maskProxyUrl = (rawUrl) => {
+  const input = String(rawUrl || "").trim();
+  if (!input) return "";
+  try {
+    const parsed = new URL(input);
+    if (parsed.password) parsed.password = "***";
+    return parsed.toString();
+  } catch (error) {
+    // Fallback for non-URL proxy strings: protocol://user:pass@host:port
+    const schemeIndex = input.indexOf("://");
+    if (schemeIndex < 0) return input;
+    const atIndex = input.indexOf("@", schemeIndex + 3);
+    if (atIndex < 0) return input;
+    const creds = input.slice(schemeIndex + 3, atIndex);
+    const colonIndex = creds.indexOf(":");
+    if (colonIndex < 0) return input;
+    const user = creds.slice(0, colonIndex);
+    return `${input.slice(0, schemeIndex + 3)}${user}:***@${input.slice(atIndex + 1)}`;
+  }
+};
+
+const safeString = (value, max = 600) => String(value || "").trim().slice(0, max);
+
+const serializeErrorForDebug = (error) => {
+  if (!error) return null;
+  return {
+    message: safeString(error?.message || String(error)),
+    code: safeString(error?.code || ""),
+    details: safeString(error?.details || ""),
+    originalMessage: safeString(error?.originalMessage || ""),
+    stack: safeString(error?.stack || "", 1200),
+    cause: error?.cause
+      ? {
+        message: safeString(error.cause?.message || String(error.cause)),
+        code: safeString(error.cause?.code || ""),
+        stack: safeString(error.cause?.stack || "", 800)
+      }
+      : null
+  };
+};
+
+const readTailText = (filePath, maxBytes = 400 * 1024) => {
+  try {
+    const stat = fs.statSync(filePath);
+    const size = Number(stat?.size || 0);
+    const start = Math.max(0, size - Math.max(1024, Number(maxBytes) || 0));
+    const length = size - start;
+    if (length <= 0) return "";
+    const fd = fs.openSync(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, start);
+      return buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (error) {
+    return "";
+  }
+};
+
+app.get("/api/debug/message-actions/locks", (req, res) => {
+  const items = [];
+  for (const [accountId, entry] of activeMessageActionByAccount.entries()) {
+    if (!entry) continue;
+    items.push({
+      accountId,
+      route: entry.route || "",
+      debugId: entry.debugId || "",
+      requestId: entry.clientRequestId || "",
+      startedAt: entry.startedAt || null,
+      ageMs: entry.startedAt ? Date.now() - Number(entry.startedAt || 0) : null
+    });
+  }
+  res.json({ now: new Date().toISOString(), locks: items });
+});
+
+app.post("/api/debug/message-actions/locks/clear", (req, res) => {
+  const accountId = req.body?.accountId != null ? String(req.body.accountId).trim() : "";
+  const cleared = [];
+  if (accountId) {
+    if (activeMessageActionByAccount.has(accountId)) {
+      activeMessageActionByAccount.delete(accountId);
+      cleared.push(accountId);
+    }
+    res.json({ success: true, cleared });
+    return;
+  }
+  // Require explicit allowAll to avoid accidental clearing.
+  const allowAll = req.body?.allowAll === true || String(req.body?.allowAll || "").trim() === "1";
+  if (!allowAll) {
+    res.status(400).json({ success: false, error: "accountId обязателен (или allowAll=1)." });
+    return;
+  }
+  for (const key of activeMessageActionByAccount.keys()) {
+    cleared.push(key);
+  }
+  activeMessageActionByAccount.clear();
+  res.json({ success: true, cleared });
+});
+
+app.get("/api/debug/message-actions/log", (req, res) => {
+  const requestId = String(req.query.requestId || "").trim();
+  const debugId = String(req.query.debugId || "").trim();
+  const limitRaw = Number(req.query.limit || 400);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.floor(limitRaw))) : 400;
+
+  const logPath = getMessageActionsLogPath();
+  const tail = readTailText(logPath, 3 * 1024 * 1024);
+  const lines = tail.split(/\\r?\\n/).filter(Boolean);
+
+  const filtered = (requestId || debugId)
+    ? lines.filter((line) => {
+      if (requestId && line.includes(requestId)) return true;
+      if (debugId && line.includes(debugId)) return true;
+      return false;
+    })
+    : lines;
+
+  res.json({
+    logPath,
+    requestId,
+    debugId,
+    totalLines: lines.length,
+    matchedLines: filtered.length,
+    lines: filtered.slice(-limit)
+  });
+});
+
+const getMessageActionArtifactsRootDir = () => path.join(ensureDebugDir(), "message-action-artifacts");
+
+const parseMessageActionsLogLine = (line) => {
+  const raw = String(line || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === "object") ? parsed : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const resolveMessageActionDebugIdsFromLog = (requestId, { maxResults = 6 } = {}) => {
+  const rid = String(requestId || "").trim();
+  if (!rid) return [];
+
+  const logPath = getMessageActionsLogPath();
+  const tail = readTailText(logPath, 3 * 1024 * 1024);
+  const lines = tail.split(/\\r?\\n/).filter(Boolean);
+  const seen = new Set();
+  const results = [];
+  const limit = Math.max(1, Math.min(25, Number(maxResults) || 6));
+  const debugIdPattern = /\"debugId\"\\s*:\\s*\"([^\"]+)\"/i;
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line.includes(rid)) continue;
+    const parsed = parseMessageActionsLogLine(line);
+    let debugId = safeString(parsed?.debugId || "", 240);
+    if (!debugId) {
+      const match = String(line).match(debugIdPattern);
+      if (match) debugId = safeString(match[1], 240);
+    }
+    if (!debugId || seen.has(debugId)) continue;
+    seen.add(debugId);
+    results.push(debugId);
+    if (results.length >= limit) break;
+  }
+
+  return results.reverse();
+};
+
+const listRecentMessageActionDebugIds = ({ limit = 20 } = {}) => {
+  const limitRaw = Number(limit || 20);
+  const normalizedLimit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.floor(limitRaw))) : 20;
+
+  const logPath = getMessageActionsLogPath();
+  const tail = readTailText(logPath, 3 * 1024 * 1024);
+  const lines = tail.split(/\\r?\\n/).filter(Boolean);
+
+  const seen = new Set();
+  const recent = [];
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const parsed = parseMessageActionsLogLine(lines[index]);
+    const debugId = safeString(parsed?.debugId || "", 240);
+    if (!debugId || seen.has(debugId)) continue;
+    seen.add(debugId);
+    recent.push({
+      ts: safeString(parsed?.ts || ""),
+      debugId,
+      route: safeString(parsed?.route || ""),
+      event: safeString(parsed?.event || ""),
+      clientRequestId: safeString(parsed?.clientRequestId || "", 240),
+      code: safeString(parsed?.code || "", 120)
+    });
+    if (recent.length >= normalizedLimit) break;
+  }
+  return recent.reverse();
+};
+
+app.get("/api/debug/message-actions/recent", (req, res) => {
+  const limitRaw = Number(req.query.limit || 30);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.floor(limitRaw))) : 30;
+  res.json({
+    success: true,
+    logPath: getMessageActionsLogPath(),
+    recent: listRecentMessageActionDebugIds({ limit })
+  });
+});
+
+const listMessageActionArtifactsForDebugId = (debugIdRaw, limit) => {
+  const normalizedDebugId = String(debugIdRaw || "").trim();
+  const safeDebugId = sanitizeFilename(normalizedDebugId);
+  const limitRaw = Number(limit || 30);
+  const normalizedLimit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(200, Math.floor(limitRaw)))
+    : 30;
+
+  if (!safeDebugId) {
+    return { ok: false, status: 400, error: "debugId обязателен.", debugId: normalizedDebugId };
+  }
+
+  const root = getMessageActionArtifactsRootDir();
+  const actionDir = path.join(root, safeDebugId);
+  if (!fs.existsSync(actionDir)) {
+    return { ok: false, status: 404, error: "Артефакты не найдены.", debugId: normalizedDebugId, dir: actionDir };
+  }
+
+  let metaFiles = [];
+  try {
+    metaFiles = fs.readdirSync(actionDir).filter((name) => name.endsWith(".json")).sort();
+  } catch (error) {
+    return { ok: false, status: 500, error: "Не удалось прочитать директорию артефактов.", debugId: normalizedDebugId, dir: actionDir };
+  }
+
+  const pickError = (value) => {
+    if (!value || typeof value !== "object") return null;
+    const code = safeString(value.code || "", 120);
+    const message = safeString(value.message || "", 240);
+    const details = safeString(value.details || "", 400);
+    const out = {};
+    if (code) out.code = code;
+    if (message) out.message = message;
+    if (details) out.details = details;
+    return Object.keys(out).length ? out : null;
+  };
+
+  const toSummary = (file) => {
+    const full = path.join(actionDir, file);
+    let parsed = null;
+    try {
+      parsed = JSON.parse(fs.readFileSync(full, "utf8"));
+    } catch (error) {
+      parsed = null;
+    }
+
+    const screenshotPath = String(parsed?.files?.screenshotPath || "");
+    const htmlPath = String(parsed?.files?.htmlPath || "");
+    const metaPath = String(parsed?.files?.metaPath || "");
+    return {
+      file,
+      stage: safeString(parsed?.stage || ""),
+      ts: safeString(parsed?.ts || ""),
+      page: parsed?.page
+        ? {
+          url: safeString(parsed.page?.url || "", 800),
+          title: safeString(parsed.page?.title || "", 240),
+          isClosed: Boolean(parsed.page?.isClosed)
+        }
+        : null,
+      error: pickError(parsed?.error),
+      screenshotFile: screenshotPath ? path.basename(screenshotPath) : "",
+      htmlFile: htmlPath ? path.basename(htmlPath) : "",
+      metaFile: metaPath ? path.basename(metaPath) : file
+    };
+  };
+
+  const selected = metaFiles.slice(-normalizedLimit);
+  const artifacts = selected.map(toSummary);
+  return {
+    ok: true,
+    status: 200,
+    debugId: normalizedDebugId,
+    dir: actionDir,
+    totalArtifacts: metaFiles.length,
+    returned: artifacts.length,
+    artifacts
+  };
+};
+
+app.get("/api/debug/message-actions/artifacts", (req, res) => {
+  const debugIdRaw = String(req.query.debugId || "").trim();
+  const requestIdRaw = String(req.query.requestId || "").trim();
+  const limitRaw = Number(req.query.limit || 30);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 30;
+
+  const requestedId = debugIdRaw || requestIdRaw;
+  if (!requestedId) {
+    res.status(400).json({ success: false, error: "debugId или requestId обязателен." });
+    return;
+  }
+
+  const direct = listMessageActionArtifactsForDebugId(requestedId, limit);
+  if (direct.ok) {
+    res.json({ success: true, ...direct });
+    return;
+  }
+
+  const shouldResolveFromRequestId = Boolean(requestIdRaw) || /^req-[a-z0-9-]+$/i.test(requestedId);
+  if (!shouldResolveFromRequestId) {
+    res.status(direct.status || 500).json({ success: false, ...direct });
+    return;
+  }
+
+  const resolvedDebugIds = resolveMessageActionDebugIdsFromLog(requestIdRaw || requestedId, { maxResults: 6 });
+  if (!resolvedDebugIds.length) {
+    res.status(404).json({
+      success: false,
+      error: "Артефакты не найдены.",
+      requestId: requestIdRaw || requestedId,
+      hint: "Используйте /api/debug/message-actions/log?requestId=... чтобы найти debugId.",
+      recent: listRecentMessageActionDebugIds({ limit: 12 })
+    });
+    return;
+  }
+
+  const artifactsByDebugId = {};
+  const errors = [];
+  for (const resolvedDebugId of resolvedDebugIds) {
+    const listing = listMessageActionArtifactsForDebugId(resolvedDebugId, limit);
+    if (listing.ok) {
+      artifactsByDebugId[resolvedDebugId] = listing;
+    } else {
+      errors.push({
+        debugId: resolvedDebugId,
+        error: listing.error || "Не удалось получить артефакты.",
+        dir: listing.dir || ""
+      });
+    }
+  }
+
+  res.json({
+    success: true,
+    resolvedFromRequestId: true,
+    requestId: requestIdRaw || requestedId,
+    debugIds: resolvedDebugIds,
+    artifactsByDebugId,
+    errors
+  });
+});
+
+app.get("/api/debug/message-actions/artifacts/file", (req, res) => {
+  const debugIdRaw = String(req.query.debugId || "").trim();
+  const safeDebugId = sanitizeFilename(debugIdRaw);
+  const fileRaw = String(req.query.file || "").trim();
+  const safeFile = path.basename(fileRaw);
+
+  if (!safeDebugId || !safeFile) {
+    res.status(400).json({ success: false, error: "debugId и file обязательны." });
+    return;
+  }
+  if (!/^[a-z0-9._-]{1,220}$/i.test(safeFile)) {
+    res.status(400).json({ success: false, error: "Некорректное имя файла." });
+    return;
+  }
+
+  const root = getMessageActionArtifactsRootDir();
+  const actionDir = path.join(root, safeDebugId);
+  const fullPath = path.join(actionDir, safeFile);
+  const resolvedActionDir = path.resolve(actionDir);
+  const resolvedFullPath = path.resolve(fullPath);
+  if (!resolvedFullPath.startsWith(resolvedActionDir + path.sep)) {
+    res.status(400).json({ success: false, error: "Некорректный путь." });
+    return;
+  }
+  if (!fs.existsSync(resolvedFullPath)) {
+    res.status(404).json({ success: false, error: "Файл не найден." });
+    return;
+  }
+
+  const ext = path.extname(safeFile).toLowerCase();
+  if (ext === ".png") {
+    res.setHeader("Content-Type", "image/png");
+  } else if (ext === ".html") {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+  } else if (ext === ".json") {
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+  } else {
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  }
+  res.sendFile(resolvedFullPath);
+});
+
+app.post("/api/debug/account/diagnose", async (req, res) => {
+  const debugId = `diag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
+  const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+  const withPuppeteer = req.body?.withPuppeteer === true || String(req.body?.withPuppeteer || "").trim() === "1";
+  const timeoutMsRaw = Number(req.body?.timeoutMs || 20000);
+  const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(4000, Math.min(60000, Math.floor(timeoutMsRaw))) : 20000;
+
+  if (!accountId) {
+    res.status(400).json({ success: false, error: "accountId обязателен." });
+    return;
+  }
+
+  const account = getAccountForRequest(accountId, req, res);
+  if (!account) return;
+
+  const proxy = requireAccountProxy(account, res, "диагностики аккаунта", getOwnerContext(req));
+  if (!proxy) return;
+
+  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
+  const cookiesParsed = parseCookies(account?.cookie || "");
+  const cookiesNormalized = normalizeCookies(cookiesParsed);
+  const cookieHeader = buildCookieHeaderForUrl(cookiesNormalized, tokenUrl);
+  const cookieNamesInHeader = cookieHeader
+    ? cookieHeader.split(";").map((part) => String(part).trim().split("=")[0]).filter(Boolean).slice(0, 80)
+    : [];
+  const accessCookie = cookiesNormalized.find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  const accessCookieLooksJwt = Boolean(accessCookie?.value && String(accessCookie.value).split(".").length >= 3);
+
+  const proxyUrl = buildProxyUrl(proxy);
+  const proxyUrlForPuppeteer = buildPuppeteerProxyUrl(proxy);
+  const proxyServer = buildProxyServer(proxy);
+
+  const result = {
+    success: true,
+    debugId,
+    startedAt: new Date().toISOString(),
+    elapsedMs: 0,
+    account: {
+      id: accountId,
+      profileName: safeString(account.profileName || ""),
+      profileEmail: safeString(account.profileEmail || ""),
+      username: safeString(account.username || ""),
+      proxyId: safeString(account.proxyId || "")
+    },
+    proxy: {
+      id: safeString(proxy.id || ""),
+      type: safeString(proxy.type || ""),
+      host: safeString(proxy.host || ""),
+      port: Number(proxy.port || 0),
+      hasAuth: Boolean(proxy.username || proxy.password),
+      url: maskProxyUrl(proxyUrl),
+      puppeteerUrl: maskProxyUrl(proxyUrlForPuppeteer),
+      puppeteerServer: maskProxyUrl(proxyServer)
+    },
+    cookies: {
+      parsedCount: Array.isArray(cookiesParsed) ? cookiesParsed.length : 0,
+      normalizedCount: Array.isArray(cookiesNormalized) ? cookiesNormalized.length : 0,
+      hasAccessTokenCookie: Boolean(accessCookie),
+      accessTokenLooksJwt: accessCookieLooksJwt,
+      cookieHeaderLength: cookieHeader.length,
+      cookieNamesInHeader
+    },
+    checks: {
+      proxyConnect: null,
+      robots: null,
+      tokenEndpoint: null,
+      puppeteer: null
+    }
+  };
+
+  const debugDir = ensureDebugDir();
+  const debugPath = path.join(debugDir, `diagnose-account-${accountId}-${debugId}.json`);
+  const writeDebugFile = () => {
+    try {
+      fs.writeFileSync(debugPath, JSON.stringify(result, null, 2), "utf8");
+    } catch (error) {
+      // ignore
+    }
+  };
+
+  try {
+    // 1) Proxy TCP/CONNECT handshake
+    result.checks.proxyConnect = await proxyChecker.checkProxyConnection(proxy, "www.kleinanzeigen.de", 443);
+    writeDebugFile();
+
+    // 2) Simple HTTP fetch through proxy (robots.txt)
+    try {
+      const axiosConfig = proxyChecker.buildAxiosConfig(proxy, timeoutMs);
+      axiosConfig.validateStatus = (status) => status >= 200 && status < 600;
+      const response = await axios.get("https://www.kleinanzeigen.de/robots.txt", {
+        ...axiosConfig,
+        headers: {
+          ...axiosConfig.headers,
+          Accept: "text/plain,*/*",
+          "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"
+        },
+        responseType: "text",
+        maxRedirects: 3
+      });
+      result.checks.robots = {
+        status: response.status,
+        contentType: safeString(response.headers?.["content-type"] || ""),
+        sample: safeString(response.data || "", 220)
+      };
+    } catch (error) {
+      result.checks.robots = { error: serializeErrorForDebug(error) };
+    }
+    writeDebugFile();
+
+    // 3) Token endpoint fetch through proxy
+    try {
+      const axiosConfig = proxyChecker.buildAxiosConfig(proxy, timeoutMs);
+      axiosConfig.validateStatus = (status) => status >= 200 && status < 600;
+      const deviceProfile = toDeviceProfile(account?.deviceProfile);
+      const response = await axios.get(tokenUrl, {
+        ...axiosConfig,
+        headers: {
+          ...axiosConfig.headers,
+          Cookie: cookieHeader,
+          "User-Agent": deviceProfile.userAgent || axiosConfig.headers?.["User-Agent"] || "Mozilla/5.0",
+          "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
+          Accept: "application/json"
+        }
+      });
+
+      const authHeader = response.headers?.authorization || response.headers?.Authorization || "";
+      const messageboxHeader = response.headers?.messagebox || response.headers?.Messagebox || "";
+      result.checks.tokenEndpoint = {
+        status: response.status,
+        hasAuthorizationHeader: Boolean(authHeader),
+        hasMessageboxHeader: Boolean(messageboxHeader),
+        message: safeString(response.data?.message || response.data?.error || "", 240),
+        bodyKeys: response.data && typeof response.data === "object" ? Object.keys(response.data).slice(0, 30) : []
+      };
+    } catch (error) {
+      result.checks.tokenEndpoint = { error: serializeErrorForDebug(error) };
+    }
+    writeDebugFile();
+
+    // 4) Optional: Puppeteer probe (loads home + messages list).
+    if (withPuppeteer) {
+      const proxyUrlValue = proxyUrlForPuppeteer;
+      const needsProxyChain = Boolean(
+        proxyUrlValue && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
+      );
+      let anonymizedProxyUrl = "";
+      try {
+        const proxyChain = require("proxy-chain");
+        const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+        if (proxyServer) {
+          if (needsProxyChain) {
+            anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrlValue);
+            launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+          } else {
+            launchArgs.push(`--proxy-server=${proxyServer}`);
+          }
+        }
+        const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-diag-profile-"));
+        const browser = await puppeteerExtra.launch({
+          headless: "new",
+          args: launchArgs,
+          userDataDir: profileDir,
+          timeout: PUPPETEER_LAUNCH_TIMEOUT,
+          protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+        });
+        try {
+          const page = await browser.newPage();
+          page.setDefaultTimeout(Math.min(20000, timeoutMs));
+          page.setDefaultNavigationTimeout(Math.min(20000, timeoutMs));
+          if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
+            await page.authenticate({ username: proxy.username || "", password: proxy.password || "" });
+          }
+          const deviceProfile = toDeviceProfile(account?.deviceProfile);
+          await page.setUserAgent(deviceProfile.userAgent || "Mozilla/5.0");
+          await page.setViewport(deviceProfile.viewport || { width: 1366, height: 768 });
+          await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8" });
+          await page.emulateTimezone(deviceProfile.timezone || "Europe/Berlin").catch(() => {});
+          await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded", timeout: Math.min(20000, timeoutMs) });
+          await acceptCookieModal(page, { timeout: 2500 }).catch(() => {});
+          if (isGdprPage(page.url())) {
+            await acceptGdprConsent(page, { timeout: 5000 }).catch(() => {});
+          }
+          await page.setCookie(...cookiesNormalized);
+          await page.goto("https://www.kleinanzeigen.de/m-nachrichten.html", { waitUntil: "domcontentloaded", timeout: Math.min(25000, timeoutMs + 5000) });
+          await acceptCookieModal(page, { timeout: 2500 }).catch(() => {});
+          if (isGdprPage(page.url())) {
+            await acceptGdprConsent(page, { timeout: 5000 }).catch(() => {});
+          }
+          const url = page.url();
+          const title = await page.title().catch(() => "");
+          const screenshotPath = path.join(debugDir, `diagnose-account-${accountId}-${debugId}.png`);
+          await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+          result.checks.puppeteer = {
+            url: safeString(url, 500),
+            title: safeString(title, 200),
+            screenshotPath
+          };
+        } finally {
+          await browser.close().catch(() => {});
+          try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (e) {}
+        }
+      } catch (error) {
+        result.checks.puppeteer = { error: serializeErrorForDebug(error) };
+      } finally {
+        if (anonymizedProxyUrl) {
+          try {
+            const proxyChain = require("proxy-chain");
+            await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true).catch(() => {});
+          } catch (e) {}
+        }
+      }
+      writeDebugFile();
+    }
+  } catch (error) {
+    result.success = false;
+    result.error = safeString(error?.message || String(error));
+    result.errorInfo = serializeErrorForDebug(error);
+  } finally {
+    result.elapsedMs = Date.now() - startedAt;
+    writeDebugFile();
+  }
+
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "account-diagnose",
+    debugId,
+    accountId,
+    elapsedMs: result.elapsedMs,
+    proxyId: result.proxy?.id || "",
+    proxyType: result.proxy?.type || "",
+    tokenEndpointStatus: result.checks?.tokenEndpoint?.status || null,
+    robotsStatus: result.checks?.robots?.status || null
+  });
+
+  res.json({ ...result, debugPath });
+});
+
+app.get("/api/accounts", (req, res) => {
+  const ownerContext = getOwnerContext(req);
+  const accounts = filterByOwner(listAccounts(), ownerContext);
+  res.json(accounts.map(({ cookie, deviceProfile, ...account }) => ({
+    ...account,
+    proxy: getProxyLabel(account.proxyId, ownerContext)
+  })));
+});
+
+app.get("/api/accounts/:id/plz", async (req, res) => {
+  try {
+    const account = getAccountForRequest(req.params.id, req, res);
+    if (!account) return;
+    const selectedProxy = requireAccountProxy(account, res, "загрузки PLZ", getOwnerContext(req));
+    if (!selectedProxy) return;
+
+    const puppeteer = getPuppeteer();
+    const proxyChain = require("proxy-chain");
+    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { pickDeviceProfile } = require("./cookieValidator");
+
+    const cookies = normalizeCookies(parseCookies(account.cookie));
+    if (!cookies.length) {
+      res.status(400).json({ success: false, error: "Cookie пустые." });
+      return;
+    }
+
+    let deviceProfile = pickDeviceProfile();
+    if (account.deviceProfile) {
+      try {
+        deviceProfile = typeof account.deviceProfile === "string"
+          ? JSON.parse(account.deviceProfile)
+          : account.deviceProfile;
+      } catch (error) {
+        deviceProfile = pickDeviceProfile();
+      }
+    }
+
+    const proxyServer = buildProxyServer(selectedProxy);
+    const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
+    const needsProxyChain = Boolean(
+      proxyUrl && ((selectedProxy?.type || "").toLowerCase().startsWith("socks") || selectedProxy?.username || selectedProxy?.password)
+    );
+    let anonymizedProxyUrl;
+
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+    if (proxyServer) {
+      if (needsProxyChain) {
+        anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+        launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+      } else {
+        launchArgs.push(`--proxy-server=${proxyServer}`);
+      }
+    }
+
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: launchArgs,
+      timeout: PUPPETEER_LAUNCH_TIMEOUT,
+      protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+    });
+
+    try {
+      const page = await browser.newPage();
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+      if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
+        await page.authenticate({
+          username: selectedProxy.username || "",
+          password: selectedProxy.password || ""
+        });
+      }
+
+      if (deviceProfile?.userAgent) {
+        await page.setUserAgent(deviceProfile.userAgent);
+      }
+      if (deviceProfile?.viewport) {
+        await page.setViewport(deviceProfile.viewport);
+      }
+      if (deviceProfile?.locale) {
+        await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+      }
+      if (deviceProfile?.timezone) {
+        await page.emulateTimezone(deviceProfile.timezone);
+      }
+
+      await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded", timeout: 20000 });
+      await delay(300 + Math.random() * 500);
+      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
+      await acceptGdprConsent(page, { timeout: 15000 }).catch(() => {});
+      await page.setCookie(...cookies);
+      await delay(400 + Math.random() * 600);
+
+      await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded", timeout: 20000 });
+      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
+      if (isGdprPage(page.url())) {
+        await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+      }
+      await delay(300 + Math.random() * 500);
+
+      const postalCode = await page.evaluate(() => {
+        const candidates = [
+          'input[name="zipcode"]',
+          'input[name="plz"]',
+          'input[id*="zip"]',
+          'input[id*="plz"]',
+          'input[placeholder*="PLZ"]',
+          'input[aria-label*="PLZ"]',
+          'input[placeholder*="Postleitzahl"]',
+          'input[aria-label*="Postleitzahl"]'
+        ];
+        for (const selector of candidates) {
+          const el = document.querySelector(selector);
+          if (el) {
+            const value = el.value || el.getAttribute("value") || "";
+            if (value) return value.trim();
+          }
+        }
+        return "";
+      });
+
+      if (postalCode) {
+        updateAccount(account.id, { postalCode });
+      }
+      res.json({ success: true, postalCode: postalCode || "" });
+    } finally {
+      await browser.close();
+      if (anonymizedProxyUrl) {
+        await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+      }
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/accounts/:id/refresh", async (req, res) => {
+  try {
+    const account = getAccountForRequest(req.params.id, req, res);
+    if (!account) return;
+    const ownerContext = getOwnerContext(req);
+
+    if (!account.proxyId) {
+      res.status(400).json({ success: false, error: "Для обновления аккаунта нужен прокси." });
+      return;
+    }
+
+    const selectedProxy = findProxyById(account.proxyId) || null;
+    if (!selectedProxy) {
+      res.status(400).json({ success: false, error: "Прокси для аккаунта не найден." });
+      return;
+    }
+    if (!isOwnerMatch(selectedProxy, ownerContext)) {
+      res.status(403).json({ success: false, error: "Недостаточно прав для использования прокси." });
+      return;
+    }
+
+    let deviceProfile = pickDeviceProfile();
+    if (account.deviceProfile) {
+      try {
+        deviceProfile = typeof account.deviceProfile === "string"
+          ? JSON.parse(account.deviceProfile)
+          : account.deviceProfile;
+      } catch (error) {
+        deviceProfile = pickDeviceProfile();
+      }
+    }
+
+    let validation = await validateCookies(account.cookie, {
+      deviceProfile,
+      proxy: selectedProxy
+    });
+
+    const normalizedName = String(validation.profileName || "").replace(/\s+/g, " ").trim();
+    const safeName = /mein(e)? anzeigen|mein profil|meine anzeigen|profil und meine anzeigen/i.test(normalizedName)
+      ? ""
+      : normalizedName;
+
+    const updates = {
+      status: validation.valid ? "active" : "failed",
+      lastCheck: new Date().toISOString(),
+      error: validation.valid ? null : (validation.reason || "Куки невалидны"),
+      profileName: safeName || account.profileName || "",
+      profileEmail: validation.profileEmail || account.profileEmail || "",
+      deviceProfile: account.deviceProfile || JSON.stringify(validation.deviceProfile || deviceProfile || pickDeviceProfile())
+    };
+
+    const updated = updateAccount(account.id, updates);
+
+    res.status(validation.valid ? 200 : 400).json({
+      success: validation.valid,
+      error: validation.valid ? null : updates.error,
+      account: {
+        ...(updated || account),
+        proxy: getProxyLabel(account.proxyId, ownerContext)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/ads/active", async (req, res) => {
+  try {
+    const ownerContext = getOwnerContext(req);
+    const scopedAccounts = filterByOwner(listAccounts(), ownerContext);
+    const scopedProxies = filterByOwner(proxies, ownerContext);
+    const accounts = scopedAccounts.filter((account) => {
+      if (!account.proxyId) {
+        return false;
+      }
+      return hasProxyWithId(scopedProxies, account.proxyId);
+    });
+    const forceRefresh = ["1", "true", "yes"].includes(String(req.query.force || "").trim().toLowerCase());
+    const cacheKey = buildActiveAdsCacheKey({ ownerContext, accounts });
+
+    if (!forceRefresh) {
+      const cached = getCachedActiveAdsEntry(cacheKey);
+      if (cached) {
+        res.json({
+          ads: Array.isArray(cached.ads) ? cached.ads : [],
+          cached: true,
+          cachedAt: new Date(cached.cachedAt || Date.now()).toISOString()
+        });
+        return;
+      }
+      const inflightEntry = activeAdsCache.get(cacheKey);
+      if (inflightEntry?.inFlight) {
+        const ads = await inflightEntry.inFlight;
+        res.json({ ads, cached: false });
+        return;
+      }
+    }
+
+    const fetchPromise = (async () => {
+      const ads = await fetchActiveAds({ accounts, proxies: scopedProxies, ownerContext });
+      return Array.isArray(ads) ? ads : [];
+    })();
+    setActiveAdsInFlight(cacheKey, fetchPromise);
+
+    const ads = await fetchPromise;
+    setCachedActiveAdsEntry(cacheKey, ads);
+    res.json({ ads, cached: false });
+  } catch (error) {
+    dumpFieldsDebugMeta({
+      accountLabel: "account",
+      step: "fields-exception",
+      error: error?.message || "unknown-error",
+      extra: { stack: error?.stack || "" },
+      force: DEBUG_FEATURES_ENABLED && (req?.query?.debug === "true" || req?.query?.debug === "1")
+    });
+    res.status(500).json({ success: false, error: error.message });
+  } finally {
+    try {
+      const ownerContext = getOwnerContext(req);
+      const scopedAccounts = filterByOwner(listAccounts(), ownerContext);
+      const scopedProxies = filterByOwner(proxies, ownerContext);
+      const accounts = scopedAccounts.filter((account) => account?.proxyId && hasProxyWithId(scopedProxies, account.proxyId));
+      const cacheKey = buildActiveAdsCacheKey({ ownerContext, accounts });
+      clearActiveAdsInFlight(cacheKey);
+    } catch (error) {
+      // ignore cleanup failures
+    }
+  }
+});
+
+app.post("/api/ads/:adId/reserve", async (req, res) => {
+  try {
+    const adId = String(req.params.adId || "").trim();
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    const adHref = req.body?.adHref ? String(req.body.adHref) : "";
+    const adTitle = req.body?.adTitle ? String(req.body.adTitle) : "";
+    if (!adId || !accountId) {
+      res.status(400).json({ success: false, error: "Передайте adId и accountId" });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const ownerContext = getOwnerContext(req);
+    const selectedProxy = requireAccountProxy(account, res, "управления объявлениями", ownerContext);
+    if (!selectedProxy) return;
+
+    const accountLabel = account.profileEmail
+      ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
+      : (account.profileName || account.username || "Аккаунт");
+
+    const result = await performAdAction({
+      account,
+      proxy: selectedProxy,
+      adId,
+      action: "reserve",
+      accountLabel,
+      adHref,
+      adTitle
+    });
+    if (result?.success) {
+      invalidateActiveAdsCacheForOwner(ownerContext);
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/ads/:adId/activate", async (req, res) => {
+  try {
+    const adId = String(req.params.adId || "").trim();
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    const adHref = req.body?.adHref ? String(req.body.adHref) : "";
+    const adTitle = req.body?.adTitle ? String(req.body.adTitle) : "";
+    if (!adId || !accountId) {
+      res.status(400).json({ success: false, error: "Передайте adId и accountId" });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const ownerContext = getOwnerContext(req);
+    const selectedProxy = requireAccountProxy(account, res, "управления объявлениями", ownerContext);
+    if (!selectedProxy) return;
+
+    const accountLabel = account.profileEmail
+      ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
+      : (account.profileName || account.username || "Аккаунт");
+
+    const result = await performAdAction({
+      account,
+      proxy: selectedProxy,
+      adId,
+      action: "activate",
+      accountLabel,
+      adHref,
+      adTitle
+    });
+    if (result?.success) {
+      invalidateActiveAdsCacheForOwner(ownerContext);
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/ads/:adId/delete", async (req, res) => {
+  try {
+    const adId = String(req.params.adId || "").trim();
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    const adHref = req.body?.adHref ? String(req.body.adHref) : "";
+    const adTitle = req.body?.adTitle ? String(req.body.adTitle) : "";
+    if (!adId || !accountId) {
+      res.status(400).json({ success: false, error: "Передайте adId и accountId" });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const ownerContext = getOwnerContext(req);
+    const selectedProxy = requireAccountProxy(account, res, "управления объявлениями", ownerContext);
+    if (!selectedProxy) return;
+
+    const accountLabel = account.profileEmail
+      ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
+      : (account.profileName || account.username || "Аккаунт");
+
+    const result = await performAdAction({
+      account,
+      proxy: selectedProxy,
+      adId,
+      action: "delete",
+      accountLabel,
+      adHref,
+      adTitle
+    });
+    if (result?.success) {
+      invalidateActiveAdsCacheForOwner(ownerContext);
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/messages", async (req, res) => {
+  try {
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    const defaultLimitValue = Number(process.env.KL_MESSAGES_DEFAULT_LIMIT || 30);
+    const defaultLimit = Number.isFinite(defaultLimitValue) && defaultLimitValue > 0
+      ? Math.floor(defaultLimitValue)
+      : 30;
+    const wantsFull = ["1", "true", "yes"].includes(String(req.query.full || "").trim().toLowerCase());
+    const limitFromQuery = req.query.limit !== undefined && req.query.limit !== null && String(req.query.limit).trim() !== ""
+      ? Number(req.query.limit)
+      : NaN;
+    const maxConversations = wantsFull
+      ? undefined
+      : (Number.isFinite(limitFromQuery) && limitFromQuery > 0 ? Math.floor(limitFromQuery) : defaultLimit);
+    let accounts = accountId ? [getAccountForRequest(accountId, req, res)].filter(Boolean) : filterByOwner(listAccounts(), getOwnerContext(req));
+
+    if (!accounts.length) {
+      res.json([]);
+      return;
+    }
+
+    if (accountId) {
+      const proxy = requireAccountProxy(accounts[0], res, "загрузки сообщений", getOwnerContext(req));
+      if (!proxy) return;
+    } else {
+      const ownerContext = getOwnerContext(req);
+      const scopedProxies = filterByOwner(proxies, ownerContext);
+      accounts = accounts.filter((account) => {
+        if (!account.proxyId) return false;
+        return hasProxyWithId(scopedProxies, account.proxyId);
+      });
+      if (!accounts.length) {
+        res.json([]);
+        return;
+      }
+    }
+
+    const conversations = await fetchMessages({
+      accounts,
+      proxies: filterByOwner(proxies, getOwnerContext(req)),
+      options: {
+        maxConversations,
+        // Heavy preview enrichment (Puppeteer) makes the endpoint slow and flaky behind proxies.
+        // Frontend can hydrate missing images via /api/messages/thread on demand.
+        enrichImages: ["1", "true", "yes"].includes(String(req.query.enrichImages || "").trim().toLowerCase())
+      }
+    });
+    const summaries = summarizeConversations(conversations);
+    res.json(summaries);
+  } catch (error) {
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
+      });
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || ""
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/messages/image", async (req, res) => {
+  try {
+    const rawUrl = String(req.query.url || "").trim();
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    if (!rawUrl) {
+      res.status(400).send("Image URL is required");
+      return;
+    }
+    if (!accountId) {
+      res.status(400).send("Account is required for image loading");
+      return;
+    }
+    if (rawUrl.length > 2048) {
+      res.status(400).send("Image URL is too long");
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(rawUrl);
+    } catch (error) {
+      res.status(400).send("Invalid image URL");
+      return;
+    }
+
+    const protocol = String(parsed.protocol || "").toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") {
+      res.status(400).send("Unsupported image URL protocol");
+      return;
+    }
+
+    const hostname = String(parsed.hostname || "").toLowerCase();
+    const isKleinanzeigenHost = hostname === "kleinanzeigen.de"
+      || hostname.endsWith(".kleinanzeigen.de");
+    if (!isKleinanzeigenHost) {
+      res.status(403).send("Image host is not allowed");
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+    const proxy = requireAccountProxy(account, res, "загрузки изображения", getOwnerContext(req));
+    if (!proxy) return;
+
+    const baseUrl = new URL(parsed.toString());
+    // Kleinanzeigen conversation attachments frequently come as api.kleinanzeigen.de URLs that return 401,
+    // while the gateway.kleinanzeigen.de/messagebox URL works with the messagebox access token.
+    if (baseUrl.hostname.toLowerCase() === "api.kleinanzeigen.de"
+      && baseUrl.pathname.startsWith("/api/users/")
+      && baseUrl.pathname.includes("/conversation-attachments")) {
+      baseUrl.hostname = "gateway.kleinanzeigen.de";
+      baseUrl.pathname = `/messagebox${baseUrl.pathname}`;
+      baseUrl.protocol = "https:";
+    }
+
+    const isMessageboxAttachment = baseUrl.hostname.toLowerCase() === "gateway.kleinanzeigen.de"
+      && baseUrl.pathname.startsWith("/messagebox/api/")
+      && baseUrl.pathname.includes("/conversation-attachments");
+
+    const isProdAdsImage = baseUrl.hostname.toLowerCase() === "img.kleinanzeigen.de"
+      && baseUrl.pathname.startsWith("/api/v1/prod-ads/images/");
+
+    const defaultRule = "$_57.JPG";
+    const ruleVariants = [defaultRule, "$_24.JPG", "$_2.JPG", "$_57.AUTO", "$_24.AUTO"];
+    const looksLikeMalformedRule = (rule) => /(imageid|\$\{.*\}|\$_\{.*\})/i.test(String(rule || ""));
+    const isValidRule = (rule) => /^\$_[a-z0-9_.-]+$/i.test(String(rule || ""));
+
+    if (isProdAdsImage) {
+      const currentRule = baseUrl.searchParams.get("rule") || "";
+      if (!isValidRule(currentRule) || looksLikeMalformedRule(currentRule)) {
+        baseUrl.searchParams.set("rule", defaultRule);
+      }
+    }
+
+    const candidates = [baseUrl.toString()];
+    if (isProdAdsImage) {
+      for (const variant of ruleVariants) {
+        const candidate = new URL(baseUrl.toString());
+        candidate.searchParams.set("rule", variant);
+        const href = candidate.toString();
+        if (!candidates.includes(href)) candidates.push(href);
+      }
+    }
+
+    const deviceProfile = toDeviceProfile(account?.deviceProfile);
+    const requestHeaders = {
+      "User-Agent": deviceProfile?.userAgent
+        || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+      "Referer": isMessageboxAttachment ? "https://www.kleinanzeigen.de/m-nachrichten.html" : "https://www.kleinanzeigen.de/"
+    };
+
+    if (isMessageboxAttachment) {
+      const auth = await getMessageboxAccessTokenForAccount({ account, proxy, timeoutMs: 20000 });
+      requestHeaders.Authorization = auth.token;
+      // Build cookies for the actual upstream host to avoid mixing host-only cookies for kleinanzeigen.de/www.
+      const cookieHeader = buildCookieHeaderFromAccount(account, baseUrl.toString());
+      requestHeaders.Cookie = cookieHeader || auth.cookieHeader || buildCookieHeaderFromAccount(account);
+      requestHeaders["X-ECG-USER-AGENT"] = "messagebox-1";
+    }
+
+    let lastStatus = 502;
+    let lastErrorMessage = "Image fetch failed";
+    const axiosConfig = proxyChecker.buildAxiosConfig(proxy, 20000);
+    axiosConfig.headers = { ...axiosConfig.headers, ...requestHeaders };
+    axiosConfig.responseType = "arraybuffer";
+    axiosConfig.maxRedirects = 5;
+    axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
+
+    for (const candidateUrl of candidates) {
+      let upstream;
+      try {
+        upstream = await axios.get(candidateUrl, axiosConfig);
+      } catch (error) {
+        lastStatus = 502;
+        lastErrorMessage = `Image fetch failed: ${error.message || "network error"}`;
+        continue;
+      }
+
+      if (!upstream || upstream.status < 200 || upstream.status >= 300) {
+        lastStatus = upstream?.status || 502;
+        lastErrorMessage = `Image fetch failed: ${upstream?.status || "network error"}`;
+        continue;
+      }
+
+      const contentType = String(upstream.headers?.["content-type"] || "").toLowerCase();
+      if (!contentType.startsWith("image/")) {
+        lastStatus = 415;
+        lastErrorMessage = "Upstream resource is not an image";
+        continue;
+      }
+
+      const cacheControl = String(upstream.headers?.["cache-control"] || "").trim();
+      const payload = Buffer.isBuffer(upstream.data) ? upstream.data : Buffer.from(upstream.data || "");
+
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", cacheControl || "public, max-age=900");
+      res.send(payload);
+      return;
+    }
+
+    res.status(lastStatus).send(lastErrorMessage);
+  } catch (error) {
+    res.status(502).send(`Image proxy failed: ${error.message}`);
+  }
+});
+
+app.get("/api/messages/thread", async (req, res) => {
+  try {
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    const conversationId = req.query.conversationId ? String(req.query.conversationId) : "";
+    const conversationUrl = req.query.conversationUrl ? String(req.query.conversationUrl) : "";
+    const participant = req.query.participant ? String(req.query.participant) : "";
+    const adTitle = req.query.adTitle ? String(req.query.adTitle) : "";
+
+    if (!accountId || (!conversationId && !conversationUrl && !participant && !adTitle)) {
+      res.status(400).json({ success: false, error: "Недостаточно данных для загрузки диалога." });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const proxy = requireAccountProxy(account, res, "загрузки диалога", getOwnerContext(req));
+    if (!proxy) return;
+
+    const result = await fetchThreadMessages({
+      account,
+      proxy,
+      conversationId,
+      conversationUrl,
+      participant,
+      adTitle
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen."
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/messages/send", async (req, res) => {
+  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+  const debugId = safeClientRequestId
+    ? safeClientRequestId
+    : `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
+  let safetyAccountId = null;
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "start",
+    route: "send-message",
+    debugId,
+    clientRequestId,
+    ip: req.ip,
+    bodyKeys: Object.keys(req.body || {})
+  });
+  try {
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    safetyAccountId = accountId;
+    const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
+    const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
+    const participant = req.body?.participant ? String(req.body.participant) : "";
+    const adTitle = req.body?.adTitle ? String(req.body.adTitle) : "";
+    const text = req.body?.text ? String(req.body.text) : "";
+
+    if (!accountId || (!conversationId && !conversationUrl && !participant && !adTitle) || !text.trim()) {
+      res.status(400).json({
+        success: false,
+        error: "Недостаточно данных для отправки.",
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+
+    const proxy = requireAccountProxy(account, res, "отправки сообщения", getOwnerContext(req));
+    if (!proxy) return;
+
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: "send-message",
+      proxyId: account?.proxyId
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-safety-reject",
+        route: "send-message",
+        debugId,
+        clientRequestId,
+        accountId,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+
+    const result = await sendConversationMessage({
+      account,
+      proxy,
+      conversationId,
+      conversationUrl,
+      participant,
+      adTitle,
+      text: text.trim(),
+      debugContext: {
+        route: "send-message",
+        debugId,
+        clientRequestId,
+        accountId,
+        conversationId,
+        conversationUrl
+      }
+    });
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-success",
+      route: "send-message",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
+    });
+    accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
+
+    res.json({
+      success: true,
+      messages: result.messages || [],
+      conversationId: result.conversationId || conversationId,
+      conversationUrl: result.conversationUrl || conversationUrl,
+      debugId,
+      requestId: clientRequestId
+    });
+  } catch (error) {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-error",
+      route: "send-message",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      code: error?.code || "",
+      message: error?.message || String(error),
+      details: error?.details || "",
+      stack: error?.stack || ""
+    });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "send-message",
+      error,
+      logPath: getMessageActionsLogPath(),
+      debugId,
+      requestId: clientRequestId
+    });
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json(withCooldownHint({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    res.status(500).json(withCooldownHint({
+      success: false,
+      error: error.message,
+      debugId,
+      requestId: clientRequestId
+    }, cooldown));
+  }
+});
+
+app.post("/api/messages/offer/decline", async (req, res) => {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+  }
+  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+  const debugId = safeClientRequestId
+    ? safeClientRequestId
+    : `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const routeDeadlineMs = resolveMessageRouteDeadlineMs();
+  const startedAt = Date.now();
+  let safetyAccountId = null;
+  let messageActionLock = null;
+  let abortController = null;
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "start",
+    route: "offer-decline",
+    debugId,
+    clientRequestId,
+    ip: req.ip,
+    bodyKeys: Object.keys(req.body || {})
+  });
+  req.on("aborted", () => {
+    if (abortController && !abortController.signal.aborted) {
+      try { abortController.abort(); } catch (error) {}
+    }
+    // Client went away; do not keep the per-account lock stuck.
+    releaseMessageActionLock(messageActionLock);
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "request-aborted",
+      route: "offer-decline",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt
+    });
+  });
+  res.on("close", () => {
+    if (!res.writableEnded && abortController && !abortController.signal.aborted) {
+      try { abortController.abort(); } catch (error) {}
+    }
+    // Response was closed early (nginx/client timeout). Release lock so the user can retry.
+    releaseMessageActionLock(messageActionLock);
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "response-close",
+      route: "offer-decline",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      statusCode: res.statusCode,
+      writableEnded: res.writableEnded,
+      headersSent: res.headersSent
+    });
+  });
+  try {
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    safetyAccountId = accountId;
+    const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
+    const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "payload",
+      route: "offer-decline",
+      debugId,
+      clientRequestId,
+      accountId,
+      hasConversationId: Boolean(conversationId),
+      hasConversationUrl: Boolean(conversationUrl)
+    });
+
+    if (!accountId || (!conversationId && !conversationUrl)) {
+      res.status(400).json({
+        success: false,
+        error: "Недостаточно данных для отклонения заявки.",
+        debugId
+      });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-not-found",
+        route: "offer-decline",
+        debugId,
+        accountId
+      });
+      return;
+    }
+
+    const proxy = requireAccountProxy(account, res, "отклонения заявки", getOwnerContext(req));
+    if (!proxy) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "proxy-required",
+        route: "offer-decline",
+        debugId,
+        accountId,
+        proxyId: account?.proxyId || null
+      });
+      return;
+    }
+
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: "offer-decline",
+      proxyId: account?.proxyId,
+      touchAction: false
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-safety-reject",
+        route: "offer-decline",
+        debugId,
+        clientRequestId,
+        accountId,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+
+    messageActionLock = tryAcquireMessageActionLock({
+      accountId,
+      route: "offer-decline",
+      debugId,
+      clientRequestId
+    });
+    if (!messageActionLock?.acquired) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "action-lock-busy",
+        route: "offer-decline",
+        debugId,
+        clientRequestId,
+        accountId,
+        lockReason: messageActionLock?.reason || "",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? Date.now() - messageActionLock.existing.startedAt : null
+      });
+      res.status(409).json({
+        success: false,
+        error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
+        code: "MESSAGE_ACTION_IN_PROGRESS",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+    registerAccountActionAttempt({ accountId, actionKey: "offer-decline" });
+
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-start",
+      route: "offer-decline",
+      debugId,
+      clientRequestId,
+      routeDeadlineMs
+    });
+    let serviceTimer = null;
+    let timedOut = false;
+    abortController = new AbortController();
+    const servicePromise = declineConversationOffer({
+      account,
+      proxy,
+      conversationId,
+      conversationUrl,
+      abortSignal: abortController.signal,
+      hardDeadlineMs: routeDeadlineMs,
+      debugContext: {
+        route: "offer-decline",
+        debugId,
+        clientRequestId,
+        accountId,
+        conversationId,
+        conversationUrl
+      }
+    }).finally(() => {
+      releaseMessageActionLock(messageActionLock);
+    });
+    const timeoutPromise = new Promise((_, reject) => {
+      serviceTimer = setTimeout(() => {
+        timedOut = true;
+        try { abortController.abort(); } catch (error) {}
+        releaseMessageActionLock(messageActionLock);
+        const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
+        timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
+        timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
+        reject(timeoutError);
+      }, routeDeadlineMs);
+    });
+
+    let result;
+    try {
+      result = await Promise.race([servicePromise, timeoutPromise]);
+    } finally {
+      if (serviceTimer) clearTimeout(serviceTimer);
+      if (timedOut) {
+        servicePromise
+          .then(() => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-success",
+              route: "offer-decline",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt
+            });
+          })
+          .catch((lateError) => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-error",
+              route: "offer-decline",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt,
+              code: lateError?.code || "",
+              message: lateError?.message || String(lateError),
+              details: lateError?.details || "",
+              stack: lateError?.stack || ""
+            });
+          });
+      }
+    }
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-success",
+      route: "offer-decline",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
+    });
+    accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
+    if (res.writableEnded || res.headersSent) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "response-already-closed",
+        route: "offer-decline",
+        debugId,
+        clientRequestId,
+        elapsedMs: Date.now() - startedAt
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      messages: result.messages || [],
+      conversationId: result.conversationId || conversationId,
+      conversationUrl: result.conversationUrl || conversationUrl,
+      debugId,
+      requestId: clientRequestId
+    });
+  } catch (error) {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-error",
+      route: "offer-decline",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      code: error?.code || "",
+      message: error?.message || String(error),
+      details: error?.details || "",
+      stack: error?.stack || ""
+    });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "offer-decline",
+      error,
+      logPath: getMessageActionsLogPath(),
+      debugId,
+      requestId: clientRequestId
+    });
+    if (res.writableEnded || res.headersSent) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "response-already-closed",
+        route: "offer-decline",
+        debugId,
+        clientRequestId,
+        elapsedMs: Date.now() - startedAt,
+        code: error?.code || "",
+        message: error?.message || String(error)
+      });
+      return;
+    }
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json(withCooldownHint({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json(withCooldownHint({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "MESSAGE_ACTION_TIMEOUT") {
+      res.status(504).json(withCooldownHint({
+        success: false,
+        error: "Действие в сообщениях заняло слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "CONVERSATION_NOT_READY") {
+      res.status(503).json(withCooldownHint({
+        success: false,
+        error: "Диалог в Kleinanzeigen не успел прогрузиться (загрузка/скелетон). Обновите диалог и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "CONSENT_REQUIRED") {
+      res.status(503).json(withCooldownHint({
+        success: false,
+        error: "Kleinanzeigen блокирует действие страницей согласия cookie/GDPR. Откройте Kleinanzeigen в браузере через этот же прокси, нажмите «Alle akzeptieren», затем повторите действие.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    res.status(500).json(withCooldownHint({
+      success: false,
+      error: error?.message || "Не удалось отклонить предложение",
+      code: error?.code || "",
+      details: error?.details || "",
+      debugId,
+      requestId: clientRequestId
+    }, cooldown));
+  }
+});
+
+app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) => {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+  }
+  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
+  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
+  const debugId = safeClientRequestId
+    ? safeClientRequestId
+    : `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const routeDeadlineMs = resolveMessageRouteDeadlineMs();
+  const startedAt = Date.now();
+  let safetyAccountId = null;
+  let messageActionLock = null;
+  let abortController = null;
+  appendServerLog(getMessageActionsLogPath(), {
+    event: "start",
+    route: "send-media",
+    debugId,
+    clientRequestId,
+    ip: req.ip,
+    bodyKeys: Object.keys(req.body || {})
+  });
+  req.on("aborted", () => {
+    if (abortController && !abortController.signal.aborted) {
+      try { abortController.abort(); } catch (error) {}
+    }
+    // Client went away; do not keep the per-account lock stuck.
+    releaseMessageActionLock(messageActionLock);
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "request-aborted",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt
+    });
+  });
+  res.on("close", () => {
+    if (!res.writableEnded && abortController && !abortController.signal.aborted) {
+      try { abortController.abort(); } catch (error) {}
+    }
+    // Response was closed early (nginx/client timeout). Release lock so the user can retry.
+    releaseMessageActionLock(messageActionLock);
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "response-close",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      statusCode: res.statusCode,
+      writableEnded: res.writableEnded,
+      headersSent: res.headersSent
+    });
+  });
+  const cleanupUploadedFiles = () => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    for (const file of files) {
+      const filePath = file?.path ? String(file.path) : "";
+      if (!filePath) continue;
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch (error) {
+        // ignore per-file cleanup failures
+      }
+    }
+    cleanupMessageUploadDir(req);
+  };
+  try {
+    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    safetyAccountId = accountId;
+    const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
+    const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
+    const text = req.body?.text ? String(req.body.text) : "";
+    const files = Array.isArray(req.files) ? req.files : [];
+    const imageFiles = files.filter((file) => String(file?.mimetype || "").toLowerCase().startsWith("image/"));
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "payload",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      accountId,
+      hasConversationId: Boolean(conversationId),
+      hasConversationUrl: Boolean(conversationUrl),
+      textLength: text.trim().length,
+      filesCount: files.length,
+      imageFilesCount: imageFiles.length
+    });
+
+    if (!accountId || (!conversationId && !conversationUrl) || (!text.trim() && !imageFiles.length)) {
+      res.status(400).json({
+        success: false,
+        error: "Недостаточно данных для отправки.",
+        debugId
+      });
+      return;
+    }
+
+    if (files.length && !imageFiles.length) {
+      res.status(400).json({
+        success: false,
+        error: "Разрешены только изображения.",
+        debugId
+      });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-not-found",
+        route: "send-media",
+        debugId,
+        accountId
+      });
+      return;
+    }
+
+    const proxy = requireAccountProxy(account, res, "отправки фотографий", getOwnerContext(req));
+    if (!proxy) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "proxy-required",
+        route: "send-media",
+        debugId,
+        accountId,
+        proxyId: account?.proxyId || null
+      });
+      return;
+    }
+
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: "send-media",
+      proxyId: account?.proxyId,
+      touchAction: false
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-safety-reject",
+        route: "send-media",
+        debugId,
+        clientRequestId,
+        accountId,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+
+    messageActionLock = tryAcquireMessageActionLock({
+      accountId,
+      route: "send-media",
+      debugId,
+      clientRequestId
+    });
+    if (!messageActionLock?.acquired) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "action-lock-busy",
+        route: "send-media",
+        debugId,
+        clientRequestId,
+        accountId,
+        lockReason: messageActionLock?.reason || "",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? Date.now() - messageActionLock.existing.startedAt : null
+      });
+      res.status(409).json({
+        success: false,
+        error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
+        code: "MESSAGE_ACTION_IN_PROGRESS",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+    registerAccountActionAttempt({ accountId, actionKey: "send-media" });
+
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-start",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      routeDeadlineMs
+    });
+    let serviceTimer = null;
+    let timedOut = false;
+    abortController = new AbortController();
+    const servicePromise = sendConversationMedia({
+      account,
+      proxy,
+      conversationId,
+      conversationUrl,
+      text: text.trim(),
+      files: imageFiles,
+      abortSignal: abortController.signal,
+      hardDeadlineMs: routeDeadlineMs,
+      debugContext: {
+        route: "send-media",
+        debugId,
+        clientRequestId,
+        accountId,
+        conversationId,
+        conversationUrl
+      }
+    }).finally(() => {
+      releaseMessageActionLock(messageActionLock);
+    });
+    const timeoutPromise = new Promise((_, reject) => {
+      serviceTimer = setTimeout(() => {
+        timedOut = true;
+        try { abortController.abort(); } catch (error) {}
+        releaseMessageActionLock(messageActionLock);
+        const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
+        timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
+        timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
+        reject(timeoutError);
+      }, routeDeadlineMs);
+    });
+
+    let result;
+    try {
+      result = await Promise.race([servicePromise, timeoutPromise]);
+    } finally {
+      if (serviceTimer) clearTimeout(serviceTimer);
+      if (timedOut) {
+        servicePromise
+          .then(() => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-success",
+              route: "send-media",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt
+            });
+          })
+          .catch((lateError) => {
+            appendServerLog(getMessageActionsLogPath(), {
+              event: "late-service-error",
+              route: "send-media",
+              debugId,
+              clientRequestId,
+              elapsedMs: Date.now() - startedAt,
+              code: lateError?.code || "",
+              message: lateError?.message || String(lateError),
+              details: lateError?.details || "",
+              stack: lateError?.stack || ""
+            });
+          });
+      }
+    }
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-success",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
+    });
+    accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
+    if (res.writableEnded || res.headersSent) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "response-already-closed",
+        route: "send-media",
+        debugId,
+        clientRequestId,
+        elapsedMs: Date.now() - startedAt
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      messages: result.messages || [],
+      conversationId: result.conversationId || conversationId,
+      conversationUrl: result.conversationUrl || conversationUrl,
+      debugId,
+      requestId: clientRequestId
+    });
+  } catch (error) {
+    appendServerLog(getMessageActionsLogPath(), {
+      event: "service-error",
+      route: "send-media",
+      debugId,
+      clientRequestId,
+      elapsedMs: Date.now() - startedAt,
+      code: error?.code || "",
+      message: error?.message || String(error),
+      details: error?.details || "",
+      stack: error?.stack || ""
+    });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "send-media",
+      error,
+      logPath: getMessageActionsLogPath(),
+      debugId,
+      requestId: clientRequestId
+    });
+    if (res.writableEnded || res.headersSent) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "response-already-closed",
+        route: "send-media",
+        debugId,
+        clientRequestId,
+        elapsedMs: Date.now() - startedAt,
+        code: error?.code || "",
+        message: error?.message || String(error)
+      });
+      return;
+    }
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json(withCooldownHint({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json(withCooldownHint({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "MESSAGE_ACTION_TIMEOUT") {
+      res.status(504).json(withCooldownHint({
+        success: false,
+        error: "Отправка медиа заняла слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "CONVERSATION_NOT_READY") {
+      res.status(503).json(withCooldownHint({
+        success: false,
+        error: "Диалог в Kleinanzeigen не успел прогрузиться (загрузка/скелетон). Обновите диалог и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "CONSENT_REQUIRED") {
+      res.status(503).json(withCooldownHint({
+        success: false,
+        error: "Kleinanzeigen блокирует отправку страницей согласия cookie/GDPR. Откройте Kleinanzeigen в браузере через этот же прокси, нажмите «Alle akzeptieren», затем повторите отправку.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    res.status(500).json(withCooldownHint({
+      success: false,
+      error: error?.message || "Не удалось отправить фото",
+      code: error?.code || "",
+      details: error?.details || "",
+      debugId,
+      requestId: clientRequestId
+    }, cooldown));
+  } finally {
+    cleanupUploadedFiles();
+  }
+});
+
+app.post("/api/translate", async (req, res) => {
+  try {
+    const text = req.body?.text ? String(req.body.text) : "";
+    const to = req.body?.to ? String(req.body.to) : "ru";
+    const from = req.body?.from ? String(req.body.from) : "";
+    const accountIdRaw = req.body?.accountId;
+    const hasAccountId = accountIdRaw !== undefined && accountIdRaw !== null && String(accountIdRaw).trim();
+    const accountId = hasAccountId ? Number(accountIdRaw) : null;
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      res.status(400).json({ success: false, error: "Текст обязателен для перевода." });
+      return;
+    }
+    if (trimmed.length > 5000) {
+      res.status(400).json({ success: false, error: "Слишком длинный текст для перевода (макс 5000 символов)." });
+      return;
+    }
+
+    if (!hasAccountId) {
+      res.status(400).json({
+        success: false,
+        error: "Для перевода сообщений нужен accountId (перевод выполняется через прокси аккаунта)."
+      });
+      return;
+    }
+
+    let proxy = null;
+    if (hasAccountId) {
+      if (!Number.isFinite(accountId)) {
+        res.status(400).json({ success: false, error: "Некорректный accountId." });
+        return;
+      }
+      const account = getAccountForRequest(accountId, req, res);
+      if (!account) return;
+      const ownerContext = getOwnerContext(req);
+      proxy = requireAccountProxy(account, res, "перевода сообщений", ownerContext);
+      if (!proxy) return;
+    }
+
+    const result = await translateText({ text: trimmed, to, from, proxy });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    if (error?.code === "NOT_CONFIGURED") {
+      res.status(500).json({ success: false, error: "Переводчик не настроен на сервере." });
+      return;
+    }
+    if (error?.code === "PROXY_REQUIRED" || error?.code === "PROXY_INIT_FAILED") {
+      res.status(400).json({
+        success: false,
+        error: "Для перевода требуется рабочий прокси аккаунта (без прокси перевод не выполняется)."
+      });
+      return;
+    }
+    if (error?.code === "BAD_REQUEST") {
+      res.status(400).json({ success: false, error: "Некорректный запрос на перевод." });
+      return;
+    }
+    res.status(502).json({ success: false, error: error?.message || "Ошибка перевода" });
+  }
+});
+
+app.get("/api/proxies", (req, res) => {
+  const ownerContext = getOwnerContext(req);
+  res.json(filterByOwner(proxies, ownerContext));
+});
+
+app.get("/api/categories", async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh === "true";
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    let selectedProxy = null;
+    if (accountId) {
+      const account = getAccountForRequest(accountId, req, res);
+      if (!account) return;
+      const ownerContext = getOwnerContext(req);
+      if (account.proxyId) {
+        const proxy = findProxyById(account.proxyId);
+        if (proxy && isOwnerMatch(proxy, ownerContext)) {
+          selectedProxy = proxy;
+        }
+      }
+    }
+    const data = await getCategories({ forceRefresh, proxy: selectedProxy });
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/categories/children", async (req, res) => {
+  try {
+    const id = req.query.id ? String(req.query.id) : "";
+    const url = req.query.url ? String(req.query.url) : "";
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    const forceRefresh = req.query.refresh === "true";
+    const allowStaleCache = req.query.allowStale !== "0";
+    const allowLiveLookup = req.query.live === "1" || forceRefresh || DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH;
+    const forceDebug = DEBUG_FEATURES_ENABLED && (req.query.debug === "true" || req.query.debug === "1");
+    const ownerContext = getOwnerContext(req);
+    const requestAccount = accountId ? getAccountForRequest(accountId, req, res) : null;
+    if (accountId && !requestAccount) {
+      return;
+    }
+    const scopedProxies = filterByOwner(proxies, ownerContext);
+    const selectedProxy = requestAccount?.proxyId
+      ? scopedProxies.find((item) => isSameEntityId(item?.id, requestAccount.proxyId))
+      : null;
+    const cacheKey = buildCategoryChildrenCacheKey({ id, url });
+    if (!forceRefresh && cacheKey) {
+      const cachedEntry = getCachedCategoryChildrenEntry(cacheKey, { allowStale: allowStaleCache });
+      if (cachedEntry) {
+        if (DEBUG_CATEGORIES) {
+          const sample = (cachedEntry.children || []).slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+          console.log(`[categories/children] cache hit key=${cacheKey} count=${cachedEntry.children?.length || 0} sample=${sample}`);
+        }
+        res.json({
+          children: cachedEntry.children || [],
+          cached: true,
+          stale: Boolean(cachedEntry._stale)
+        });
+        return;
+      }
+    }
+    let children = await getCategoryChildren({ id, url, proxy: selectedProxy });
+    if (DEBUG_CATEGORIES) {
+      console.log(`[categories/children] request id=${id} url=${url} accountId=${accountId} initialChildren=${children.length}`);
+    }
+    const dedupeChildren = (items) => {
+      const seen = new Set();
+      return (items || []).filter((item) => {
+        const key = `${item?.id || ""}:${item?.name || ""}`;
+        if (!key) return false;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+
+    if (children.length || !accountId || !allowLiveLookup) {
+      const finalChildren = dedupeChildren(children);
+      if (cacheKey) {
+        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
+      }
+      if (DEBUG_CATEGORIES) {
+        const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+        console.log(`[categories/children] response id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
+      }
+      res.json({
+        children: finalChildren,
+        liveLookupSkipped: Boolean(accountId && !allowLiveLookup && !finalChildren.length)
+      });
+      return;
+    }
+
+    const account = requestAccount || getAccountById(accountId);
+    if (!account) {
+      if (DEBUG_CATEGORIES) {
+        console.log("[categories/children] account not found, skip puppeteer fallback");
+      }
+      res.json({ children });
+      return;
+    }
+
+    if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
+      if (DEBUG_CATEGORIES) {
+        console.log("[categories/children] proxy missing, skip puppeteer fallback");
+      }
+      const finalChildren = dedupeChildren(children);
+      if (cacheKey) {
+        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
+      }
+      res.json({ children: finalChildren });
+      return;
+    }
+
+    const resolveCategoryPath = async () => {
+      const data = await getCategories({ forceRefresh: false, proxy: selectedProxy }).catch(() => null);
+      const categories = data?.categories || [];
+      const targetId = id || "";
+      const targetUrl = url || "";
+      const normalizeUrl = (value) =>
+        String(value || "")
+          .replace(/^https?:\/\/www\.kleinanzeigen\.de/i, "")
+          .replace(/\/$/, "");
+
+      const walk = (nodes, path = []) => {
+        for (const node of nodes || []) {
+          const matchesId = targetId && String(node.id) === String(targetId);
+          const matchesUrl = targetUrl && normalizeUrl(node.url || "") === normalizeUrl(targetUrl);
+          const nextPath = [...path, node];
+          if (matchesId || matchesUrl) return nextPath;
+          if (node.children?.length) {
+            const found = walk(node.children, nextPath);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      return walk(categories) || [];
+    };
+
+    const puppeteer = getPuppeteer();
+    const proxyChain = require("proxy-chain");
+    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { pickDeviceProfile } = require("./cookieValidator");
+
+    const cookies = normalizeCookies(parseCookies(account.cookie));
+    const deviceProfile = toDeviceProfile(account.deviceProfile);
+    const proxyServer = buildProxyServer(selectedProxy);
+    const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
+    const needsProxyChain = Boolean(
+      proxyUrl && ((selectedProxy?.type || "").toLowerCase().startsWith("socks") || selectedProxy?.username || selectedProxy?.password)
+    );
+    let anonymizedProxyUrl;
+
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+    if (proxyServer) {
+      if (needsProxyChain) {
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-proxy-chain-start",
+            error: "",
+            extra: { proxyType: selectedProxy?.type || "", host: selectedProxy?.host || "" },
+            force: true
+          });
+        }
+        try {
+          anonymizedProxyUrl = await withTimeout(
+            proxyChain.anonymizeProxy(proxyUrl),
+            15000,
+            "proxy-chain-timeout"
+          );
+        } catch (error) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-proxy-chain-failed",
+            error: error?.message || "proxy-chain-failed",
+            extra: { proxyType: selectedProxy?.type || "", host: selectedProxy?.host || "" },
+            force: true
+          });
+          res.status(502).json({ success: false, error: "Не удалось подключиться к прокси (proxy-chain)." });
+          return;
+        }
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-proxy-chain-ready",
+            error: "",
+            extra: { anonymizedProxyUrl },
+            force: true
+          });
+        }
+        launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+      } else {
+        launchArgs.push(`--proxy-server=${proxyServer}`);
+      }
+    }
+
+    const extractCategoryTreeFromHtml = (html) => {
+      if (!html) return null;
+      const initIndex = html.indexOf("CategorySelectView.init");
+      const searchFrom = initIndex >= 0 ? initIndex : 0;
+      const markerIndex = html.indexOf("categoryTree", searchFrom);
+      if (markerIndex === -1) return null;
+      const colonIndex = html.indexOf(":", markerIndex);
+      if (colonIndex === -1) return null;
+      const startIndex = html.indexOf("{", colonIndex);
+      if (startIndex === -1) return null;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      let endIndex = -1;
+      for (let i = startIndex; i < html.length; i += 1) {
+        const ch = html[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (ch === "\\") {
+            escaped = true;
+          } else if (ch === "\"") {
+            inString = false;
+          }
+          continue;
+        }
+        if (ch === "\"") {
+          inString = true;
+          continue;
+        }
+        if (ch === "{") {
+          depth += 1;
+        } else if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            endIndex = i;
+            break;
+          }
+        }
+      }
+      if (endIndex === -1) return null;
+      const jsonText = html.slice(startIndex, endIndex + 1);
+      try {
+        return JSON.parse(jsonText);
+      } catch (error) {
+        return null;
+      }
+    };
+
+    const normalizeCategoryTreeLocal = (nodes) => {
+      if (!Array.isArray(nodes)) return [];
+      const extractIdFromUrl = (value) => {
+        if (!value) return "";
+        const match = String(value).match(/\/c(\d+)(?:\/|$)/);
+        return match ? match[1] : "";
+      };
+      const normalizeName = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const getChildCollections = (node) => {
+        if (!node || typeof node !== "object") return [];
+        const buckets = [];
+        if (Array.isArray(node.children)) {
+          buckets.push(node.children);
+        }
+        for (const value of Object.values(node)) {
+          if (!Array.isArray(value)) continue;
+          if (value.some((item) =>
+            item && typeof item === "object" && (
+              item.id ||
+              item.identifier ||
+              item.fieldValue ||
+              item.value ||
+              item.categoryId ||
+              item.categoryName ||
+              item.name ||
+              item.label
+            )
+          )) {
+            buckets.push(value);
+          }
+        }
+        return buckets;
+      };
+      const pickChildren = (node) => {
+        const collections = getChildCollections(node);
+        if (!collections.length) return [];
+        return collections.flat();
+      };
+
+      return nodes.map((node) => {
+        const id = node?.id ||
+          node?.identifier ||
+          node?.fieldValue ||
+          node?.value ||
+          node?.categoryId ||
+          extractIdFromUrl(node?.url || node?.categoryUrl || node?.seoUrl || "");
+        const name = node?.name || node?.label || node?.categoryName || node?.title || "";
+        const url = node?.url || node?.categoryUrl || node?.seoUrl || "";
+        const children = pickChildren(node);
+        return {
+          id: id ? String(id) : "",
+          name: normalizeName(name),
+          url,
+          children: normalizeCategoryTreeLocal(children)
+        };
+      }).filter((node) => node.id && node.name);
+    };
+
+    const findNode = (nodes, targetId, targetUrl) => {
+      const normalizedUrl = (value) =>
+        String(value || "")
+          .replace(/^https?:\/\/www\.kleinanzeigen\.de/i, "")
+          .replace(/\/$/, "");
+      const matchNode = (node) => {
+        if (!node) return false;
+        if (targetId && String(node.id) === String(targetId)) return true;
+        if (targetUrl) {
+          const nodeUrl = normalizedUrl(node.url || "");
+          return nodeUrl && nodeUrl === normalizedUrl(targetUrl);
+        }
+        return false;
+      };
+      let best = null;
+      const visit = (node) => {
+        if (!matchNode(node)) return;
+        if (!best) {
+          best = node;
+          return;
+        }
+        const bestChildren = best?.children?.length || 0;
+        const nodeChildren = node?.children?.length || 0;
+        if (nodeChildren > bestChildren) {
+          best = node;
+          return;
+        }
+        if (nodeChildren === bestChildren && node?.url && !best?.url) {
+          best = node;
+        }
+      };
+      const walk = (items) => {
+        for (const node of items || []) {
+          visit(node);
+          if (node.children?.length) {
+            walk(node.children);
+          }
+        }
+      };
+      walk(nodes);
+      return best;
+    };
+
+    const buildCategoryHttpConfig = (targetUrl) => {
+      const headers = {
+        "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9",
+        "User-Agent": deviceProfile?.userAgent || "Mozilla/5.0"
+      };
+      const cookieHeader = buildCookieHeaderForUrl(cookies, targetUrl);
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
+
+      const config = {
+        headers,
+        timeout: 15000,
+        maxRedirects: 5,
+        validateStatus: (status) => status >= 200 && status < 400
+      };
+
+      const rawProxyUrl = buildProxyUrl(selectedProxy);
+      if (rawProxyUrl) {
+        let agent = null;
+        if (typeof ProxyAgent === "function") {
+          try {
+            agent = new ProxyAgent(rawProxyUrl);
+          } catch (error) {
+            try {
+              agent = ProxyAgent(rawProxyUrl);
+            } catch (innerError) {
+              agent = null;
+            }
+          }
+        } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
+          try {
+            agent = new ProxyAgent.ProxyAgent(rawProxyUrl);
+          } catch (error) {
+            agent = null;
+          }
+        }
+        if (agent) {
+          config.httpAgent = agent;
+          config.httpsAgent = agent;
+          config.proxy = false;
+        }
+      }
+      return config;
+    };
+
+    const tryResolveChildrenViaHttpTree = async () => {
+      const baseSelectionUrl = "https://www.kleinanzeigen.de/p-kategorie-aendern.html";
+      const categoryPath = await resolveCategoryPath().catch(() => []);
+      const numericPath = (Array.isArray(categoryPath) ? categoryPath : [])
+        .map((node) => String(node?.id || "").trim())
+        .filter((value) => /^\d+$/.test(value));
+      const candidates = [];
+      if (numericPath.length > 1) {
+        candidates.push(`${baseSelectionUrl}?path=${encodeURIComponent(numericPath.join("/"))}`);
+      }
+      if (url) {
+        candidates.push(String(url));
+      }
+      candidates.push(baseSelectionUrl);
+
+      const seen = new Set();
+      for (const requestUrl of candidates) {
+        const normalizedUrl = String(requestUrl || "").trim();
+        if (!normalizedUrl || seen.has(normalizedUrl)) continue;
+        seen.add(normalizedUrl);
+        try {
+          const config = buildCategoryHttpConfig(normalizedUrl);
+          const response = await axios.get(normalizedUrl, config);
+          const html = String(response?.data || "");
+          if (!html) continue;
+          const treeFromHtml = extractCategoryTreeFromHtml(html);
+          if (!treeFromHtml) continue;
+          const normalizedTree = normalizeCategoryTreeLocal(
+            Array.isArray(treeFromHtml) ? treeFromHtml : [treeFromHtml]
+          );
+          const targetNode = findNode(normalizedTree, id, url);
+          if (targetNode?.children?.length) {
+            return targetNode.children;
+          }
+        } catch (error) {
+          // Ignore and try next URL candidate.
+        }
+      }
+      return [];
+    };
+
+    if (!children.length) {
+      const httpTreeChildren = await tryResolveChildrenViaHttpTree().catch(() => []);
+      if (httpTreeChildren.length) {
+        children = httpTreeChildren;
+      }
+    }
+
+    if (children.length) {
+      const finalChildren = dedupeChildren(children);
+      if (cacheKey) {
+        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
+      }
+      if (DEBUG_CATEGORIES) {
+        const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+        console.log(`[categories/children] response(http-tree) id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
+      }
+      res.json({ children: finalChildren });
+      return;
+    }
+
+    let browser = null;
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const dumpCategoryDebug = async (page, label) => {
+      if (!DEBUG_CATEGORIES || !page) return;
+      try {
+        const debugDir = path.join(__dirname, "..", "data", "debug");
+        if (!fs.existsSync(debugDir)) {
+          fs.mkdirSync(debugDir, { recursive: true });
+        }
+        const safeLabel = String(label || "category").replace(/[^a-z0-9._-]+/gi, "_").slice(0, 60);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const base = `category-${safeLabel}-${timestamp}`;
+        const htmlPath = path.join(debugDir, `${base}.html`);
+        const screenshotPath = path.join(debugDir, `${base}.png`);
+        const html = await page.content().catch(() => "");
+        if (html) {
+          fs.writeFileSync(htmlPath, html, "utf8");
+        }
+        await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+        console.log(`[categories/children] debug saved: ${htmlPath}`);
+      } catch (error) {
+        console.log(`[categories/children] debug dump failed: ${error.message}`);
+      }
+    };
+    try {
+      browser = await puppeteer.launch({
+        headless: "new",
+        args: launchArgs,
+        timeout: PUPPETEER_LAUNCH_TIMEOUT,
+        protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+      });
+      const page = await browser.newPage();
+      page.setDefaultTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+      if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
+        await page.authenticate({
+          username: selectedProxy.username || "",
+          password: selectedProxy.password || ""
+        });
+      }
+
+      await page.setUserAgent(deviceProfile.userAgent);
+      await page.setViewport(deviceProfile.viewport);
+      await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale });
+      await page.emulateTimezone(deviceProfile.timezone);
+      try {
+        await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+      } catch (error) {
+        await page.waitForSelector("body", { timeout: 60000 });
+      }
+      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
+      await acceptGdprConsent(page, { timeout: 15000 }).catch(() => {});
+      await page.setCookie(...cookies);
+
+      try {
+        await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded" });
+      } catch (error) {
+        await page.waitForSelector("body", { timeout: 60000 });
+      }
+      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
+      if (isGdprPage(page.url())) {
+        await acceptGdprConsent(page, { timeout: 20000 });
+        const redirectTarget = new URL(page.url()).searchParams.get("redirectTo");
+        const target = redirectTarget ? decodeURIComponent(redirectTarget) : "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
+        try {
+          await page.goto(target, { waitUntil: "domcontentloaded" });
+        } catch (error) {
+          await page.waitForSelector("body", { timeout: 60000 });
+        }
+        await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
+      }
+
+      const sessionCookies = await page.cookies().catch(() => []);
+
+      if (DEBUG_CATEGORIES) {
+        await dumpCategoryDebug(page, `${id || "unknown"}-before-overlay`);
+      }
+
+      const tree = await page.evaluate(() => {
+        const isCategoryArray = (arr) => Array.isArray(arr) && arr.length > 0 && arr.every((item) =>
+          item && typeof item === "object" && (
+            item.id ||
+            item.identifier ||
+            item.fieldValue ||
+            item.value ||
+            item.categoryId ||
+            item.categoryName ||
+            item.name ||
+            item.label
+          )
+        );
+
+        const findTree = (obj) => {
+          if (!obj || typeof obj !== "object") return null;
+          if (Array.isArray(obj)) {
+            if (isCategoryArray(obj)) return obj;
+            for (const item of obj) {
+              const found = findTree(item);
+              if (found) return found;
+            }
+            return null;
+          }
+          if (obj.categories && Array.isArray(obj.categories)) return obj.categories;
+          if (obj.categoryTree) {
+            if (Array.isArray(obj.categoryTree)) return obj.categoryTree;
+            if (obj.categoryTree && typeof obj.categoryTree === "object") return [obj.categoryTree];
+          }
+          if (obj.categoryHierarchy && Array.isArray(obj.categoryHierarchy)) return obj.categoryHierarchy;
+          if (obj.rootCategories && Array.isArray(obj.rootCategories)) return obj.rootCategories;
+          if (obj.items && Array.isArray(obj.items) && isCategoryArray(obj.items)) return obj.items;
+          if (obj.nodes && Array.isArray(obj.nodes) && isCategoryArray(obj.nodes)) return obj.nodes;
+          for (const value of Object.values(obj)) {
+            const found = findTree(value);
+            if (found) return found;
+          }
+          return null;
+        };
+        const stateCandidates = [
+          window.__INITIAL_STATE__,
+          window.__PRELOADED_STATE__,
+          window.__NEXT_DATA__,
+          window.__NUXT__
+        ];
+        for (const candidate of stateCandidates) {
+          const found = findTree(candidate);
+          if (found) return found;
+        }
+        return null;
+      });
+
+      if (tree) {
+        const normalized = normalizeCategoryTreeLocal(tree);
+        const node = findNode(normalized, id, url);
+        if (node?.children?.length) {
+          children = node.children;
+        }
+      }
+
+      if (!children.length && url) {
+        try {
+          const listingUrl = String(url || "");
+          if (listingUrl) {
+            let listingPage = null;
+            try {
+              listingPage = await browser.newPage();
+              if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
+                await listingPage.authenticate({
+                  username: selectedProxy.username || "",
+                  password: selectedProxy.password || ""
+                });
+              }
+              await listingPage.setUserAgent(deviceProfile.userAgent);
+              await listingPage.setViewport(deviceProfile.viewport);
+              await listingPage.setExtraHTTPHeaders({
+                "Accept-Language": deviceProfile.locale,
+                "Referer": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html"
+              });
+              await listingPage.emulateTimezone(deviceProfile.timezone);
+              if (sessionCookies.length) {
+                await listingPage.setCookie(...sessionCookies);
+              }
+              await listingPage.setCookie(...cookies);
+              try {
+                await listingPage.goto(listingUrl, { waitUntil: "domcontentloaded" });
+              } catch (error) {
+                await listingPage.waitForSelector("body", { timeout: 60000 });
+              }
+              await acceptCookieModal(listingPage, { timeout: 8000 }).catch(() => {});
+              await listingPage.waitForFunction(() => {
+                return Boolean(
+                  document.querySelector("a[href*='audio_hifi']") ||
+                  document.querySelector(".browsebox-itemlist") ||
+                  document.querySelector("a[href*='path=']") ||
+                  document.querySelector("a[href*='/c']") ||
+                  document.querySelectorAll("a[href]").length > 10
+                );
+              }, { timeout: 15000 }).catch(() => {});
+              const listingResult = await listingPage.evaluate((targetUrl) => {
+              const normalize = (val) => (val || "").replace(/\s+/g, " ").trim();
+              const extractIdFromHref = (value) => {
+                if (!value) return "";
+                const raw = String(value);
+                const attrMatch = raw.match(/\+[^/]+:([^+/?&#]+)/);
+                if (attrMatch) return attrMatch[1];
+                const pathMatch = raw.match(/[?#]path=([^&]+)/i);
+                if (pathMatch) {
+                  let path = pathMatch[1] || "";
+                  try {
+                    path = decodeURIComponent(path);
+                  } catch (error) {
+                    // ignore decode errors
+                  }
+                  const parts = path.split("/").filter(Boolean);
+                  return parts.length ? parts[parts.length - 1] : "";
+                }
+                const slugMatch = raw.match(/\/s-[^\/]+\/([^\/]+)\/c\d+(?:[/?+]|$)/);
+                if (slugMatch) return slugMatch[1];
+                const match = raw.match(/\/c(\d+)(?:\/|$)/);
+                if (match) return match[1];
+                return "";
+              };
+
+              const resolveHref = (href) => {
+                if (!href) return "";
+                if (/^https?:\/\//i.test(href)) return href;
+                return `https://www.kleinanzeigen.de${href.startsWith("/") ? "" : "/"}${href}`;
+              };
+
+              const targetIdMatch = String(targetUrl || "").match(/\/c(\d+)(?:\/|$)/);
+              const targetId = targetIdMatch ? targetIdMatch[1] : "";
+              const targetToken = targetId ? `/c${targetId}` : "";
+
+              const section = Array.from(document.querySelectorAll("section")).find((node) =>
+                /kategorien/i.test(node.textContent || "")
+              );
+              const root = section || document;
+              const links = Array.from(root.querySelectorAll("a[href]"));
+              const results = new Map();
+              const hrefSamples = [];
+              let pathHrefCount = 0;
+              let audioHrefCount = 0;
+              links.forEach((link) => {
+                const href = link.getAttribute("href") || "";
+                const fullHref = resolveHref(href);
+                if (hrefSamples.length < 5 && fullHref && /c\d+/.test(fullHref)) {
+                  hrefSamples.push(fullHref);
+                }
+                if (fullHref && /[?#]path=/.test(fullHref)) pathHrefCount += 1;
+                if (fullHref && /audio_hifi/i.test(fullHref)) audioHrefCount += 1;
+                if (!fullHref) return;
+                const isPathHref = /[?#]path=/.test(fullHref);
+                if (isPathHref) {
+                  const pathMatch = fullHref.match(/[?#]path=([^&]+)/i);
+                  if (!pathMatch) return;
+                  let path = pathMatch[1] || "";
+                  try {
+                    path = decodeURIComponent(path);
+                  } catch (error) {
+                    // ignore decode errors
+                  }
+                  if (targetId && !path.split("/").includes(targetId)) return;
+                } else {
+                  if (!/\/c\d+/.test(fullHref)) return;
+                  if (targetId && !fullHref.includes(targetToken)) return;
+                  if (!/\+/.test(fullHref) && !/\/s-[^\/]+\/[^\/]+\/c\d+/.test(fullHref)) return;
+                }
+                const name = normalize(link.textContent || link.getAttribute("aria-label") || "");
+                if (!name || /alle kategorien/i.test(name)) return;
+                const id = extractIdFromHref(fullHref);
+                if (!id) return;
+                if (!results.has(id)) {
+                  results.set(id, { id, name, url: fullHref });
+                }
+              });
+              return {
+                children: Array.from(results.values()),
+                hrefSamples,
+                meta: {
+                  url: window.location.href,
+                  title: document.title,
+                  anchorCount: links.length,
+                  pathHrefCount,
+                  audioHrefCount,
+                  textLength: (document.body?.innerText || "").length
+                }
+              };
+            }, listingUrl);
+
+            const listingChildren = Array.isArray(listingResult?.children) ? listingResult.children : [];
+            if (listingChildren.length) {
+              children = listingChildren.map((item) => ({
+                id: String(item.id),
+                name: item.name,
+                url: item.url,
+                children: []
+              }));
+              if (DEBUG_CATEGORIES) {
+                const sample = children.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+                console.log(`[categories/children] listing dom parsed url=${listingUrl} count=${children.length} sample=${sample}`);
+                if (listingResult?.hrefSamples?.length) {
+                  console.log(`[categories/children] listing dom href sample: ${listingResult.hrefSamples.join(" | ")}`);
+                }
+                if (listingResult?.meta) {
+                  console.log(`[categories/children] listing dom meta url=${listingResult.meta.url} title=${listingResult.meta.title} anchors=${listingResult.meta.anchorCount} pathHrefs=${listingResult.meta.pathHrefCount} audioHrefs=${listingResult.meta.audioHrefCount} textLen=${listingResult.meta.textLength}`);
+                }
+              }
+            } else if (DEBUG_CATEGORIES) {
+              console.log(`[categories/children] listing dom parsed url=${listingUrl} count=0`);
+              if (listingResult?.hrefSamples?.length) {
+                console.log(`[categories/children] listing dom href sample: ${listingResult.hrefSamples.join(" | ")}`);
+              }
+              if (listingResult?.meta) {
+                console.log(`[categories/children] listing dom meta url=${listingResult.meta.url} title=${listingResult.meta.title} anchors=${listingResult.meta.anchorCount} pathHrefs=${listingResult.meta.pathHrefCount} audioHrefs=${listingResult.meta.audioHrefCount} textLen=${listingResult.meta.textLength}`);
+              }
+            }
+            } finally {
+              if (listingPage) {
+                await listingPage.close();
+              }
+            }
+          }
+        } catch (error) {
+          if (DEBUG_CATEGORIES) {
+            console.log(`[categories/children] listing dom parse failed: ${error.message}`);
+          }
+        }
+      }
+
+      if (!children.length) {
+        let selectionTree = null;
+        let selectionPage = null;
+        let selectionDomChildren = null;
+        try {
+          const targetId = id || (() => {
+            const match = String(url || "").match(/\/c(\d+)(?:\/|$)/);
+            return match ? match[1] : "";
+          })();
+
+          const decodeHtml = (value) =>
+            String(value || "")
+              .replace(/&amp;/g, "&")
+              .replace(/&quot;/g, "\"")
+              .replace(/&#39;/g, "'")
+              .replace(/&nbsp;/g, " ")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">");
+
+          const stripTags = (value) => String(value || "").replace(/<[^>]*>/g, " ");
+          const normalizeText = (value) => stripTags(value).replace(/\s+/g, " ").trim();
+
+          const extractFromSelectionHtml = (html, sourceLabel, sourceUrl = "") => {
+            if (!html) return [];
+            const anchorRegex = /<a[^>]+href=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi;
+            const children = new Map();
+            const hrefSamples = [];
+            let anchorCount = 0;
+            let pathHrefCount = 0;
+            let match = null;
+            while ((match = anchorRegex.exec(html)) !== null) {
+              anchorCount += 1;
+              const rawHref = decodeHtml(match[2] || "");
+              if (!/path=/.test(rawHref)) continue;
+              pathHrefCount += 1;
+              const fullHref = /^https?:\/\//i.test(rawHref)
+                ? rawHref
+                : `https://www.kleinanzeigen.de${rawHref.startsWith("/") ? "" : "/"}${rawHref}`;
+              if (hrefSamples.length < 5) {
+                hrefSamples.push(fullHref);
+              }
+              const pathMatch = fullHref.match(/[?#]path=([^&]+)/i);
+              if (!pathMatch) continue;
+              let path = pathMatch[1] || "";
+              try {
+                path = decodeURIComponent(path);
+              } catch (error) {
+                // ignore decode errors
+              }
+              const parts = path.split("/").filter(Boolean);
+              if (!parts.length) continue;
+              if (targetId && !parts.includes(String(targetId))) continue;
+              if (parts.length < 2) continue;
+              const leaf = parts[parts.length - 1];
+              if (!leaf) continue;
+              const name = normalizeText(match[3] || "");
+              if (!name) continue;
+              if (!children.has(leaf)) {
+                children.set(leaf, {
+                  id: leaf,
+                  name,
+                  url: fullHref
+                });
+              }
+            }
+
+            const parsedChildren = Array.from(children.values());
+            if (DEBUG_CATEGORIES) {
+              const sample = parsedChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+              console.log(`[categories/children] selection dom parsed source=${sourceLabel} count=${parsedChildren.length} sample=${sample}`);
+              if (hrefSamples.length) {
+                console.log(`[categories/children] selection dom href sample: ${hrefSamples.join(" | ")}`);
+              }
+              console.log(`[categories/children] selection dom meta url=${sourceUrl || ""} anchors=${anchorCount} pathHrefs=${pathHrefCount}`);
+            }
+            return parsedChildren;
+          };
+
+          try {
+            await acceptCookieModal(page, { timeout: 8000 }).catch(() => {});
+            await acceptGdprConsent(page, { timeout: 8000 }).catch(() => {});
+            await page.waitForSelector("#adForm", { timeout: 8000 });
+            const navPromise = page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
+            const didSubmit = await page.evaluate(() => {
+              const form = document.querySelector("#adForm");
+              if (!form) return false;
+              form.setAttribute("action", "/p-kategorie-aendern.html");
+              form.setAttribute("method", "post");
+              form.submit();
+              return true;
+            });
+            if (didSubmit) {
+              await Promise.race([
+                navPromise,
+                page.waitForSelector("#postad-category-select-box, #postad-step1-headline, .category-selection-list", { timeout: 20000 }).catch(() => null)
+              ]);
+            }
+            const inlineHtml = await page.content().catch(() => "");
+            if (DEBUG_CATEGORIES) {
+              await dumpCategoryDebug(page, `${id || "unknown"}-selection-inline`);
+              console.log(`[categories/children] selection inline url=${page.url()}`);
+            }
+            const inlineTree = extractCategoryTreeFromHtml(inlineHtml);
+            if (inlineTree) {
+              const normalized = normalizeCategoryTreeLocal([inlineTree]);
+              const node = findNode(normalized, targetId, url);
+              if (node?.children?.length) {
+                children = node.children;
+                if (DEBUG_CATEGORIES) {
+                  const sample = children.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+                  console.log(`[categories/children] selection inline tree parsed count=${children.length} sample=${sample}`);
+                }
+              }
+            }
+            if (!children.length) {
+              selectionDomChildren = extractFromSelectionHtml(inlineHtml, "inline", page.url());
+            }
+          } catch (error) {
+            if (DEBUG_CATEGORIES) {
+              console.log(`[categories/children] selection inline failed: ${error.message}`);
+            }
+          }
+
+          if (!children.length && !selectionDomChildren?.length) {
+            selectionPage = await browser.newPage();
+            if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
+              await selectionPage.authenticate({
+                username: selectedProxy.username || "",
+                password: selectedProxy.password || ""
+              });
+            }
+            await selectionPage.setUserAgent(deviceProfile.userAgent);
+            await selectionPage.setViewport(deviceProfile.viewport);
+            await selectionPage.setExtraHTTPHeaders({
+              "Accept-Language": deviceProfile.locale,
+              "Referer": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html"
+            });
+            await selectionPage.emulateTimezone(deviceProfile.timezone);
+            if (sessionCookies.length) {
+              await selectionPage.setCookie(...sessionCookies);
+            }
+            await selectionPage.setCookie(...cookies);
+
+            let selectionResponse = null;
+            try {
+              await selectionPage.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded" });
+            } catch (error) {
+              await selectionPage.waitForSelector("body", { timeout: 60000 });
+            }
+            await acceptCookieModal(selectionPage, { timeout: 15000 }).catch(() => {});
+            if (isGdprPage(selectionPage.url())) {
+              await acceptGdprConsent(selectionPage, { timeout: 20000 }).catch(() => {});
+            }
+            const selectionNavPromise = selectionPage.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => null);
+            const didSubmit = await selectionPage.evaluate(() => {
+              const form = document.querySelector("#adForm");
+              if (!form) return false;
+              form.setAttribute("action", "/p-kategorie-aendern.html");
+              form.setAttribute("method", "post");
+              form.submit();
+              return true;
+            });
+            if (didSubmit) {
+              selectionResponse = await selectionNavPromise;
+            }
+            const isError = await selectionPage.evaluate(() => {
+              const title = (document.title || "").toLowerCase();
+              const header = document.querySelector(".outcomebox-error h1");
+              const headerText = (header?.textContent || "").toLowerCase();
+              return (title.includes("fehler") && title.includes("400")) || (headerText.includes("fehler") && headerText.includes("400"));
+            });
+
+            if (DEBUG_CATEGORIES) {
+              await dumpCategoryDebug(selectionPage, `${id || "unknown"}-selection-page`);
+              if (selectionResponse?.status) {
+                console.log(`[categories/children] selection page status=${selectionResponse.status()} url=${selectionPage.url()}`);
+              }
+            }
+
+            if (!isError) {
+              const selectionHtml = await selectionPage.content().catch(() => "");
+              selectionTree = extractCategoryTreeFromHtml(selectionHtml);
+              if (!selectionDomChildren?.length) {
+                selectionDomChildren = extractFromSelectionHtml(selectionHtml, "page", selectionPage.url());
+              }
+            } else if (DEBUG_CATEGORIES) {
+              console.log("[categories/children] selection page returned 400 error");
+            }
+
+            if (!selectionDomChildren?.length && !selectionTree) {
+              try {
+                const step1Response = await selectionPage.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt1.html", { waitUntil: "domcontentloaded" });
+                await acceptCookieModal(selectionPage, { timeout: 15000 }).catch(() => {});
+                if (DEBUG_CATEGORIES) {
+                  await dumpCategoryDebug(selectionPage, `${id || "unknown"}-selection-step1`);
+                  if (step1Response?.status) {
+                    console.log(`[categories/children] selection step1 status=${step1Response.status()} url=${selectionPage.url()}`);
+                  }
+                }
+                const step1Html = await selectionPage.content().catch(() => "");
+                selectionTree = selectionTree || extractCategoryTreeFromHtml(step1Html);
+                if (!selectionDomChildren?.length) {
+                  selectionDomChildren = extractFromSelectionHtml(step1Html, "step1", selectionPage.url());
+                }
+              } catch (error) {
+                if (DEBUG_CATEGORIES) {
+                  console.log(`[categories/children] selection step1 failed: ${error.message}`);
+                }
+              }
+            }
+
+            if (!isError && !selectionTree) {
+              selectionTree = await selectionPage.evaluate(() => {
+              const isCategoryArray = (arr) => Array.isArray(arr) && arr.length > 0 && arr.every((item) =>
+                item && typeof item === "object" && (
+                  item.id ||
+                  item.identifier ||
+                  item.fieldValue ||
+                  item.value ||
+                  item.categoryId ||
+                  item.categoryName ||
+                  item.name ||
+                  item.label
+                )
+              );
+
+              const findTree = (obj) => {
+                if (!obj || typeof obj !== "object") return null;
+                if (Array.isArray(obj)) {
+                  if (isCategoryArray(obj)) return obj;
+                  for (const item of obj) {
+                    const found = findTree(item);
+                    if (found) return found;
+                  }
+                  return null;
+                }
+                if (obj.categories && Array.isArray(obj.categories)) return obj.categories;
+                if (obj.categoryTree) {
+                  if (Array.isArray(obj.categoryTree)) return obj.categoryTree;
+                  if (obj.categoryTree && typeof obj.categoryTree === "object") return [obj.categoryTree];
+                }
+                if (obj.categoryHierarchy && Array.isArray(obj.categoryHierarchy)) return obj.categoryHierarchy;
+                if (obj.rootCategories && Array.isArray(obj.rootCategories)) return obj.rootCategories;
+                if (obj.items && Array.isArray(obj.items) && isCategoryArray(obj.items)) return obj.items;
+                if (obj.nodes && Array.isArray(obj.nodes) && isCategoryArray(obj.nodes)) return obj.nodes;
+                for (const value of Object.values(obj)) {
+                  const found = findTree(value);
+                  if (found) return found;
+                }
+                return null;
+              };
+
+              const stateCandidates = [
+                window.__INITIAL_STATE__,
+                window.__PRELOADED_STATE__,
+                window.__NEXT_DATA__,
+                window.__NUXT__
+              ];
+              for (const candidate of stateCandidates) {
+                const found = findTree(candidate);
+                if (found) return found;
+              }
+              return null;
+            });
+          }
+          }
+        } catch (error) {
+          if (DEBUG_CATEGORIES) {
+            console.log(`[categories/children] selection page failed: ${error.message}`);
+          }
+        } finally {
+          if (selectionPage) {
+            await selectionPage.close();
+          }
+        }
+
+        if (!children.length && Array.isArray(selectionDomChildren) && selectionDomChildren.length) {
+          children = selectionDomChildren.map((item) => ({
+            id: String(item.id),
+            name: item.name,
+            url: item.url,
+            children: []
+          }));
+        }
+
+        if (!children.length && selectionTree) {
+          const normalized = normalizeCategoryTreeLocal(selectionTree);
+          const node = findNode(normalized, targetId, url);
+          if (node?.children?.length) {
+            children = node.children;
+            const needsUrl = children.some((child) => !child?.url);
+            if (needsUrl) {
+              const resolvedPath = await resolveCategoryPath();
+              const pathIds = (resolvedPath || [])
+                .map((item) => (item?.id ? String(item.id) : ""))
+                .filter(Boolean);
+              if (pathIds.length) {
+                const baseUrl = "https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=";
+                children = children.map((child) => {
+                  if (child?.url) return child;
+                  const childId = child?.id ? String(child.id) : "";
+                  if (!childId) return child;
+                  const pathValue = encodeURIComponent([...pathIds, childId].join("/"));
+                  return {
+                    ...child,
+                    url: `${baseUrl}${pathValue}`
+                  };
+                });
+              }
+            }
+          }
+        }
+      }
+
+      if (!children.length) {
+        let graph = null;
+        try {
+          graph = await page.evaluate(() => {
+            const nodes = {};
+            const edges = {};
+            const seen = new WeakSet();
+
+            const normalizeName = (value) => (value || "").toString().replace(/\s+/g, " ").trim();
+            const normalizeId = (value) => {
+              if (value === null || value === undefined) return "";
+              const raw = String(value).trim();
+              const match = raw.match(/\/c(\d+)(?:\/|$)/);
+              if (match) return match[1];
+              return /^\d+$/.test(raw) ? raw : "";
+            };
+            const safeGet = (fn) => {
+              try {
+                return fn();
+              } catch (error) {
+                return undefined;
+              }
+            };
+            const safeEntries = (obj) => {
+              try {
+                return Object.entries(obj);
+              } catch (error) {
+                return [];
+              }
+            };
+            const safeValues = (obj) => {
+              try {
+                return Object.values(obj);
+              } catch (error) {
+                return [];
+              }
+            };
+            const isWindowLike = (obj) => {
+              if (!obj || typeof obj !== "object") return false;
+              const tag = safeGet(() => Object.prototype.toString.call(obj));
+              if (tag === "[object Window]") return true;
+              if (safeGet(() => obj.window === obj)) return true;
+              if (safeGet(() => obj.self === obj)) return true;
+              return false;
+            };
+
+            const ensureNode = (id, name, url = "") => {
+              if (!id) return;
+              if (!nodes[id]) {
+                nodes[id] = { id, name: normalizeName(name), url };
+              } else if (!nodes[id].name && name) {
+                nodes[id].name = normalizeName(name);
+              }
+              if (url && !nodes[id].url) nodes[id].url = url;
+            };
+
+            const addEdge = (fromId, toId) => {
+              if (!fromId || !toId) return;
+              if (!edges[fromId]) edges[fromId] = new Set();
+              edges[fromId].add(toId);
+            };
+
+            const collectFromArray = (arr, parentId) => {
+              if (!Array.isArray(arr)) return;
+              arr.forEach((item) => {
+                if (item && typeof item === "object") {
+                  if (isWindowLike(item)) return;
+                  const id = normalizeId(
+                    safeGet(() => item.id) ||
+                    safeGet(() => item.identifier) ||
+                    safeGet(() => item.fieldValue) ||
+                    safeGet(() => item.categoryId) ||
+                    safeGet(() => item.categoryID) ||
+                    safeGet(() => item.catId) ||
+                    safeGet(() => item.value) ||
+                    ""
+                  );
+                  const name = safeGet(() => item.name) || safeGet(() => item.label) || safeGet(() => item.categoryName) || safeGet(() => item.title) || "";
+                  const url = safeGet(() => item.url) || safeGet(() => item.categoryUrl) || safeGet(() => item.seoUrl) || "";
+                  if (id) {
+                    ensureNode(id, name, url);
+                    if (parentId) addEdge(parentId, id);
+                  }
+                  traverse(item, parentId);
+                } else {
+                  const id = normalizeId(item);
+                  if (id && parentId) addEdge(parentId, id);
+                }
+              });
+            };
+
+            const traverse = (obj, parentId = "") => {
+              if (!obj || typeof obj !== "object") return;
+              if (isWindowLike(obj)) return;
+              if (seen.has(obj)) return;
+              seen.add(obj);
+
+              const currentId = normalizeId(
+                safeGet(() => obj.id) ||
+                safeGet(() => obj.identifier) ||
+                safeGet(() => obj.fieldValue) ||
+                safeGet(() => obj.categoryId) ||
+                safeGet(() => obj.categoryID) ||
+                safeGet(() => obj.catId) ||
+                safeGet(() => obj.value) ||
+                ""
+              );
+              const currentName = safeGet(() => obj.name) || safeGet(() => obj.label) || safeGet(() => obj.categoryName) || safeGet(() => obj.title) || "";
+              const currentUrl = safeGet(() => obj.url) || safeGet(() => obj.categoryUrl) || safeGet(() => obj.seoUrl) || "";
+              if (currentId) {
+                ensureNode(currentId, currentName, currentUrl);
+                if (parentId) addEdge(parentId, currentId);
+              }
+
+              const collections = [];
+              for (const [, value] of safeEntries(obj)) {
+                if (Array.isArray(value)) {
+                  collections.push({ value });
+                }
+              }
+              collections.forEach(({ value }) => collectFromArray(value, currentId || parentId));
+
+              for (const value of safeValues(obj)) {
+                if (value && typeof value === "object") {
+                  traverse(value, currentId || parentId);
+                }
+              }
+            };
+
+            const roots = [
+              window.__INITIAL_STATE__,
+              window.__PRELOADED_STATE__,
+              window.__NEXT_DATA__,
+              window.__NUXT__
+            ];
+            roots.forEach((root) => traverse(root, ""));
+
+            const edgesPlain = {};
+            Object.keys(edges).forEach((key) => {
+              edgesPlain[key] = Array.from(edges[key]);
+            });
+
+            return { nodes, edges: edgesPlain };
+          });
+        } catch (error) {
+          graph = null;
+        }
+
+        const targetId = id ? String(id) : "";
+        if (graph?.edges && targetId && graph.edges[targetId]) {
+          const childIds = graph.edges[targetId];
+          const nextChildren = childIds
+            .map((childId) => graph.nodes?.[childId])
+            .filter((node) => node && node.id && node.name)
+            .map((node) => ({
+              id: String(node.id),
+              name: node.name,
+              url: node.url || "",
+              children: []
+            }));
+          if (nextChildren.length) {
+            children = nextChildren;
+          }
+        }
+      }
+
+      if (!children.length) {
+        const path = await resolveCategoryPath();
+        const level1 = path.length > 0 ? path[0]?.name : "";
+        const level2 = path.length > 1 ? path[1]?.name : "";
+        const level1Id = path.length > 0 && path[0]?.id ? String(path[0].id) : "";
+        const level2Id = path.length > 1 && path[1]?.id ? String(path[1].id) : "";
+        if (!level1 || !level2) {
+          if (DEBUG_CATEGORIES) {
+            console.log("[categories/children] resolveCategoryPath empty");
+            await dumpCategoryDebug(page, `${id || "unknown"}-no-path`);
+          }
+        }
+        if (level1 && level2) {
+          const safeClick = async (element) => {
+            if (!element) return false;
+            try {
+              await element.evaluate((node) => {
+                node.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+              });
+              await element.click({ delay: 40 });
+              return true;
+            } catch (error) {
+              try {
+                await element.evaluate((node) => node.click());
+                return true;
+              } catch (innerError) {
+                return false;
+              }
+            }
+          };
+
+          const clickByText = async (texts) => {
+            const candidates = Array.isArray(texts) ? texts : [texts];
+            for (const text of candidates) {
+              const xpath = `//button[contains(normalize-space(.), "${text}")] | //a[contains(normalize-space(.), "${text}")] | //span[contains(normalize-space(.), "${text}")]/ancestor::*[self::button or self::a][1]`;
+              try {
+                const handles = await page.$x(xpath);
+                if (handles.length && await safeClick(handles[0])) return true;
+              } catch (error) {
+                // ignore lookup errors
+              }
+            }
+            return false;
+          };
+
+          const clickById = async (targetId) => {
+            if (!targetId) return false;
+            const selectors = [
+              `[data-val="${targetId}"]`,
+              `[data-id="${targetId}"]`,
+              `[data-value="${targetId}"]`,
+              `#cat_${targetId}`,
+              `a[href*="/c${targetId}"]`
+            ];
+            for (const selector of selectors) {
+              let element = null;
+              try {
+                element = await page.$(selector);
+              } catch (error) {
+                element = null;
+              }
+              if (element && await safeClick(element)) return true;
+            }
+            return false;
+          };
+
+          const waitForCategoryOverlay = async () => {
+            try {
+              await page.waitForFunction(() => {
+                return Boolean(
+                  document.querySelector("#postad-category-select-box") ||
+                  document.querySelector(".category-selection-col") ||
+                  document.querySelector(".category-selection-list-item-link")
+                );
+              }, { timeout: 8000 });
+              return true;
+            } catch (error) {
+              return false;
+            }
+          };
+
+          const isErrorPage = async () => {
+            try {
+              return await page.evaluate(() => {
+                const title = (document.title || "").toLowerCase();
+                if (title.includes("fehler") && title.includes("400")) return true;
+                const header = document.querySelector(".outcomebox-error h1");
+                const headerText = (header?.textContent || "").toLowerCase();
+                return headerText.includes("fehler") && headerText.includes("400");
+              });
+            } catch (error) {
+              return false;
+            }
+          };
+
+          const recoverToPostAdForm = async () => {
+            const errored = await isErrorPage();
+            if (!errored) return false;
+            try {
+              await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded" });
+            } catch (error) {
+              await page.waitForSelector("body", { timeout: 60000 });
+            }
+            await acceptCookieModal(page, { timeout: 8000 }).catch(() => {});
+            if (isGdprPage(page.url())) {
+              await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+              const redirectTarget = new URL(page.url()).searchParams.get("redirectTo");
+              const target = redirectTarget ? decodeURIComponent(redirectTarget) : "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
+              try {
+                await page.goto(target, { waitUntil: "domcontentloaded" });
+              } catch (error) {
+                await page.waitForSelector("body", { timeout: 60000 });
+              }
+              await acceptCookieModal(page, { timeout: 8000 }).catch(() => {});
+            }
+            return true;
+          };
+
+          const openCategorySelection = async () => {
+            await page.waitForFunction(
+              () => Boolean(window?.Belen?.PostAd?.PostAdView || document.querySelector("#pstad-lnk-chngeCtgry")),
+              { timeout: 5000 }
+            ).catch(() => {});
+            const selectors = [
+              "#pstad-lnk-chngeCtgry",
+              "#categorySection a"
+            ];
+            for (const selector of selectors) {
+              const element = await page.$(selector);
+              if (!element) continue;
+              if (await safeClick(element)) {
+                return true;
+              }
+            }
+            const byText = await clickByText(["Wähle deine Kategorie", "Kategorie wählen"]);
+            if (byText) return true;
+            try {
+              const invoked = await page.evaluate(() => {
+                const view = window?.Belen?.PostAd?.PostAdView;
+                const candidates = [
+                  "openCategorySelection",
+                  "openCategorySelector",
+                  "selectCategory",
+                  "openCategory",
+                  "showCategorySelection"
+                ];
+                if (view) {
+                  for (const key of candidates) {
+                    if (typeof view[key] === "function") {
+                      view[key]();
+                      return true;
+                    }
+                  }
+                }
+                const link = document.querySelector("#pstad-lnk-chngeCtgry");
+                if (link) {
+                  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+                  return true;
+                }
+                return false;
+              });
+              if (invoked) return true;
+            } catch (error) {
+              // ignore evaluate errors
+            }
+            return false;
+          };
+
+          await delay(800);
+          await acceptCookieModal(page, { timeout: 8000 });
+          await page.waitForSelector("#categorySection", { timeout: 10000 }).catch(() => {});
+          await openCategorySelection();
+          let navigationHappened = false;
+          try {
+            const navResult = await Promise.race([
+              page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 8000 }).then(() => "nav").catch(() => null),
+              page.waitForFunction(
+                () => Boolean(document.querySelector("#postad-category-select-box")),
+                { timeout: 8000 }
+              ).then(() => "overlay").catch(() => null)
+            ]);
+            navigationHappened = navResult === "nav";
+          } catch (error) {
+            navigationHappened = false;
+          }
+          let overlayReady = await waitForCategoryOverlay();
+          if (!overlayReady) {
+            if (await recoverToPostAdForm()) {
+              await openCategorySelection();
+              overlayReady = await waitForCategoryOverlay();
+            }
+          } else if (navigationHappened) {
+            await acceptCookieModal(page, { timeout: 8000 }).catch(() => {});
+            if (isGdprPage(page.url())) {
+              await acceptGdprConsent(page, { timeout: 20000 }).catch(() => {});
+            }
+          }
+          await delay(1200);
+          await acceptCookieModal(page, { timeout: 8000 });
+          let resolvedByTree = false;
+          try {
+            const html = await page.content().catch(() => "");
+            const treeFromHtml = extractCategoryTreeFromHtml(html);
+            if (treeFromHtml) {
+              const normalized = normalizeCategoryTreeLocal(Array.isArray(treeFromHtml) ? treeFromHtml : [treeFromHtml]);
+              const node = findNode(normalized, id, url);
+              if (node?.children?.length) {
+                children = node.children;
+                resolvedByTree = true;
+              }
+            }
+          } catch (error) {
+            resolvedByTree = false;
+          }
+
+          if (!resolvedByTree) {
+            if (!(await clickById(level1Id))) {
+              await clickByText(level1);
+            }
+            await delay(800);
+            await acceptCookieModal(page, { timeout: 8000 });
+            if (!(await clickById(level2Id))) {
+              await clickByText(level2);
+            }
+            await delay(1500);
+            await acceptCookieModal(page, { timeout: 8000 });
+
+            // Ожидаем появления L3 категорий
+            try {
+              await page.waitForFunction(() => {
+                const container = document.querySelector("#postad-category-select-box");
+                if (!container) return false;
+                const cols = Array.from(container.querySelectorAll(".category-selection-col")).filter((col) => {
+                  const style = window.getComputedStyle(col);
+                  return style.display !== "none" && style.visibility !== "hidden" && !col.classList.contains("is-hidden");
+                });
+                return cols.length >= 3;
+              }, { timeout: 5000 });
+            } catch (error) {
+              // ignore timeout
+            }
+
+            await delay(500);
+            if (DEBUG_CATEGORIES) {
+              await dumpCategoryDebug(page, `${id || "unknown"}-after-clicks`);
+            }
+
+            let domChildren = [];
+            try {
+              domChildren = await page.evaluate(() => {
+              const normalize = (val) => (val || "").replace(/\s+/g, " ").trim();
+              const extractIdFromHref = (value) => {
+                if (!value) return "";
+                const raw = String(value);
+                const match = raw.match(/\/c(\d+)(?:\/|$)/);
+                if (match) return match[1];
+                const pathMatch = raw.match(/[?#]path=([^&]+)/i);
+                if (pathMatch) {
+                  let path = pathMatch[1] || "";
+                  try {
+                    path = decodeURIComponent(path);
+                  } catch (error) {
+                    // ignore decode errors
+                  }
+                  const parts = path.split("/").filter(Boolean);
+                  return parts.length ? parts[parts.length - 1] : "";
+                }
+                return "";
+              };
+              const extractIdFromAttr = (value) => {
+                if (!value) return "";
+                const raw = String(value).trim();
+                return raw.startsWith("cat_") ? raw.slice(4) : "";
+              };
+              const extractId = (node) => {
+                if (!node) return "";
+                const dataVal = node.getAttribute("data-val") || node.getAttribute("data-id") || node.getAttribute("data-value") || "";
+                if (dataVal) return String(dataVal).trim();
+                const idAttr = extractIdFromAttr(node.getAttribute("id") || "");
+                if (idAttr) return idAttr;
+                const href = node.getAttribute("href") || "";
+                return extractIdFromHref(href);
+              };
+
+              const extractFromContainer = () => {
+                const container = document.querySelector("#postad-category-select-box");
+                if (!container) return [];
+                const cols = Array.from(container.querySelectorAll(".category-selection-col")).filter((col) => {
+                  const style = window.getComputedStyle(col);
+                  if (style.display === "none" || style.visibility === "hidden") return false;
+                  if (col.classList.contains("is-hidden")) return false;
+                  return Boolean(col.querySelector(".category-selection-list-item-link"));
+                });
+                if (!cols.length) return [];
+                let rightmost = cols[0];
+                let maxX = -Infinity;
+                cols.forEach((col) => {
+                  const rect = col.getBoundingClientRect();
+                  if (rect.x > maxX) {
+                    maxX = rect.x;
+                    rightmost = col;
+                  }
+                });
+                const links = Array.from(rightmost.querySelectorAll(".category-selection-list-item-link"));
+                const unique = new Map();
+                links.forEach((link) => {
+                  const id = extractId(link);
+                  const text = normalize(link.textContent || link.getAttribute("aria-label") || "");
+                  if (!id || !text) return;
+                  if (!unique.has(id)) {
+                    unique.set(id, {
+                      id,
+                      name: text,
+                      url: link.getAttribute("href") || ""
+                    });
+                  }
+                });
+                return Array.from(unique.values());
+              };
+
+              const containerChildren = extractFromContainer();
+              if (containerChildren.length) return containerChildren;
+
+              const collectRoots = (root, bucket) => {
+                if (!root || bucket.includes(root)) return;
+                bucket.push(root);
+                const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
+                elements.forEach((el) => {
+                  if (el.shadowRoot) collectRoots(el.shadowRoot, bucket);
+                });
+              };
+              const roots = [];
+              collectRoots(document, roots);
+
+              const candidates = [];
+              roots.forEach((root) => {
+                const nodes = Array.from(
+                  root.querySelectorAll("a, button, [role='button'], li, div, span")
+                );
+                nodes.forEach((node) => {
+                  const rect = node.getBoundingClientRect();
+                  const text = normalize(node.textContent || node.getAttribute("aria-label") || "");
+                  const href = node.getAttribute("href") || "";
+                  const id = extractId(node);
+                  if (!text || !id) return;
+                  if (rect.width <= 0 || rect.height <= 0) return;
+                  candidates.push({
+                    text,
+                    id,
+                    href,
+                    x: rect.x,
+                    width: rect.width
+                  });
+                });
+              });
+
+              if (!candidates.length) return [];
+
+              const sorted = candidates.slice().sort((a, b) => a.x - b.x);
+              const clusters = [];
+              const threshold = 60;
+              sorted.forEach((item) => {
+                const last = clusters[clusters.length - 1];
+                if (!last || Math.abs(last.x - item.x) > threshold) {
+                  clusters.push({ x: item.x, items: [item] });
+                } else {
+                  last.items.push(item);
+                }
+              });
+
+              const rightmost = clusters.sort((a, b) => b.x - a.x)[0];
+              const items = rightmost ? rightmost.items : [];
+              const unique = new Map();
+              items.forEach((item) => {
+                if (!item.id || !item.text) return;
+                if (!unique.has(item.id)) {
+                  unique.set(item.id, {
+                    id: item.id,
+                    name: item.text,
+                    url: item.href || ""
+                  });
+                }
+              });
+                return Array.from(unique.values());
+              });
+            } catch (error) {
+              if (DEBUG_CATEGORIES) {
+                console.log(`[categories/children] dom extraction failed: ${error.message}`);
+              }
+              domChildren = [];
+            }
+
+            if (domChildren.length) {
+              children = domChildren.map((item) => ({
+                id: String(item.id),
+                name: item.name,
+                url: item.url,
+                children: []
+              }));
+            } else {
+              await dumpCategoryDebug(page, `${id || "unknown"}-empty`);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[categories/children] puppeteer fallback failed:", error.message);
+    } finally {
+      if (browser) {
+        await browser.close();
+      }
+      if (anonymizedProxyUrl) {
+        await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+      }
+    }
+
+      const finalChildren = dedupeChildren(children);
+      if (cacheKey) {
+        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
+      }
+      if (DEBUG_CATEGORIES) {
+        const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+        console.log(`[categories/children] response id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
+      }
+      res.json({ children: finalChildren });
+  } catch (error) {
+    console.error("[categories/children] failed:", error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/ads/fields", async (req, res) => {
+  let requestId = "";
+  let debugEnabled = false;
+  let logFields = null;
+  let requestStartedAt = 0;
+  let debugPage = null;
+  let debugAccountLabel = "account";
+  try {
+    requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const accountId = req.query.accountId ? Number(req.query.accountId) : null;
+    const categoryIdParam = req.query.categoryId ? String(req.query.categoryId) : "";
+    const categoryUrl = req.query.categoryUrl ? String(req.query.categoryUrl) : "";
+    const categoryPathRaw = req.query.categoryPath ? String(req.query.categoryPath) : "";
+    const parseCategoryPath = (value) => {
+      if (!value) return [];
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (error) {
+        // ignore json errors
+      }
+      return String(value)
+        .split(/[>,]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    };
+    const extractCategoryToken = (item) => {
+      const raw = String(item || "").trim();
+      if (!raw) return "";
+      if (/^\d+$/.test(raw)) return raw;
+      const pathMatch = raw.match(/(?:[?&]|^)path=([^&]+)/i);
+      if (pathMatch) {
+        try {
+          const decoded = decodeURIComponent(pathMatch[1]);
+          const parts = decoded.split("/").map((part) => part.trim()).filter(Boolean);
+          const last = parts[parts.length - 1];
+          if (last) return last;
+        } catch (error) {
+          // ignore decode errors
+        }
+      }
+      const fromUrl = extractCategoryIdFromUrl(raw);
+      if (fromUrl) return fromUrl;
+      try {
+        const parsed = new URL(raw, "https://www.kleinanzeigen.de");
+        const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
+        const last = parts[parts.length - 1];
+        if (last) return last;
+      } catch (error) {
+        // ignore URL parse errors
+      }
+      return raw;
+    };
+    const extractNumericId = (item) => {
+      const raw = extractCategoryToken(item);
+      if (!raw) return "";
+      if (/^\d+$/.test(raw)) return raw;
+      const idMatch = raw.match(/\/c(\d+)(?:\/|$)/i) || raw.match(/(\d{2,})/);
+      return idMatch ? idMatch[1] : "";
+    };
+    const categoryPathItems = parseCategoryPath(categoryPathRaw);
+    const categoryPathIdsFromRequest = categoryPathItems
+      .map(extractCategoryToken)
+      .filter(Boolean);
+    const categoryPathIdsNumericFromRequest = categoryPathIdsFromRequest
+      .map(extractNumericId)
+      .filter(Boolean);
+    const lastNumericPathToken = categoryPathIdsNumericFromRequest.length
+      ? String(categoryPathIdsNumericFromRequest[categoryPathIdsNumericFromRequest.length - 1] || "")
+      : "";
+    const lastPathToken = categoryPathIdsFromRequest.length
+      ? String(categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] || "")
+      : "";
+    const resolvedCategoryId = categoryIdParam
+      || lastNumericPathToken
+      || lastPathToken
+      || extractCategoryIdFromUrl(categoryUrl);
+    const forceRefresh = req.query.refresh === "true";
+    const allowStaleCache = req.query.allowStale !== "0";
+    const allowLiveFetch = req.query.live === "1" || forceRefresh || DEFAULT_FIELDS_LIVE_FETCH;
+    const forceDebug = false;
+    debugEnabled = false;
+    requestStartedAt = Date.now();
+    logFields = (payload) => {
+      if (!debugEnabled) return;
+      appendFieldsRequestLog({
+        requestId,
+        accountId,
+        categoryIdParam,
+        categoryUrl,
+        categoryPathRaw: categoryPathRaw ? String(categoryPathRaw).slice(0, 500) : "",
+        ...payload
+      });
+    };
+    logFields({ event: "start" });
+    dumpFieldsDebugMeta({
+      accountLabel: `account-${accountId || "unknown"}`,
+      step: "fields-request-context",
+      error: "",
+      extra: {
+        requestId,
+        accountId,
+        categoryIdParam,
+        resolvedCategoryId,
+        categoryUrl,
+        categoryPathRaw,
+        categoryPathIdsFromRequest,
+        categoryPathIdsNumericFromRequest
+      },
+      force: true
+    });
+    if (!accountId || !resolvedCategoryId) {
+      logFields({ event: "error", error: "missing-params" });
+      res.status(400).json({
+        success: false,
+        error: "accountId и categoryId/categoryUrl обязательны",
+        debugId: debugEnabled ? requestId : undefined
+      });
+      return;
+    }
+    const categoryId = resolvedCategoryId;
+
+    if (forceDebug) {
+      dumpFieldsDebugMeta({
+        accountLabel: `account-${accountId}`,
+        step: "fields-start",
+        error: "",
+        extra: { accountId, categoryId, categoryUrl },
+        force: true
+      });
+    }
+
+    res.setTimeout(240000, () => {
+      if (res.headersSent) return;
+      dumpFieldsDebugMeta({
+        accountLabel: `account-${accountId}`,
+        step: "fields-timeout",
+        error: "request-timeout",
+        extra: { accountId, categoryId },
+        force: forceDebug
+      });
+      if (debugPage) {
+        Promise.resolve(
+          dumpFieldsDebug(debugPage, {
+            accountLabel: debugAccountLabel,
+            step: "fields-timeout-artifact",
+            error: "request-timeout",
+            extra: { accountId, categoryId, requestId },
+            force: true
+          })
+        ).catch(() => {});
+      }
+      logFields({ event: "timeout", durationMs: Date.now() - requestStartedAt });
+      res.status(504).json({
+        success: false,
+        error: "Таймаут при загрузке параметров категории.",
+        debugId: debugEnabled ? requestId : undefined
+      });
+    });
+
+    const allowCachedEmpty = req.query.allowCachedEmpty === "1";
+    if (!forceRefresh) {
+      const cachedEntry = getCachedCategoryFieldsEntry(categoryId, { allowStale: allowStaleCache });
+      if (cachedEntry !== null) {
+        const cachedFields = Array.isArray(cachedEntry?.fields) ? cachedEntry.fields : [];
+        if (!cachedFields.length && !allowCachedEmpty) {
+          logFields({ event: "cache-empty-bypass" });
+        } else {
+          logFields({ event: "cache-hit", count: cachedFields.length });
+          res.json({
+            fields: cachedFields,
+            cached: true,
+            stale: Boolean(cachedEntry?.stale),
+            debugId: debugEnabled ? requestId : undefined
+          });
+          return;
+        }
+      }
+    }
+
+    if (!allowLiveFetch) {
+      logFields({ event: "live-fetch-skipped" });
+      res.json({
+        fields: [],
+        deferred: true,
+        debugId: debugEnabled ? requestId : undefined
+      });
+      return;
+    }
+
+    const account = getAccountForRequest(accountId, req, res);
+    if (!account) return;
+    debugAccountLabel = account.email || `account-${accountId}`;
+    const selectedProxy = requireAccountProxy(account, res, "загрузки параметров категории", getOwnerContext(req));
+    if (!selectedProxy) {
+      logFields({ event: "error", error: "proxy-required" });
+      return;
+    }
+
+    const puppeteer = getPuppeteer();
+    const proxyChain = require("proxy-chain");
+    const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+    const { pickDeviceProfile } = require("./cookieValidator");
+
+    const cookies = normalizeCookies(parseCookies(account.cookie));
+    const deviceProfile = toDeviceProfile(account.deviceProfile);
+    const proxyServer = buildProxyServer(selectedProxy);
+    const proxyUrl = buildPuppeteerProxyUrl(selectedProxy);
+    const needsProxyChain = Boolean(
+      proxyUrl && ((selectedProxy?.type || "").toLowerCase().startsWith("socks") || selectedProxy?.username || selectedProxy?.password)
+    );
+    let anonymizedProxyUrl;
+
+    const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
+    if (proxyServer) {
+      if (needsProxyChain) {
+        anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+        launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
+      } else {
+        launchArgs.push(`--proxy-server=${proxyServer}`);
+      }
+    }
+
+    if (forceDebug) {
+      dumpFieldsDebugMeta({
+        accountLabel: account.email || `account-${accountId}`,
+        step: "fields-launching-browser",
+        error: "",
+        extra: { hasProxy: Boolean(selectedProxy), proxyType: selectedProxy?.type || "" },
+        force: true
+      });
+    }
+
+    const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-fields-"));
+
+    const browser = await withTimeout(
+      puppeteer.launch({
+        headless: "new",
+        args: launchArgs,
+        userDataDir: profileDir,
+        timeout: PUPPETEER_LAUNCH_TIMEOUT,
+        protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
+      }),
+      25000,
+      "launch-timeout"
+    );
+
+    if (forceDebug) {
+      dumpFieldsDebugMeta({
+        accountLabel: account.email || `account-${accountId}`,
+        step: "fields-browser-launched",
+        error: "",
+        extra: { profileDir },
+        force: true
+      });
+    }
+
+    let page = null;
+    try {
+      page = await browser.newPage();
+      debugPage = page;
+      attachFieldsDialogGuard(page, {
+        accountLabel: debugAccountLabel,
+        requestId,
+        force: forceDebug
+      });
+      await installFieldsBeforeUnloadBypass(page, {
+        accountLabel: debugAccountLabel,
+        requestId,
+        force: forceDebug
+      });
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: account.email || `account-${accountId}`,
+          step: "fields-page-created",
+          error: "",
+          extra: { url: page.url() },
+          force: true
+        });
+      }
+      await dumpFieldsDebug(page, {
+        accountLabel: debugAccountLabel,
+        step: "fields-page-created-artifact",
+        error: "",
+        extra: { requestId, accountId, categoryId },
+        force: true
+      });
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: account.email || `account-${accountId}`,
+          step: "fields-browser-ready",
+          error: "",
+          extra: { url: page.url() }
+        });
+      }
+      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+      page.setDefaultTimeout(20000);
+      if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
+        await withTimeout(
+          page.authenticate({
+            username: selectedProxy.username || "",
+            password: selectedProxy.password || ""
+          }),
+          8000,
+          "fields-page-auth-timeout"
+        );
+      }
+
+      await withTimeout(page.setUserAgent(deviceProfile.userAgent), 5000, "fields-set-user-agent-timeout");
+      await withTimeout(page.setViewport(deviceProfile.viewport), 5000, "fields-set-viewport-timeout");
+      await withTimeout(
+        page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale }),
+        5000,
+        "fields-set-headers-timeout"
+      );
+      await withTimeout(page.emulateTimezone(deviceProfile.timezone), 5000, "fields-set-timezone-timeout");
+      if (cookies.length) {
+        const cookieBatchSize = 40;
+        const cookieBatchLimit = 200;
+        const cookiesToApply = cookies.slice(0, cookieBatchLimit);
+        for (let index = 0; index < cookiesToApply.length; index += cookieBatchSize) {
+          const chunk = cookiesToApply.slice(index, index + cookieBatchSize);
+          if (!chunk.length) continue;
+          await withTimeout(
+            page.setCookie(...chunk),
+            6000,
+            "fields-set-cookie-timeout"
+          );
+        }
+        if (cookies.length > cookieBatchLimit && forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: debugAccountLabel,
+            step: "fields-cookie-trimmed",
+            error: "",
+            extra: { originalCookieCount: cookies.length, appliedCookieCount: cookieBatchLimit },
+            force: true
+          });
+        }
+      }
+      logFields({ event: "browser-ready", durationMs: Date.now() - requestStartedAt });
+
+      let step2Error = null;
+      try {
+        await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded", timeout: 20000 });
+      } catch (error) {
+        step2Error = error;
+      }
+      if (step2Error) {
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-step2-failed",
+            error: step2Error?.message || "step2-failed",
+            extra: { url: page.url() },
+            force: true
+          });
+        }
+        try {
+          await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "networkidle2", timeout: 22000 });
+          step2Error = null;
+        } catch (error) {
+          step2Error = error;
+        }
+      }
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: account.email || `account-${accountId}`,
+          step: step2Error ? "fields-step2-failed-final" : "fields-step2-loaded",
+          error: step2Error ? (step2Error?.message || "step2-failed") : "",
+          extra: { url: page.url() },
+          force: true
+        });
+      }
+      if (step2Error) {
+        await dumpFieldsDebug(page, {
+          accountLabel: debugAccountLabel,
+          step: "fields-step2-failed-artifact",
+          error: step2Error?.message || "step2-failed",
+          extra: { requestId, accountId, categoryId, url: page.url() },
+          force: true
+        });
+      }
+      logFields({ event: "step2-opened", durationMs: Date.now() - requestStartedAt });
+      if (step2Error) {
+        throw step2Error;
+      }
+      await dumpFieldsDebug(page, {
+        accountLabel: debugAccountLabel,
+        step: "fields-step2-loaded-artifact",
+        error: "",
+        extra: { requestId, accountId, categoryId, url: page.url() },
+        force: true
+      });
+      await acceptCookieModal(page, { timeout: 15000 }).catch(() => {});
+      if (isGdprPage(page.url())) {
+        await acceptGdprConsent(page, { timeout: 20000 });
+        const redirectTarget = new URL(page.url()).searchParams.get("redirectTo");
+        const target = redirectTarget ? decodeURIComponent(redirectTarget) : "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
+        await page.goto(target, { waitUntil: "domcontentloaded", timeout: 20000 });
+      }
+
+    const categoryPathIds = categoryPathIdsFromRequest.length
+      ? categoryPathIdsFromRequest
+      : (resolveCategoryPathFromCache(categoryId) || (categoryId ? [categoryId] : []));
+    const categoryPathIdsNumeric = categoryPathIds.length
+      ? categoryPathIds.map(extractNumericId).filter(Boolean)
+      : categoryPathIdsNumericFromRequest;
+    const categoryPathFakeToken = [...categoryPathIds]
+      .map((item) => String(item || "").trim())
+      .reverse()
+      .find((token) => token && !/^\d+$/.test(token)) || "";
+    const categoryIdForAttributeMap = categoryPathIdsNumeric.length
+      ? categoryPathIdsNumeric[categoryPathIdsNumeric.length - 1]
+      : (extractNumericId(categoryId) || String(categoryId || "").trim());
+    const categorySlugForAttributeMap = resolveCategorySlugById(categoryIdForAttributeMap);
+    const fakeCategoryAttributeField = (categoryPathFakeToken && categorySlugForAttributeMap)
+      ? `attributeMap[${categorySlugForAttributeMap}.art_s]`
+      : "";
+    const selectionPathTokens = categoryPathIds.length > 1
+      ? categoryPathIds
+      : categoryPathIdsNumeric;
+    const selectionPathHasSlug = selectionPathTokens.some((token) => token && !/^\d+$/.test(String(token || "").trim()));
+    const selectionPathValue = selectionPathTokens.join("/");
+    const selectionUrl = selectionPathTokens.length > 1
+      ? (
+        selectionPathHasSlug
+          ? `https://www.kleinanzeigen.de/p-kategorie-aendern.html#?path=${encodeURIComponent(selectionPathValue)}/`
+          : `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(selectionPathValue)}`
+      )
+      : getCategorySelectionUrl(categoryId, categoryUrl);
+
+      const injectCategoryId = async () => {
+        try {
+          await withTimeout(page.evaluate(({ categoryId, fakeCategoryToken, fakeAttributeFieldName }) => {
+            const selectors = [
+              "#categoryIdField",
+              "input[name='categoryId']",
+              "select[name='categoryId']",
+              "input[id*='categoryId']",
+              "select[id*='categoryId']",
+              "input[id*='category']",
+              "select[id*='category']"
+            ];
+            selectors.forEach((selector) => {
+              const el = document.querySelector(selector);
+              if (!el) return;
+              el.value = categoryId;
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            });
+
+            const applyHiddenField = (name, value) => {
+              if (!name) return;
+              const escapedName = name.replace(/([\\\"'\\[\\]#.:])/g, "\\\\$1");
+              const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
+              if (!form) return;
+              let field = form.querySelector(`input[name="${escapedName}"], select[name="${escapedName}"], textarea[name="${escapedName}"]`);
+              if (!field) {
+                field = document.createElement("input");
+                field.type = "hidden";
+                field.name = name;
+                form.appendChild(field);
+              }
+              field.value = String(value ?? "");
+              field.dispatchEvent(new Event("input", { bubbles: true }));
+              field.dispatchEvent(new Event("change", { bubbles: true }));
+            };
+
+            if (fakeCategoryToken) {
+              const fakeById = document.querySelector("#l3FakeCategory");
+              if (fakeById) {
+                fakeById.value = fakeCategoryToken;
+                fakeById.dispatchEvent(new Event("input", { bubbles: true }));
+                fakeById.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              let fakeByName = document.querySelector("input[name='l3FakeCategory']");
+              if (!fakeByName) {
+                const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
+                if (form) {
+                  fakeByName = document.createElement("input");
+                  fakeByName.type = "hidden";
+                  fakeByName.name = "l3FakeCategory";
+                  form.appendChild(fakeByName);
+                }
+              }
+              if (fakeByName) {
+                fakeByName.value = fakeCategoryToken;
+                fakeByName.dispatchEvent(new Event("input", { bubbles: true }));
+                fakeByName.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              applyHiddenField("l3FakeCategory", fakeCategoryToken);
+              if (fakeAttributeFieldName) {
+                applyHiddenField(fakeAttributeFieldName, fakeCategoryToken);
+                const attrMatch = String(fakeAttributeFieldName).match(/^attributeMap\\[(.+)\\]$/);
+                const attrKey = attrMatch && attrMatch[1] ? attrMatch[1] : "";
+                if (attrKey) {
+                  const mapValue = JSON.stringify({ [attrKey]: fakeCategoryToken });
+                  applyHiddenField("userSelectedAttributeMap", mapValue);
+                }
+              }
+            }
+          }, {
+            categoryId,
+            fakeCategoryToken: categoryPathFakeToken,
+            fakeAttributeFieldName: fakeCategoryAttributeField
+          }), 6000, "fields-inject-category-timeout");
+          return true;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const waitForExtraSelect = async (timeoutMs) => {
+        try {
+          await withTimeout(page.waitForFunction(() => {
+            const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const collectRoots = (root, bucket) => {
+              if (!root || bucket.includes(root)) return;
+              bucket.push(root);
+              const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
+              elements.forEach((el) => {
+                if (el && el.shadowRoot) collectRoots(el.shadowRoot, bucket);
+              });
+            };
+            const roots = [];
+            collectRoots(document, roots);
+            const queryAllDeep = (selector) => {
+              const result = [];
+              roots.forEach((root) => {
+                try {
+                  result.push(...Array.from(root.querySelectorAll(selector)));
+                } catch (error) {
+                  // ignore selector error
+                }
+              });
+              return result;
+            };
+
+            const selects = queryAllDeep("select");
+            const hasAttributeSelect = selects.some((select) => {
+              const name = normalize(select.getAttribute("name") || "");
+              const id = normalize(select.getAttribute("id") || "");
+              if (name.includes("attributemap") || id.includes("attributemap")) return true;
+              const wrapper = select.closest(".formgroup-input, .form-group, .l-row, div, section");
+              const label = wrapper ? wrapper.querySelector("label") : null;
+              const labelText = normalize(label?.textContent || select.getAttribute("aria-label") || "");
+              return labelText.includes("art") || labelText.includes("zustand");
+            });
+            if (hasAttributeSelect) return true;
+
+            const maybeCombobox = queryAllDeep("[role='combobox'], [aria-haspopup='listbox'], button, div")
+              .some((node) => {
+                const text = normalize(node.textContent || node.getAttribute("aria-label") || "");
+                return text.includes("bitte wählen") || text.includes("bitte waehlen");
+              });
+            return maybeCombobox;
+          }, { timeout: timeoutMs }), timeoutMs + 1500, "fields-wait-extra-select-timeout");
+        } catch (error) {
+          // ignore wait timeout
+        }
+      };
+
+      const collectFields = async (maxWaitMs = 20000) => {
+        await withTimeout(
+          waitForExtraSelect(Math.min(8000, maxWaitMs)),
+          Math.min(10000, maxWaitMs + 2000),
+          "fields-wait-extra-select-guard-timeout"
+        ).catch(() => {});
+        const formContext = await withTimeout(
+          page.waitForSelector("form", { timeout: 15000 }).then(() => page).catch(() => page),
+          7000,
+          "fields-wait-form-timeout"
+        ).catch(() => page);
+        let fields = [];
+        let parserTimedOut = false;
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < maxWaitMs) {
+          const remainingMs = Math.max(1000, maxWaitMs - (Date.now() - startedAt));
+          const parseTimeoutMs = Math.max(1200, Math.min(4500, remainingMs));
+          try {
+            fields = await withTimeout(
+              parseExtraSelectFieldsAcrossContexts(page),
+              parseTimeoutMs,
+              "fields-parse-timeout"
+            );
+          } catch (error) {
+            parserTimedOut = true;
+            fields = [];
+            // parseExtraSelectFieldsAcrossContexts may continue in background after Promise.race timeout;
+            // avoid stacking multiple long-running parser calls on the same page.
+            break;
+          }
+          if (fields.length) break;
+          await delay(700);
+        }
+        if (!fields.length) {
+          const fallbackTimeoutMs = Math.max(1200, Math.min(3500, maxWaitMs));
+          fields = await withTimeout(
+            parseExtraSelectFields(formContext).catch(() => []),
+            fallbackTimeoutMs,
+            "fields-parse-fallback-timeout"
+          ).catch(() => []);
+        }
+        if (parserTimedOut && forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-parser-timeout",
+            error: "fields parser timed out; skipped slow contexts",
+            extra: { url: page.url(), categoryId, maxWaitMs },
+            force: true
+          });
+        }
+        return fields;
+      };
+
+      const submitCategoryViaStep2Form = async () => {
+        try {
+          const submitted = await withTimeout(page.evaluate(({
+            categoryId,
+            categoryPathIds,
+            fakeCategoryToken,
+            fakeAttributeFieldName
+          }) => {
+            const normalize = (value) => String(value || "").trim();
+            const extractNumeric = (value) => {
+              const raw = normalize(value);
+              const match = raw.match(/\d+/);
+              return match ? match[0] : "";
+            };
+            const pathTokens = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
+              .map(normalize)
+              .filter(Boolean);
+            const fallbackToken = normalize(categoryId);
+            if (!pathTokens.length && fallbackToken) pathTokens.push(fallbackToken);
+            if (!pathTokens.length) return false;
+            const numericIds = pathTokens.map(extractNumeric).filter(Boolean);
+            const finalCategoryNumeric = numericIds.length
+              ? numericIds[numericIds.length - 1]
+              : extractNumeric(fallbackToken);
+            const finalCategoryValue = finalCategoryNumeric || fallbackToken;
+            if (!finalCategoryValue) return false;
+
+            const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
+            if (!form) return false;
+
+            const applyField = (name, value) => {
+              let field = form.querySelector(`input[name="${name}"], select[name="${name}"]`);
+              if (!field) {
+                field = document.createElement("input");
+                field.type = "hidden";
+                field.name = name;
+                form.appendChild(field);
+              }
+              field.value = String(value ?? "");
+            };
+
+            if (numericIds.length > 1) {
+              applyField("parentCategoryId", numericIds[0]);
+            }
+            applyField("categoryId", finalCategoryValue);
+            if (fakeCategoryToken) {
+              applyField("l3FakeCategory", fakeCategoryToken);
+              const fakeById = document.querySelector("#l3FakeCategory");
+              if (fakeById) {
+                fakeById.value = String(fakeCategoryToken);
+                fakeById.dispatchEvent(new Event("input", { bubbles: true }));
+                fakeById.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+              if (fakeAttributeFieldName) {
+                applyField(fakeAttributeFieldName, fakeCategoryToken);
+                const attrMatch = String(fakeAttributeFieldName).match(/^attributeMap\\[(.+)\\]$/);
+                const attrKey = attrMatch && attrMatch[1] ? attrMatch[1] : "";
+                if (attrKey) {
+                  const selected = {};
+                  selected[attrKey] = fakeCategoryToken;
+                  applyField("userSelectedAttributeMap", JSON.stringify(selected));
+                }
+              }
+            }
+            applyField("submitted", "true");
+            form.submit();
+            return true;
+          }, {
+            categoryId,
+            categoryPathIds,
+            fakeCategoryToken: categoryPathFakeToken,
+            fakeAttributeFieldName: fakeCategoryAttributeField
+          }), 7000, "fields-submit-category-eval-timeout");
+
+          if (!submitted) return false;
+          await Promise.race([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 12000 }).catch(() => false),
+            page.waitForFunction(
+              () => window.location.href.includes("anzeige-aufgeben-schritt2"),
+              { timeout: 12000 }
+            ).catch(() => false)
+          ]);
+          return true;
+        } catch (error) {
+          return false;
+        }
+      };
+
+      await injectCategoryId();
+      await dumpFieldsDebugMeta({
+        accountLabel: debugAccountLabel,
+        step: "fields-collect-start",
+        error: "",
+        extra: { requestId, accountId, categoryId, url: page.url() },
+        force: true
+      });
+      let fields = await collectFields(6000);
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: debugAccountLabel,
+          step: "fields-collect-fast-result",
+          error: "",
+          extra: { requestId, fieldCount: fields.length, url: page.url() },
+          force: true
+        });
+      }
+      if (fields.length) {
+        await dumpFieldsDebug(page, {
+          accountLabel: account.email || `account-${accountId}`,
+          step: "fields-fast-path",
+          error: "",
+          extra: { url: page.url(), categoryId, categoryPathIds },
+          force: forceDebug
+        });
+        setCachedCategoryFields(categoryId, fields);
+        if (!res.headersSent) {
+          logFields({ event: "success-fast-path", count: fields.length, durationMs: Date.now() - requestStartedAt });
+          res.json({
+            fields,
+            debugId: debugEnabled ? requestId : undefined
+          });
+        }
+        return;
+      }
+      logFields({ event: "fast-path-empty", durationMs: Date.now() - requestStartedAt });
+
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: debugAccountLabel,
+          step: "fields-fast-submit-start",
+          error: "",
+          extra: { requestId, url: page.url() },
+          force: true
+        });
+      }
+      const quickSubmitted = await submitCategoryViaStep2Form();
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: debugAccountLabel,
+          step: "fields-fast-submit-end",
+          error: quickSubmitted ? "" : "not-submitted",
+          extra: { requestId, quickSubmitted, url: page.url() },
+          force: true
+        });
+      }
+      if (quickSubmitted) {
+        await dumpFieldsDebug(page, {
+          accountLabel: account.email || `account-${accountId}`,
+          step: "fields-fast-submit",
+          error: "",
+          extra: { url: page.url(), categoryId, categoryPathIds },
+          force: forceDebug
+        });
+        fields = await collectFields(4000);
+        if (fields.length) {
+          setCachedCategoryFields(categoryId, fields);
+          logFields({ event: "success-fast-submit", count: fields.length, durationMs: Date.now() - requestStartedAt });
+          if (!res.headersSent) {
+            res.json({
+              fields,
+              debugId: debugEnabled ? requestId : undefined
+            });
+          }
+          return;
+        }
+      }
+      logFields({ event: "fast-submit-empty", durationMs: Date.now() - requestStartedAt });
+
+      const applyCategorySelection = async () => {
+        if (!categoryPathIds.length) return false;
+        const baseSelectionUrl = "https://www.kleinanzeigen.de/p-kategorie-aendern.html";
+        const requestedSelectionUrl = selectionUrl || baseSelectionUrl;
+        let usedSelectionUrl = "";
+        let selectionStatus = 0;
+        let selectionTitle = "";
+        let openedVia = "";
+
+        const isSelectionErrorPage = async () => {
+          const title = await page.title().catch(() => "");
+          if (/fehler|error/i.test(title)) return true;
+          try {
+            return await page.evaluate(() => {
+              const text = (document.body?.innerText || "").toLowerCase();
+              return text.includes("fehler [400]") || text.includes("fehler 400");
+            });
+          } catch (error) {
+            return false;
+          }
+        };
+
+        const waitForCategorySelectionContent = async (timeoutMs = 20000) => {
+          try {
+            await page.waitForFunction(() => {
+              const listItems = document.querySelectorAll(
+                ".category-selection-list-item-link, [id^='cat_'], [data-category-id], a[href*='path=']"
+              );
+              const tree = window.Belen?.PostAd?.CategorySelectView?.categoryTree
+                || window.Belen?.PostAd?.CategorySelectView?.model?.categoryTree
+                || window.Belen?.PostAd?.CategorySelectView?.options?.categoryTree
+                || window.categoryTree;
+              const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
+              return (listItems && listItems.length > 0) || Boolean(tree) || Boolean(form && listItems.length);
+            }, { timeout: timeoutMs });
+            return true;
+          } catch (error) {
+            return false;
+          }
+        };
+
+        const openSelectionPage = async (url) => {
+          const response = await page.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: Math.min(Math.max(PUPPETEER_NAV_TIMEOUT, 30000), 35000)
+          });
+          const status = response?.status?.() || 0;
+          const title = await page.title().catch(() => "");
+          const errorPage = status >= 400 || /fehler|error/i.test(title);
+          return { status, title, errorPage };
+        };
+
+        let navResult = { status: 0, title: "", errorPage: true };
+        openedVia = "direct";
+        usedSelectionUrl = requestedSelectionUrl;
+
+        try {
+          await page.waitForFunction(
+            () => document.readyState === "complete" || document.readyState === "interactive",
+            { timeout: 7000 }
+          ).catch(() => {});
+          await delay(250);
+          navResult = await openSelectionPage(requestedSelectionUrl);
+        } catch (error) {
+          navResult = { status: 0, title: "", errorPage: true };
+          dumpFieldsDebugMeta({
+            accountLabel: debugAccountLabel,
+            step: "fields-selection-open-direct-error",
+            error: error?.message || "direct-open-failed",
+            extra: { requestId, url: page.url(), categoryPathIds, selectionUrl: requestedSelectionUrl },
+            force: true
+          });
+        }
+
+        if (navResult?.errorPage && requestedSelectionUrl !== baseSelectionUrl) {
+          openedVia = "direct-base";
+          usedSelectionUrl = baseSelectionUrl;
+          try {
+            navResult = await openSelectionPage(baseSelectionUrl);
+          } catch (error) {
+            navResult = { status: 0, title: "", errorPage: true };
+            dumpFieldsDebugMeta({
+              accountLabel: debugAccountLabel,
+              step: "fields-selection-open-base-error",
+              error: error?.message || "base-open-failed",
+              extra: { requestId, url: page.url(), categoryPathIds, selectionUrl: baseSelectionUrl },
+              force: true
+            });
+          }
+        }
+
+        if (!navResult?.errorPage) {
+          await withTimeout(
+            acceptCookieModal(page, { timeout: 10000 }).catch(() => false),
+            13000,
+            "fields-selection-consent-timeout"
+          ).catch(() => false);
+          if (isGdprPage(page.url())) {
+            await withTimeout(
+              acceptGdprConsent(page, { timeout: 12000 }).catch(() => false),
+              16000,
+              "fields-selection-gdpr-timeout"
+            ).catch(() => false);
+          }
+        }
+
+        selectionStatus = navResult?.status || 0;
+        selectionTitle = navResult?.title || selectionTitle || "";
+
+        let selectionContentReady = false;
+        if (!navResult?.errorPage) {
+          selectionContentReady = await waitForCategorySelectionContent(30000);
+          if (!selectionContentReady) {
+            try {
+              await page.reload({
+                waitUntil: "domcontentloaded",
+                timeout: Math.min(Math.max(PUPPETEER_NAV_TIMEOUT, 22000), 28000)
+              });
+            } catch (error) {
+              // ignore reload errors
+            }
+            await withTimeout(
+              acceptCookieModal(page, { timeout: 8000 }).catch(() => false),
+              11000,
+              "fields-selection-reload-consent-timeout"
+            ).catch(() => false);
+            if (isGdprPage(page.url())) {
+              await withTimeout(
+                acceptGdprConsent(page, { timeout: 10000 }).catch(() => false),
+                14000,
+                "fields-selection-reload-gdpr-timeout"
+              ).catch(() => false);
+            }
+            selectionContentReady = await waitForCategorySelectionContent(20000);
+          }
+        }
+
+        await dumpFieldsDebug(page, {
+          accountLabel: account.email || `account-${accountId}`,
+          step: "fields-selection-page",
+          error: navResult?.errorPage ? "selection-page-error" : (selectionContentReady ? "" : "selection-content-missing"),
+          extra: {
+            url: page.url(),
+            categoryPathIds,
+            selectionUrl,
+            selectionUrlUsed: usedSelectionUrl,
+            selectionUrlStatus: selectionStatus,
+            selectionUrlTitle: selectionTitle,
+            selectionOpenMethod: openedVia,
+            selectionContentReady
+          },
+          force: forceDebug
+        });
+
+        if (navResult?.errorPage || !selectionContentReady) {
+          return false;
+        }
+
+        const ready = await waitForCategorySelectionReady(page, 20000);
+        let navigated = false;
+        let clickedPath = false;
+
+        if (ready) {
+          const treeResult = await applyCategoryPathViaTree(page, categoryPathIds);
+          await dumpFieldsDebug(page, {
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-selection-tree",
+            error: treeResult?.success ? "" : (treeResult?.reason || "tree-failed"),
+            extra: { url: page.url(), categoryPathIds, treeResult },
+            force: forceDebug
+          });
+          if (treeResult?.success) {
+            try {
+              await Promise.race([
+                page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).then(() => true).catch(() => false),
+                page.waitForFunction(
+                  () => window.location.href.includes("anzeige-aufgeben-schritt2"),
+                  { timeout: 20000 }
+                ).then(() => true).catch(() => false)
+              ]).then((result) => {
+                navigated = Boolean(result);
+              });
+            } catch (error) {
+              navigated = false;
+            }
+          }
+        }
+
+        if (!navigated && ready && page.url().includes("p-kategorie-aendern")) {
+          try {
+            clickedPath = await selectCategoryPathOnSelectionPage(
+              page,
+              categoryPathIds
+            );
+          } catch (error) {
+            clickedPath = false;
+          }
+          await dumpFieldsDebug(page, {
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-selection-clicked",
+            error: clickedPath ? "" : "click-path-failed",
+            extra: { url: page.url(), categoryPathIds, clickedPath },
+            force: forceDebug
+          });
+
+          if (clickedPath) {
+            await clickCategoryWeiter(page);
+            try {
+              await page.waitForFunction(
+                () => window.location.href.includes("anzeige-aufgeben-schritt2"),
+                { timeout: 20000 }
+              );
+              navigated = true;
+            } catch (error) {
+              navigated = false;
+            }
+          }
+        }
+
+        if (!navigated && ready && page.url().includes("p-kategorie-aendern")) {
+          let fallbackResult = null;
+          try {
+            fallbackResult = await withTimeout(page.evaluate((ids, fakeCategoryToken) => {
+              const sanitize = (value) => {
+                const raw = String(value || "").trim();
+                const match = raw.match(/\d+/);
+                return match ? match[0] : "";
+              };
+              const targetIds = ids.map(sanitize).filter(Boolean);
+              if (!targetIds.length) return { success: false, reason: "empty-path" };
+              const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
+              if (!form) return { success: false, reason: "form-missing" };
+              const escapeName = (name) => {
+                if (window.CSS?.escape) return CSS.escape(name);
+                return name.replace(/([\\\"'\\[\\]#.:])/g, "\\\\$1");
+              };
+              const applyField = (name, value) => {
+                if (!name) return;
+                let field = form.querySelector(`[name="${escapeName(name)}"]`);
+                if (!field) {
+                  field = document.createElement("input");
+                  field.type = "hidden";
+                  field.name = name;
+                  form.appendChild(field);
+                }
+                field.value = String(value ?? "");
+              };
+              if (targetIds.length > 1) {
+                applyField("parentCategoryId", targetIds[0]);
+              }
+              applyField("categoryId", targetIds[targetIds.length - 1]);
+              if (fakeCategoryToken) {
+                applyField("l3FakeCategory", fakeCategoryToken);
+                const fakeById = document.querySelector("#l3FakeCategory");
+                if (fakeById) {
+                  fakeById.value = String(fakeCategoryToken);
+                  fakeById.dispatchEvent(new Event("input", { bubbles: true }));
+                  fakeById.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+              }
+              applyField("submitted", "true");
+              form.submit();
+              return { success: true, submitted: true, targetIds };
+            }, categoryPathIds, categoryPathFakeToken), 8000, "fields-selection-fallback-eval-timeout");
+          } catch (error) {
+            fallbackResult = { success: false, reason: error?.message || "fallback-error" };
+          }
+          await dumpFieldsDebug(page, {
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-selection-fallback",
+            error: fallbackResult?.success ? "" : (fallbackResult?.reason || "fallback-failed"),
+            extra: { url: page.url(), categoryPathIds, fallbackResult },
+            force: forceDebug
+          });
+          if (fallbackResult?.submitted) {
+            try {
+              await Promise.race([
+                page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 20000 }).then(() => true).catch(() => false),
+                page.waitForFunction(
+                  () => window.location.href.includes("anzeige-aufgeben-schritt2"),
+                  { timeout: 20000 }
+                ).then(() => true).catch(() => false)
+              ]).then((result) => {
+                navigated = Boolean(result);
+              });
+            } catch (error) {
+              navigated = false;
+            }
+          }
+        }
+
+        if (!page.url().includes("anzeige-aufgeben-schritt2")) {
+          try {
+            await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded", timeout: 20000 });
+          } catch (error) {
+            // ignore
+          }
+        }
+        return navigated;
+      };
+
+      let categoryApplied = false;
+      try {
+        logFields({ event: "selection-start", durationMs: Date.now() - requestStartedAt });
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: debugAccountLabel,
+            step: "fields-selection-start",
+            error: "",
+            extra: { requestId, url: page.url(), categoryPathIds, selectionUrl },
+            force: true
+          });
+        }
+        categoryApplied = await applyCategorySelection();
+      } catch (error) {
+        categoryApplied = false;
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: debugAccountLabel,
+            step: "fields-selection-error",
+            error: error?.message || "selection-error",
+            extra: { requestId, url: page.url(), categoryPathIds, selectionUrl },
+            force: true
+          });
+        }
+      }
+      logFields({ event: "selection-end", success: Boolean(categoryApplied), durationMs: Date.now() - requestStartedAt });
+      if (forceDebug) {
+        dumpFieldsDebugMeta({
+          accountLabel: debugAccountLabel,
+          step: "fields-selection-end",
+          error: categoryApplied ? "" : "selection-not-applied",
+          extra: { requestId, url: page.url(), categoryPathIds, selectionUrl, categoryApplied },
+          force: true
+        });
+      }
+      await dumpFieldsDebug(page, {
+        accountLabel: account.email || `account-${accountId}`,
+        step: "fields-category-applied",
+        error: categoryApplied ? "" : "category-not-applied",
+        extra: { url: page.url(), categoryId, categoryPathIds, selectionUrl },
+        force: forceDebug
+      });
+
+      if (!categoryApplied) {
+        await injectCategoryId();
+      }
+
+      if (!page.url().includes("anzeige-aufgeben-schritt2")) {
+        try {
+          await page.goto("https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html", { waitUntil: "domcontentloaded", timeout: 20000 });
+        } catch (error) {
+          // ignore
+        }
+      }
+
+      fields = await collectFields(8000);
+      await dumpFieldsDebug(page, {
+        accountLabel: account.email || `account-${accountId}`,
+        step: "fields-parsed",
+        error: fields.length ? "" : "no-fields",
+        extra: { url: page.url(), categoryId, fieldCount: fields.length },
+        force: forceDebug
+      });
+      setCachedCategoryFields(categoryId, fields);
+      if (!res.headersSent) {
+        logFields({ event: "success", count: fields.length, durationMs: Date.now() - requestStartedAt });
+        res.json({
+          fields,
+          debugId: debugEnabled ? requestId : undefined
+        });
+      }
+    } catch (flowError) {
+      if (page) {
+        await dumpFieldsDebug(page, {
+          accountLabel: debugAccountLabel,
+          step: "fields-flow-exception",
+          error: flowError?.message || "unknown-flow-error",
+          extra: {
+            requestId,
+            accountId,
+            categoryId,
+            url: page.url(),
+            stack: flowError?.stack || ""
+          },
+          force: true
+        }).catch(() => {});
+      }
+      throw flowError;
+    } finally {
+      debugPage = null;
+      await browser.close();
+      if (anonymizedProxyUrl) {
+        await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+      }
+      if (profileDir) {
+        fs.rmSync(profileDir, { recursive: true, force: true });
+      }
+    }
+  } catch (error) {
+    if (debugPage) {
+      await dumpFieldsDebug(debugPage, {
+        accountLabel: debugAccountLabel,
+        step: "fields-exception-artifact",
+        error: error?.message || "unknown-error",
+        extra: { requestId, stack: error?.stack || "" },
+        force: true
+      }).catch(() => {});
+    }
+    if (!res.headersSent) {
+      if (typeof logFields === "function") {
+        logFields({ event: "error", error: error?.message || String(error) });
+      }
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        debugId: debugEnabled ? requestId : undefined
+      });
+    }
+  }
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+    service: "kleinanzeigen-backend",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    version: "1.0.0"
+  });
+});
+
+app.get("/api/stats", (req, res) => {
+  const ownerContext = getOwnerContext(req);
+  const accounts = filterByOwner(listAccounts(), ownerContext);
+  const activeAccounts = accounts.filter((account) => account.status === "active").length;
+  const checkingAccounts = accounts.filter((account) => account.status === "checking").length;
+  const failedAccounts = accounts.filter((account) => account.status === "invalid").length;
+  const scopedProxies = filterByOwner(proxies, ownerContext);
+  const activeProxies = scopedProxies.filter((proxy) => proxy.status === "active").length;
+  const failedProxies = scopedProxies.filter((proxy) => proxy.status === "failed").length;
+
+  res.json({
+    accounts: {
+      total: activeAccounts + checkingAccounts + failedAccounts,
+      active: activeAccounts,
+      checking: checkingAccounts,
+      failed: failedAccounts
+    },
+    proxies: {
+      total: scopedProxies.length,
+      active: activeProxies,
+      failed: failedProxies
+    },
+    messages: {
+      // Real message stats are computed by the frontend via `/api/messages` in the background.
+      // Keep `/api/stats` fast and avoid showing misleading placeholder numbers.
+      total: 0,
+      today: 0,
+      unread: 0
+    }
+  });
+});
+
+// Маршрут для загрузки куки (симуляция)
+app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) => {
+  try {
+    const ownerContext = getOwnerContext(req);
+    if (!req.file) {
+      res.status(400).json({ success: false, error: "Ожидается файл с куками" });
+      return;
+    }
+
+    const rawCookieText = req.file.buffer.toString("utf8");
+    const proxyId = req.body?.proxyId !== undefined && req.body?.proxyId !== null
+      ? String(req.body.proxyId).trim()
+      : "";
+    const deviceProfile = pickDeviceProfile();
+    const selectedProxy = proxyId ? findProxyById(proxyId) : null;
+
+    if (!proxyId) {
+      res.status(400).json({ success: false, error: "Для добавления аккаунта нужен прокси." });
+      return;
+    }
+
+    if (proxyId && !selectedProxy) {
+      res.status(400).json({ success: false, error: "Выбранный прокси не найден" });
+      return;
+    }
+    if (proxyId && selectedProxy && !isOwnerMatch(selectedProxy, ownerContext)) {
+      res.status(403).json({ success: false, error: "Нет доступа к выбранному прокси" });
+      return;
+    }
+
+    let validation = await validateCookies(rawCookieText, {
+      deviceProfile,
+      proxy: selectedProxy
+    });
+
+    if (!validation.valid) {
+      res.status(400).json({
+        success: false,
+        error: validation.reason || "Куки невалидны"
+      });
+      return;
+    }
+
+    const newAccount = {
+      username: `klein_${Date.now().toString().slice(-6)}`,
+      profileName: validation.profileName || "",
+      profileEmail: validation.profileEmail || "",
+      status: "active",
+      added: new Date().toISOString().slice(0, 10),
+      proxyId: selectedProxy.id,
+      cookie: rawCookieText,
+      deviceProfile: JSON.stringify(validation.deviceProfile),
+      lastCheck: new Date().toISOString(),
+      error: null,
+      ownerId: ownerContext.ownerId || ""
+    };
+
+    const accountId = insertAccount(newAccount);
+
+    res.json({
+      success: true,
+      message: "Куки валидны, аккаунт сохранен",
+      account: {
+        id: accountId,
+        username: newAccount.username,
+        profileName: newAccount.profileName,
+        profileEmail: newAccount.profileEmail,
+        status: newAccount.status,
+        added: newAccount.added,
+        proxyId: selectedProxy.id,
+        proxy: getProxyLabel(selectedProxy.id, ownerContext),
+        lastCheck: newAccount.lastCheck
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Маршрут для создания объявления (синхронизация с Kleinanzeigen)
+app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  if (req.socket) {
+    req.socket.setTimeout(0);
+  }
+  const uploadedFiles = req.files || [];
+  const cleanupFiles = () => {
+    uploadedFiles.forEach((file) => {
+      fs.unlink(file.path, () => {});
+    });
+  };
+
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const forceDebug = DEBUG_FEATURES_ENABLED && (
+    req.query.debug === "true"
+    || req.query.debug === "1"
+    || req.body?.debug === true
+    || req.body?.debug === 1
+    || req.body?.debug === "true"
+    || req.body?.debug === "1"
+  );
+  let activePublishKey = null;
+  let safetyAccountId = null;
+  const releasePublishLock = () => {
+    if (!activePublishKey) return;
+    const lock = activePublishByAccount.get(activePublishKey);
+    if (lock?.requestId === requestId) {
+      activePublishByAccount.delete(activePublishKey);
+    }
+    activePublishKey = null;
+  };
+  appendServerLog(getPublishRequestLogPath(), {
+    event: "start",
+    requestId,
+    ip: req.ip,
+    files: uploadedFiles.length,
+    debug: Boolean(forceDebug)
+  });
+  req.on("aborted", () => {
+    appendServerLog(getPublishRequestLogPath(), {
+      event: "aborted",
+      requestId
+    });
+  });
+  res.on("close", () => {
+    appendServerLog(getPublishRequestLogPath(), {
+      event: "close",
+      requestId,
+      headersSent: res.headersSent,
+      statusCode: res.statusCode,
+      writableEnded: res.writableEnded
+    });
+  });
+
+  try {
+    const {
+      accountId,
+      title,
+      description,
+      price,
+      currency,
+      postalCode,
+      categoryId,
+      categoryUrl,
+      categoryPath,
+      extraFields
+    } = req.body || {};
+    if (DEBUG_PUBLISH) {
+      console.log("[ads/create] payload", {
+        accountId,
+        titleLength: title ? String(title).length : 0,
+        descriptionLength: description ? String(description).length : 0,
+        price,
+        postalCode,
+        categoryId,
+        categoryUrl,
+        categoryPath: categoryPath ? String(categoryPath).slice(0, 120) : "",
+        images: uploadedFiles.length
+      });
+    }
+    appendServerLog(getPublishRequestLogPath(), {
+      event: "payload",
+      requestId,
+      accountId,
+      titleLength: title ? String(title).length : 0,
+      descriptionLength: description ? String(description).length : 0,
+      price,
+      postalCode,
+      categoryId,
+      categoryUrl,
+      categoryPath: categoryPath ? String(categoryPath).slice(0, 120) : "",
+      images: uploadedFiles.length,
+      debug: Boolean(forceDebug)
+    });
+
+    if (!accountId) {
+      res.status(400).json({
+        success: false,
+        error: "Выберите аккаунт",
+        debugId: forceDebug ? requestId : undefined
+      });
+      appendServerLog(getPublishRequestLogPath(), { event: "error", requestId, error: "missing-account" });
+      cleanupFiles();
+      return;
+    }
+
+    if (!title || !description || !price) {
+      res.status(400).json({
+        success: false,
+        error: "Заполните обязательные поля объявления",
+        debugId: forceDebug ? requestId : undefined
+      });
+      appendServerLog(getPublishRequestLogPath(), { event: "error", requestId, error: "missing-required" });
+      cleanupFiles();
+      return;
+    }
+
+    const account = getAccountForRequest(Number(accountId), req, res);
+    if (!account) {
+      appendServerLog(getPublishRequestLogPath(), { event: "error", requestId, error: "account-not-found" });
+      cleanupFiles();
+      return;
+    }
+    safetyAccountId = account.id;
+
+    const selectedProxy = requireAccountProxy(account, res, "публикации объявления", getOwnerContext(req));
+    if (!selectedProxy) {
+      appendServerLog(getPublishRequestLogPath(), { event: "error", requestId, error: "proxy-required" });
+      cleanupFiles();
+      return;
+    }
+
+    const parsedCategoryPath = categoryPath ? (() => {
+      try {
+        return JSON.parse(categoryPath);
+      } catch (error) {
+        return categoryPath;
+      }
+    })() : undefined;
+
+    const parsedExtraFields = extraFields ? (() => {
+      try {
+        return JSON.parse(extraFields);
+      } catch (error) {
+        return extraFields;
+      }
+    })() : undefined;
+
+    cleanupRecentSuccessfulPublishes();
+    const fingerprint = buildPublishRequestFingerprint({
+      accountId: account.id,
+      title,
+      description,
+      price,
+      currency,
+      postalCode,
+      categoryId,
+      categoryUrl,
+      categoryPath: parsedCategoryPath,
+      extraFields: parsedExtraFields,
+      uploadedFiles
+    });
+
+    const recentSuccess = recentSuccessfulPublishes.get(fingerprint);
+    if (recentSuccess) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "deduplicated-success",
+        requestId,
+        previousRequestId: recentSuccess.requestId,
+        accountId: account.id
+      });
+      cleanupFiles();
+      res.json({
+        success: true,
+        deduplicated: true,
+        message: "Идентичный запрос уже был успешно выполнен. Повторная публикация пропущена.",
+        debugId: forceDebug ? requestId : undefined
+      });
+      return;
+    }
+
+    activePublishKey = String(account.id);
+    const activePublish = activePublishByAccount.get(activePublishKey);
+    if (activePublish) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "rejected-active-publish",
+        requestId,
+        activeRequestId: activePublish.requestId,
+        accountId: account.id
+      });
+      cleanupFiles();
+      res.status(409).json({
+        success: false,
+        inProgress: true,
+        error: "Для этого аккаунта уже выполняется публикация. Дождитесь завершения текущей попытки.",
+        activeRequestId: activePublish.requestId,
+        debugId: forceDebug ? requestId : undefined
+      });
+      return;
+    }
+
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId: account.id,
+      actionKey: "ads-create",
+      proxyId: account?.proxyId
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "account-safety-reject",
+        requestId,
+        accountId: account.id,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      cleanupFiles();
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId: forceDebug ? requestId : "",
+        requestId
+      });
+      return;
+    }
+
+    activePublishByAccount.set(activePublishKey, {
+      requestId,
+      startedAt: Date.now(),
+      fingerprint
+    });
+
+    const result = await publishAd({
+      account,
+      proxy: selectedProxy,
+      ad: {
+        title,
+        description,
+        price,
+        currency,
+        postalCode,
+        categoryId,
+        categoryUrl,
+        categoryPath: parsedCategoryPath,
+        extraFields: parsedExtraFields
+      },
+      imagePaths: uploadedFiles.map((file) => file.path),
+      debug: Boolean(forceDebug)
+    }).finally(() => {
+      releasePublishLock();
+    });
+    appendServerLog(getPublishRequestLogPath(), { event: "publish-result", requestId, success: result?.success, error: result?.error || "" });
+    const cooldown = result?.success
+      ? null
+      : applyAccountRiskCooldown({
+          accountId: account.id,
+          route: "ads-create",
+          error: {
+            code: result?.code || "",
+            message: result?.error || "",
+            details: result?.details || ""
+          },
+          logPath: getPublishRequestLogPath(),
+          debugId: requestId,
+          requestId
+        });
+
+    if (result.success) {
+      accountCooldownByAccount.delete(toAccountSafetyKey(account.id));
+      recentSuccessfulPublishes.set(fingerprint, {
+        requestId,
+        accountId: account.id,
+        finishedAt: Date.now()
+      });
+      upsertAd({
+        accountId: account.id,
+        title,
+        price,
+        image: "",
+        status: "Aktiv",
+        createdAt: new Date().toISOString(),
+        ownerId: getOwnerContext(req).ownerId || ""
+      });
+    }
+
+    cleanupFiles();
+    res.json(withCooldownHint({
+      ...result,
+      debugId: forceDebug ? requestId : undefined
+    }, cooldown));
+    appendServerLog(getPublishRequestLogPath(), { event: "response-sent", requestId, success: result?.success });
+  } catch (error) {
+    releasePublishLock();
+    cleanupFiles();
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "ads-create",
+      error,
+      logPath: getPublishRequestLogPath(),
+      debugId: requestId,
+      requestId
+    });
+    res.status(500).json(withCooldownHint({
+      success: false,
+      error: error.message,
+      debugId: forceDebug ? requestId : undefined
+    }, cooldown));
+    appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
+  }
+});
+
+app.post("/api/proxies", async (req, res) => {
+  try {
+    const ownerContext = getOwnerContext(req);
+    const { name, type, host, port, username, password } = req.body || {};
+
+    if (!name || !host || !port || !type) {
+      res.status(400).json({ success: false, error: "Заполните обязательные поля" });
+      return;
+    }
+
+    const proxyConfig = {
+      type,
+      host,
+      port: Number(port),
+      username: username || undefined,
+      password: password || undefined
+    };
+
+    const checkResult = await proxyChecker.checkProxy(proxyConfig);
+    if (!checkResult.success) {
+      res.json({ success: false, error: checkResult.error, checkResult });
+      return;
+    }
+
+    const newProxy = {
+      id: Date.now(),
+      name,
+      ...proxyConfig,
+      ownerId: ownerContext.ownerId || "",
+      status: "active",
+      lastChecked: new Date().toISOString(),
+      checkResult
+    };
+
+    proxies.unshift(newProxy);
+    saveProxies();
+
+    res.json({
+      success: true,
+      proxy: newProxy,
+      checkResult
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post("/api/proxies/:id/check", async (req, res) => {
+  const proxyId = String(req.params.id || "").trim();
+  const proxy = findProxyById(proxyId);
+
+  if (!proxy) {
+    res.status(404).json({ success: false, error: "Прокси не найден" });
+    return;
+  }
+  const ownerContext = getOwnerContext(req);
+  if (!isOwnerMatch(proxy, ownerContext)) {
+    res.status(404).json({ success: false, error: "Прокси не найден" });
+    return;
+  }
+
+  try {
+    const checkResult = await proxyChecker.checkProxy(proxy);
+    const status = checkResult.success ? "active" : "failed";
+
+    proxy.status = status;
+    proxy.lastChecked = new Date().toISOString();
+    proxy.checkResult = checkResult;
+    saveProxies();
+
+    res.json({
+      ...checkResult,
+      proxyId: proxy.id
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+app.post("/api/proxies/check-all", async (req, res) => {
+  try {
+    const ownerContext = getOwnerContext(req);
+    const scopedProxies = filterByOwner(proxies, ownerContext);
+    const results = await proxyChecker.checkMultipleProxies(scopedProxies);
+
+    results.forEach((result) => {
+      const proxy = findProxyById(result.proxyId);
+      if (proxy) {
+        proxy.status = result.success ? "active" : "failed";
+        proxy.lastChecked = new Date().toISOString();
+        proxy.checkResult = result;
+      }
+    });
+    saveProxies();
+
+    res.json({ success: true, results });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete("/api/accounts/:id", (req, res) => {
+  try {
+    const accountId = Number(req.params.id);
+    const ownerContext = getOwnerContext(req);
+    const account = getAccountById(accountId);
+    if (!account || !isOwnerMatch(account, ownerContext)) {
+      res.status(404).json({ success: false, error: "Аккаунт не найден" });
+      return;
+    }
+    const deleted = deleteAccount(accountId);
+    if (!deleted) {
+      res.status(404).json({ success: false, error: "Аккаунт не найден" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || "Ошибка при удалении аккаунта" });
+  }
+});
+
+app.delete("/api/proxies/:id", (req, res) => {
+  const proxyId = String(req.params.id || "").trim();
+  const index = findProxyIndexById(proxyId);
+
+  if (index === -1) {
+    res.status(404).json({ success: false, error: "Прокси не найден" });
+    return;
+  }
+  const ownerContext = getOwnerContext(req);
+  if (!isOwnerMatch(proxies[index], ownerContext)) {
+    res.status(404).json({ success: false, error: "Прокси не найден" });
+    return;
+  }
+
+  proxies.splice(index, 1);
+  saveProxies();
+  res.json({ success: true });
+});
+
+// Запуск сервера
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Backend запущен на порту ${PORT}`);
+  console.log(`🌍 Откройте http://localhost:${PORT}`);
+  console.log(`📡 Health check: http://localhost:${PORT}/health`);
+  console.log(`👥 Аккаунты: http://localhost:${PORT}/api/accounts`);
+  console.log(`🔗 Прокси: http://localhost:${PORT}/api/proxies`);
+});
+server.requestTimeout = 0;
+server.headersTimeout = 0;
+server.keepAliveTimeout = 0;
