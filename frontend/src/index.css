@@ -109,6 +109,7 @@ html {
   overflow-x: hidden;
   overflow-x: clip;
   color-scheme: dark;
+  touch-action: pan-y;
 }
 
 body {
@@ -127,6 +128,7 @@ body {
   width: auto;
   min-width: 100%;
   overscroll-behavior-x: none;
+  touch-action: pan-y;
 }
 
 #root,
@@ -1187,6 +1189,7 @@ tr:hover td {
   overflow-x: hidden !important;
   overflow-x: clip !important;
   overscroll-behavior-x: none;
+  touch-action: pan-y !important;
 }
 
 .app-root.phone-view .app-header,
