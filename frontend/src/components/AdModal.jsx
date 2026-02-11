@@ -219,7 +219,11 @@ const AdModal = ({
   const resolveCategorySelection = (path) => {
     const breadcrumb = getBreadcrumbForPath(path);
     const selectedNode = breadcrumb.length ? breadcrumb[breadcrumb.length - 1] : null;
-    return { selectedNode };
+    const numericNode = [...breadcrumb].reverse().find((node) => /^\d+$/.test(String(node?.id || "")));
+    return {
+      selectedNode,
+      numericNode: numericNode || selectedNode
+    };
   };
 
   useEffect(() => {
@@ -437,13 +441,11 @@ const AdModal = ({
       setCategoryPath(nextPath);
 
       // Обновляем выбранную категорию
-      const { selectedNode } = resolveCategorySelection(nextPath);
-      const selectedChildren = Array.isArray(selectedNode?.children) ? selectedNode.children : [];
-      const selectedHasChildren = filterCategoryChildren(selectedChildren, selectedNode).length > 0;
+      const { selectedNode, numericNode } = resolveCategorySelection(nextPath);
       setNewAd((prev) => ({
         ...prev,
-        categoryId: selectedNode?.id && !selectedHasChildren ? String(selectedNode.id) : "",
-        categoryUrl: selectedNode?.url || "",
+        categoryId: numericNode?.id ? String(numericNode.id) : "",
+        categoryUrl: selectedNode?.url || numericNode?.url || "",
         categoryKey: nextPath.join(">"),
         categoryPath: [...nextPath]
       }));
@@ -468,7 +470,7 @@ const AdModal = ({
     }
 
     // Обновляем выбранную категорию в форме только если она конечная
-    const { selectedNode } = resolveCategorySelection(newPath);
+    const { selectedNode, numericNode } = resolveCategorySelection(newPath);
     const selectedChildren = Array.isArray(selectedNode?.children) ? selectedNode.children : [];
     const fetchedChildren = Array.isArray(childrenResult) ? childrenResult : null;
     const hasFetchedChildren = fetchedChildren
@@ -485,8 +487,8 @@ const AdModal = ({
     setNewAd((prev) => {
       const next = { ...prev };
       if (isLeaf) {
-        next.categoryId = selectedNode?.id ? String(selectedNode.id) : "";
-        next.categoryUrl = selectedNode?.url || "";
+        next.categoryId = numericNode?.id ? String(numericNode.id) : "";
+        next.categoryUrl = selectedNode?.url || numericNode?.url || "";
       } else {
         next.categoryId = "";
         next.categoryUrl = "";

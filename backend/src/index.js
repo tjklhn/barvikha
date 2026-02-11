@@ -4943,22 +4943,16 @@ app.get("/api/ads/fields", async (req, res) => {
     const categoryPathIdsNumericFromRequest = categoryPathIdsFromRequest
       .map(extractNumericId)
       .filter(Boolean);
-    const lastCategoryPathToken = categoryPathIdsFromRequest.length
+    const lastNumericPathToken = categoryPathIdsNumericFromRequest.length
+      ? String(categoryPathIdsNumericFromRequest[categoryPathIdsNumericFromRequest.length - 1] || "")
+      : "";
+    const lastPathToken = categoryPathIdsFromRequest.length
       ? String(categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] || "")
       : "";
-    const resolvedCategoryId = (() => {
-      if (categoryIdParam) {
-        const categoryIdIsNumeric = /^\d+$/.test(categoryIdParam);
-        const lastPathIsNumeric = /^\d+$/.test(lastCategoryPathToken);
-        if (categoryIdIsNumeric && lastCategoryPathToken && !lastPathIsNumeric) {
-          // Some clients still send L2 numeric categoryId while L3 slug is in categoryPath.
-          // Prefer the explicit leaf token from categoryPath to avoid falling back to parent fields.
-          return lastCategoryPathToken;
-        }
-        return categoryIdParam;
-      }
-      return lastCategoryPathToken || extractCategoryIdFromUrl(categoryUrl);
-    })();
+    const resolvedCategoryId = categoryIdParam
+      || lastNumericPathToken
+      || lastPathToken
+      || extractCategoryIdFromUrl(categoryUrl);
     const forceRefresh = req.query.refresh === "true";
     const allowStaleCache = req.query.allowStale !== "0";
     const allowLiveFetch = req.query.live === "1" || forceRefresh || DEFAULT_FIELDS_LIVE_FETCH;
@@ -5310,8 +5304,11 @@ app.get("/api/ads/fields", async (req, res) => {
             if (!pathTokens.length && fallbackToken) pathTokens.push(fallbackToken);
             if (!pathTokens.length) return false;
             const numericIds = pathTokens.map(extractNumeric).filter(Boolean);
-            const finalCategoryToken = pathTokens[pathTokens.length - 1] || fallbackToken;
-            if (!finalCategoryToken) return false;
+            const finalCategoryNumeric = numericIds.length
+              ? numericIds[numericIds.length - 1]
+              : extractNumeric(fallbackToken);
+            const finalCategoryValue = finalCategoryNumeric || fallbackToken;
+            if (!finalCategoryValue) return false;
 
             const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
             if (!form) return false;
@@ -5330,7 +5327,7 @@ app.get("/api/ads/fields", async (req, res) => {
             if (numericIds.length > 1) {
               applyField("parentCategoryId", numericIds[0]);
             }
-            applyField("categoryId", finalCategoryToken);
+            applyField("categoryId", finalCategoryValue);
             applyField("submitted", "true");
             form.submit();
             return true;

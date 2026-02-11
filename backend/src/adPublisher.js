@@ -5827,21 +5827,10 @@ const publishAd = async ({ account, proxy, ad, imagePaths, debug }) => {
 
       const categoryPathFromAd = normalizeCategoryPathIds(ad?.categoryPath);
       const categoryPathNumeric = categoryPathFromAd.filter((item) => /^\d+$/.test(String(item)));
-      const categoryIdFromInput = extractCategoryTokenFromPathItem(ad.categoryId);
-      const lastCategoryPathToken = categoryPathFromAd.length
-        ? String(categoryPathFromAd[categoryPathFromAd.length - 1] || "")
-        : "";
-      const resolvedCategoryId = (() => {
-        if (categoryIdFromInput) {
-          const categoryIdIsNumeric = /^\d+$/.test(String(categoryIdFromInput));
-          const lastPathIsNumeric = /^\d+$/.test(lastCategoryPathToken);
-          if (categoryIdIsNumeric && lastCategoryPathToken && !lastPathIsNumeric) {
-            return lastCategoryPathToken;
-          }
-          return categoryIdFromInput;
-        }
-        return lastCategoryPathToken || extractCategoryIdFromUrl(ad.categoryUrl);
-      })();
+      const categoryIdFromInput = normalizeCategoryId(extractCategoryTokenFromPathItem(ad.categoryId));
+      const resolvedCategoryId = categoryIdFromInput ||
+        (categoryPathNumeric.length ? String(categoryPathNumeric[categoryPathNumeric.length - 1]) : "") ||
+        extractCategoryIdFromUrl(ad.categoryUrl);
       const categoryPathIds = categoryPathFromAd.length
         ? categoryPathFromAd
         : (resolveCategoryPathFromCache(resolvedCategoryId) || []);
