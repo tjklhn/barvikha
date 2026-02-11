@@ -7,6 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
+const ProxyAgent = require("proxy-agent");
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
@@ -3658,6 +3659,113 @@ app.get("/api/categories/children", async (req, res) => {
       walk(nodes);
       return best;
     };
+
+    const buildCategoryHttpConfig = (targetUrl) => {
+      const headers = {
+        "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9",
+        "User-Agent": deviceProfile?.userAgent || "Mozilla/5.0"
+      };
+      const cookieHeader = buildCookieHeaderForUrl(cookies, targetUrl);
+      if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+      }
+
+      const config = {
+        headers,
+        timeout: 15000,
+        maxRedirects: 5,
+        validateStatus: (status) => status >= 200 && status < 400
+      };
+
+      const rawProxyUrl = buildProxyUrl(selectedProxy);
+      if (rawProxyUrl) {
+        let agent = null;
+        if (typeof ProxyAgent === "function") {
+          try {
+            agent = new ProxyAgent(rawProxyUrl);
+          } catch (error) {
+            try {
+              agent = ProxyAgent(rawProxyUrl);
+            } catch (innerError) {
+              agent = null;
+            }
+          }
+        } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
+          try {
+            agent = new ProxyAgent.ProxyAgent(rawProxyUrl);
+          } catch (error) {
+            agent = null;
+          }
+        }
+        if (agent) {
+          config.httpAgent = agent;
+          config.httpsAgent = agent;
+          config.proxy = false;
+        }
+      }
+      return config;
+    };
+
+    const tryResolveChildrenViaHttpTree = async () => {
+      const baseSelectionUrl = "https://www.kleinanzeigen.de/p-kategorie-aendern.html";
+      const categoryPath = await resolveCategoryPath().catch(() => []);
+      const numericPath = (Array.isArray(categoryPath) ? categoryPath : [])
+        .map((node) => String(node?.id || "").trim())
+        .filter((value) => /^\d+$/.test(value));
+      const candidates = [];
+      if (numericPath.length > 1) {
+        candidates.push(`${baseSelectionUrl}?path=${encodeURIComponent(numericPath.join("/"))}`);
+      }
+      if (url) {
+        candidates.push(String(url));
+      }
+      candidates.push(baseSelectionUrl);
+
+      const seen = new Set();
+      for (const requestUrl of candidates) {
+        const normalizedUrl = String(requestUrl || "").trim();
+        if (!normalizedUrl || seen.has(normalizedUrl)) continue;
+        seen.add(normalizedUrl);
+        try {
+          const config = buildCategoryHttpConfig(normalizedUrl);
+          const response = await axios.get(normalizedUrl, config);
+          const html = String(response?.data || "");
+          if (!html) continue;
+          const treeFromHtml = extractCategoryTreeFromHtml(html);
+          if (!treeFromHtml) continue;
+          const normalizedTree = normalizeCategoryTreeLocal(
+            Array.isArray(treeFromHtml) ? treeFromHtml : [treeFromHtml]
+          );
+          const targetNode = findNode(normalizedTree, id, url);
+          if (targetNode?.children?.length) {
+            return targetNode.children;
+          }
+        } catch (error) {
+          // Ignore and try next URL candidate.
+        }
+      }
+      return [];
+    };
+
+    if (!children.length) {
+      const httpTreeChildren = await tryResolveChildrenViaHttpTree().catch(() => []);
+      if (httpTreeChildren.length) {
+        children = httpTreeChildren;
+      }
+    }
+
+    if (children.length) {
+      const finalChildren = dedupeChildren(children);
+      if (cacheKey) {
+        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
+      }
+      if (DEBUG_CATEGORIES) {
+        const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
+        console.log(`[categories/children] response(http-tree) id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
+      }
+      res.json({ children: finalChildren });
+      return;
+    }
 
     let browser = null;
     const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

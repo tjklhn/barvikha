@@ -539,7 +539,7 @@ const AdModal = ({
       if (newAd?.accountId) params.set("accountId", newAd.accountId);
       try {
         const data = await apiFetchJson(`/api/categories/children?${params.toString()}`, {
-          timeoutMs: 30000,
+          timeoutMs: 90000,
           retry: true,
           allowBaseFallback: true
         });

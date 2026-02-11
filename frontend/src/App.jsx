@@ -598,10 +598,13 @@ function App() {
         };
 
         const hasCategoryPath = Array.isArray(newAd.categoryPath) && newAd.categoryPath.length > 0;
-        const isNetworkFetchError = (error) =>
-          /failed to fetch|network error|networkerror|load failed|timeout/i.test(
-            String(error?.message || "")
-          );
+        const shouldRetryWithoutCategoryPath = (error) => {
+          const message = String(error?.message || "").toLowerCase();
+          // Fallback without categoryPath only for proxy/gateway-style failures.
+          // For real backend timeouts we must keep categoryPath, otherwise fake-L3 categories degrade.
+          if (message.includes("timeout")) return false;
+          return /failed to fetch|network error|networkerror|load failed|connection reset/i.test(message);
+        };
 
         const requestFields = async ({ forceRefresh = false, live = false } = {}) => {
           try {
@@ -612,7 +615,7 @@ function App() {
           } catch (error) {
             // Some reverse proxies choke on JSON-like query params in GET.
             // Fallback to a lean query without categoryPath.
-            if (!hasCategoryPath || !isNetworkFetchError(error)) throw error;
+            if (!hasCategoryPath || !shouldRetryWithoutCategoryPath(error)) throw error;
             return apiFetchJson(
               buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: false, live }),
               requestOptions
