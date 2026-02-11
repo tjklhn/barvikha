@@ -16,6 +16,7 @@ const AdModal = ({
   setExtraFieldValues,
   loadingExtraFields,
   extraFieldsError,
+  extraFieldsDeferred,
   newAd,
   setNewAd,
   adImages,
@@ -1006,7 +1007,13 @@ const AdModal = ({
             </div>
           )}
 
-          {!loadingExtraFields && !extraFieldsError && (newAd.categoryId || newAd.categoryUrl) && (!extraFields || extraFields.length === 0) && (
+          {!loadingExtraFields && !extraFieldsError && extraFieldsDeferred && (
+            <div style={{ color: "#94a3b8", fontSize: "12px" }}>
+              Параметры категории будут определены на этапе публикации. Можно продолжить заполнение объявления.
+            </div>
+          )}
+
+          {!loadingExtraFields && !extraFieldsError && !extraFieldsDeferred && (newAd.categoryId || newAd.categoryUrl) && (!extraFields || extraFields.length === 0) && (
             <div style={{ color: "#94a3b8", fontSize: "12px" }}>
               Для выбранной категории нет дополнительных параметров.
             </div>

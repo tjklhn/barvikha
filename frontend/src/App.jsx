@@ -69,6 +69,7 @@ function App() {
   const [extraFieldValues, setExtraFieldValues] = useState({});
   const [loadingExtraFields, setLoadingExtraFields] = useState(false);
   const [extraFieldsError, setExtraFieldsError] = useState("");
+  const [extraFieldsDeferred, setExtraFieldsDeferred] = useState(false);
   const [categories, setCategories] = useState([]);
   const [categoriesUpdatedAt, setCategoriesUpdatedAt] = useState(null);
   const [loadingCategories, setLoadingCategories] = useState(false);
@@ -313,7 +314,9 @@ function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: tokenValue }),
-        timeoutMs: 90000
+        timeoutMs: 20000,
+        retry: true,
+        allowBaseFallback: true
       });
       if (response.valid) {
         setTokenStatus({
@@ -556,6 +559,7 @@ function App() {
       }));
       setExtraFields([]);
       setExtraFieldValues({});
+      setExtraFieldsDeferred(false);
       loadCategories(false);
     }
   }, [showAdModal]);
@@ -571,11 +575,13 @@ function App() {
         setExtraFields([]);
         setExtraFieldValues({});
         setExtraFieldsError("");
+        setExtraFieldsDeferred(false);
         return;
       }
 
       setLoadingExtraFields(true);
       setExtraFieldsError("");
+      setExtraFieldsDeferred(false);
       try {
         const buildFieldsRequestUrl = ({ forceRefresh = false, includeCategoryPath = true } = {}) => {
           const params = new URLSearchParams();
@@ -631,11 +637,15 @@ function App() {
           setExtraFields([]);
           setExtraFieldValues({});
           setExtraFieldsError(errorMessage);
+          setExtraFieldsDeferred(false);
           return;
         }
         let fields = Array.isArray(data?.fields) ? data.fields : [];
+        const deferred = Boolean(data?.deferred);
 
-        if (fields.length === 0) {
+        // Avoid aggressive live refresh for every empty response; it can overload backend scraping.
+        // Keep forced refresh only in explicit debug mode.
+        if (fields.length === 0 && debugFieldsEnabled) {
           try {
             const refreshed = await requestFields({ forceRefresh: true });
             if (!cancelled && refreshed?.success !== false) {
@@ -660,6 +670,7 @@ function App() {
 
         setExtraFields(fields);
         setExtraFieldsError("");
+        setExtraFieldsDeferred(deferred && fields.length === 0);
         const nextValues = {};
         fields.forEach((field) => {
           const key = field.name || field.label;
@@ -676,6 +687,7 @@ function App() {
         const debugId = error?.data?.debugId ? ` [debugId: ${error.data.debugId}]` : "";
         const errorMessage = (error?.message || "Ошибка загрузки параметров категории") + debugId;
         setExtraFieldsError(errorMessage);
+        setExtraFieldsDeferred(false);
       } finally {
         if (cancelled) return;
         setLoadingExtraFields(false);
@@ -777,6 +789,7 @@ function App() {
         setAdImages([]);
         setExtraFields([]);
         setExtraFieldValues({});
+        setExtraFieldsDeferred(false);
       } else {
         console.error("[handleCreateAd] Ошибка:", result?.error);
         alert("Ошибка: " + (result?.error || "Не удалось опубликовать объявление"));
@@ -2165,6 +2178,7 @@ function App() {
           setExtraFieldValues={setExtraFieldValues}
           loadingExtraFields={loadingExtraFields}
           extraFieldsError={extraFieldsError}
+          extraFieldsDeferred={extraFieldsDeferred}
           newAd={newAd}
           setNewAd={setNewAd}
           adImages={adImages}

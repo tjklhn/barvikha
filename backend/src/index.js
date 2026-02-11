@@ -67,6 +67,14 @@ const CATEGORY_CHILDREN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CATEGORY_CHILDREN_EMPTY_TTL_MS = 60 * 60 * 1000;
 const CATEGORY_FIELDS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CATEGORY_FIELDS_EMPTY_TTL_MS = 5 * 60 * 1000;
+const CATEGORY_CHILDREN_STALE_MAX_MS = Number(
+  process.env.KL_CATEGORY_CHILDREN_STALE_MAX_MS || (45 * 24 * 60 * 60 * 1000)
+);
+const CATEGORY_FIELDS_STALE_MAX_MS = Number(
+  process.env.KL_CATEGORY_FIELDS_STALE_MAX_MS || (45 * 24 * 60 * 60 * 1000)
+);
+const DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH = process.env.KL_CATEGORY_CHILDREN_LIVE_FETCH === "1";
+const DEFAULT_FIELDS_LIVE_FETCH = process.env.KL_FIELDS_LIVE_FETCH === "1";
 const categoryChildrenCache = { items: {} };
 let categoryChildrenCacheSaveTimer = null;
 const categoryFieldsCache = { items: {} };
@@ -669,17 +677,22 @@ const buildCategoryChildrenCacheKey = ({ id, url }) => {
   return "";
 };
 
-const getCachedCategoryChildrenEntry = (key) => {
+const getCachedCategoryChildrenEntry = (key, { allowStale = false } = {}) => {
   if (!key) return null;
   const entry = categoryChildrenCache.items[key];
   if (!entry) return null;
   const now = Date.now();
   if (entry.expiresAt && entry.expiresAt < now) {
+    const savedAt = Number(entry.savedAt || 0);
+    const isStaleUsable = allowStale && savedAt > 0 && (now - savedAt) <= CATEGORY_CHILDREN_STALE_MAX_MS;
+    if (isStaleUsable) {
+      return { ...entry, _stale: true };
+    }
     delete categoryChildrenCache.items[key];
     scheduleCategoryChildrenCacheSave();
     return null;
   }
-  return entry;
+  return { ...entry, _stale: false };
 };
 
 const setCachedCategoryChildren = (key, children, { empty = false } = {}) => {
@@ -697,18 +710,34 @@ const setCachedCategoryChildren = (key, children, { empty = false } = {}) => {
 loadCategoryChildrenCache();
 loadCategoryFieldsCache();
 
-const getCachedCategoryFields = (categoryId) => {
+const getCachedCategoryFieldsEntry = (categoryId, { allowStale = false } = {}) => {
   const key = String(categoryId || "");
   if (!key) return null;
   const entry = categoryFieldsCache.items[key];
   if (!entry) return null;
   const now = Date.now();
   if (entry.expiresAt && entry.expiresAt < now) {
+    const savedAt = Number(entry.savedAt || 0);
+    const isStaleUsable = allowStale && savedAt > 0 && (now - savedAt) <= CATEGORY_FIELDS_STALE_MAX_MS;
+    if (isStaleUsable) {
+      return {
+        fields: Array.isArray(entry.fields) ? entry.fields : [],
+        stale: true
+      };
+    }
     delete categoryFieldsCache.items[key];
     scheduleCategoryFieldsCacheSave();
     return null;
   }
-  return entry.fields || null;
+  return {
+    fields: Array.isArray(entry.fields) ? entry.fields : [],
+    stale: false
+  };
+};
+
+const getCachedCategoryFields = (categoryId, options = {}) => {
+  const entry = getCachedCategoryFieldsEntry(categoryId, options);
+  return entry ? entry.fields : null;
 };
 
 const setCachedCategoryFields = (categoryId, fields) => {
@@ -3307,6 +3336,8 @@ app.get("/api/categories/children", async (req, res) => {
     const url = req.query.url ? String(req.query.url) : "";
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
     const forceRefresh = req.query.refresh === "true";
+    const allowStaleCache = req.query.allowStale !== "0";
+    const allowLiveLookup = req.query.live === "1" || forceRefresh || DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH;
     const forceDebug = req.query.debug === "true" || req.query.debug === "1";
     const ownerContext = getOwnerContext(req);
     const requestAccount = accountId ? getAccountForRequest(accountId, req, res) : null;
@@ -3319,13 +3350,17 @@ app.get("/api/categories/children", async (req, res) => {
       : null;
     const cacheKey = buildCategoryChildrenCacheKey({ id, url });
     if (!forceRefresh && cacheKey) {
-      const cachedEntry = getCachedCategoryChildrenEntry(cacheKey);
+      const cachedEntry = getCachedCategoryChildrenEntry(cacheKey, { allowStale: allowStaleCache });
       if (cachedEntry) {
         if (process.env.KL_DEBUG_CATEGORIES === "1") {
           const sample = (cachedEntry.children || []).slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
           console.log(`[categories/children] cache hit key=${cacheKey} count=${cachedEntry.children?.length || 0} sample=${sample}`);
         }
-        res.json({ children: cachedEntry.children || [] });
+        res.json({
+          children: cachedEntry.children || [],
+          cached: true,
+          stale: Boolean(cachedEntry._stale)
+        });
         return;
       }
     }
@@ -3344,7 +3379,7 @@ app.get("/api/categories/children", async (req, res) => {
       });
     };
 
-    if (children.length || !accountId) {
+    if (children.length || !accountId || !allowLiveLookup) {
       const finalChildren = dedupeChildren(children);
       if (cacheKey) {
         setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
@@ -3353,7 +3388,10 @@ app.get("/api/categories/children", async (req, res) => {
         const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
         console.log(`[categories/children] response id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
       }
-      res.json({ children: finalChildren });
+      res.json({
+        children: finalChildren,
+        liveLookupSkipped: Boolean(accountId && !allowLiveLookup && !finalChildren.length)
+      });
       return;
     }
 
@@ -4883,8 +4921,10 @@ app.get("/api/ads/fields", async (req, res) => {
       || (categoryPathIdsFromRequest.length ? categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] : "")
       || extractCategoryIdFromUrl(categoryUrl);
     const forceRefresh = req.query.refresh === "true";
-    const forceDebug = true;
-    debugEnabled = true;
+    const allowStaleCache = req.query.allowStale !== "0";
+    const allowLiveFetch = req.query.live === "1" || forceRefresh || DEFAULT_FIELDS_LIVE_FETCH;
+    const forceDebug = req.query.debug === "true" || req.query.debug === "1";
+    debugEnabled = DEBUG_FIELDS || forceDebug;
     requestStartedAt = Date.now();
     logFields = (payload) => {
       if (!debugEnabled) return;
@@ -4938,9 +4978,9 @@ app.get("/api/ads/fields", async (req, res) => {
 
     const allowCachedEmpty = req.query.allowCachedEmpty === "1";
     if (!forceRefresh) {
-      const cached = getCachedCategoryFields(categoryId);
-      if (cached !== null) {
-        const cachedFields = Array.isArray(cached) ? cached : [];
+      const cachedEntry = getCachedCategoryFieldsEntry(categoryId, { allowStale: allowStaleCache });
+      if (cachedEntry !== null) {
+        const cachedFields = Array.isArray(cachedEntry?.fields) ? cachedEntry.fields : [];
         if (!cachedFields.length && !allowCachedEmpty) {
           logFields({ event: "cache-empty-bypass" });
         } else {
@@ -4948,11 +4988,22 @@ app.get("/api/ads/fields", async (req, res) => {
           res.json({
             fields: cachedFields,
             cached: true,
+            stale: Boolean(cachedEntry?.stale),
             debugId: debugEnabled ? requestId : undefined
           });
           return;
         }
       }
+    }
+
+    if (!allowLiveFetch) {
+      logFields({ event: "live-fetch-skipped" });
+      res.json({
+        fields: [],
+        deferred: true,
+        debugId: debugEnabled ? requestId : undefined
+      });
+      return;
     }
 
     const account = getAccountForRequest(accountId, req, res);
