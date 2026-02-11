@@ -6,7 +6,15 @@ const ProxyAgent = require("proxy-agent");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const proxyChain = require("proxy-chain");
-const { parseCookies, normalizeCookies, normalizeCookie, buildProxyServer, buildProxyUrl, buildPuppeteerProxyUrl } = require("./cookieUtils");
+const {
+  parseCookies,
+  normalizeCookies,
+  normalizeCookie,
+  buildCookieHeaderForUrl,
+  buildProxyServer,
+  buildProxyUrl,
+  buildPuppeteerProxyUrl
+} = require("./cookieUtils");
 const { pickDeviceProfile } = require("./cookieValidator");
 const { acceptCookieModal, acceptGdprConsent, isGdprPage } = require("./adPublisher");
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
@@ -32,7 +40,8 @@ const PROXY_TUNNEL_ERROR_CODE = "PROXY_TUNNEL_CONNECTION_FAILED";
 const MESSAGE_ACTION_ARTIFACTS_ENABLED = false;
 const MESSAGE_ACTION_ARTIFACTS_DIR = path.join(__dirname, "..", "data", "debug", "message-action-artifacts");
 const MESSAGE_ACTION_PLACEHOLDER_PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0uoAAAAASUVORK5CYII=",
+  // Valid 1x1 PNG placeholder (the previous base64 had a bad CRC and could not be opened by PNG decoders).
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
   "base64"
 );
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -69,6 +78,17 @@ const buildConversationUrl = (conversationId, conversationUrl) => {
 const normalizeMatch = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
 const normalizeErrorMessage = (error) => String(error?.message || error || "").trim();
 const normalizeErrorCode = (error) => String(error?.code || "").trim().toUpperCase();
+const normalizeEntityId = (value) => String(value ?? "").trim();
+const isSameEntityId = (left, right) => {
+  const leftId = normalizeEntityId(left);
+  const rightId = normalizeEntityId(right);
+  return Boolean(leftId && rightId && leftId === rightId);
+};
+const findProxyById = (proxyList, proxyId) => {
+  const list = Array.isArray(proxyList) ? proxyList : [];
+  if (!proxyId) return null;
+  return list.find((proxy) => isSameEntityId(proxy?.id, proxyId)) || null;
+};
 
 const matchesAnyPattern = (value, patterns = []) => {
   const source = String(value || "");
@@ -128,10 +148,59 @@ const buildActionTimeoutError = (context = "") => {
   return error;
 };
 
+let crc32Table = null;
+const getCrc32Table = () => {
+  if (crc32Table) return crc32Table;
+  crc32Table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) {
+      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    crc32Table[n] = c >>> 0;
+  }
+  return crc32Table;
+};
+
+const crc32Unsigned = (buffer) => {
+  if (!Buffer.isBuffer(buffer)) return 0;
+  const table = getCrc32Table();
+  let crc = 0xffffffff;
+  for (let i = 0; i < buffer.length; i += 1) {
+    crc = table[(crc ^ buffer[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+};
+
 const isValidPngBuffer = (buffer) => {
   if (!Buffer.isBuffer(buffer) || buffer.length < 24) return false;
   if (!buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return false;
-  return buffer.includes(PNG_IEND_MARKER);
+  if (!buffer.includes(PNG_IEND_MARKER)) return false;
+  // Validate PNG chunk layout and CRC to avoid keeping corrupted screenshots.
+  // This catches cases where browser writes truncated/broken PNG bytes.
+  let offset = PNG_SIGNATURE.length;
+  try {
+    while (offset + 12 <= buffer.length) {
+      const length = buffer.readUInt32BE(offset);
+      const typeStart = offset + 4;
+      const dataStart = offset + 8;
+      const dataEnd = dataStart + length;
+      const crcOffset = dataEnd;
+      if (dataEnd < dataStart || crcOffset + 4 > buffer.length) return false;
+      const storedCrc = buffer.readUInt32BE(crcOffset);
+      const crcSource = buffer.subarray(typeStart, dataEnd);
+      const actualCrc = crc32Unsigned(crcSource);
+      if (storedCrc !== actualCrc) return false;
+      const type = buffer.toString("ascii", typeStart, typeStart + 4);
+      offset = crcOffset + 4;
+      if (type === "IEND") {
+        return offset === buffer.length;
+      }
+    }
+  } catch (error) {
+    return false;
+  }
+  return false;
 };
 
 const normalizeImageUrl = (value, baseUrl = MESSAGE_LIST_URL) => {
@@ -598,24 +667,25 @@ const getUserIdFromCookies = (cookies) => {
   return payload?.preferred_username || payload?.uid || payload?.sub || "";
 };
 
+// Kleinanzeigen often stores an access JWT directly in the `access_token` cookie. When the token endpoint
+// (m-access-token.json) rejects cookies (401/403) but the cookie still contains a JWT, we can try using it
+// directly for messagebox API requests.
+const deriveMessageboxBearerFromCookies = (cookies) => {
+  const accessToken = (cookies || []).find((cookie) => cookie?.name === "access_token" && cookie?.value);
+  const raw = String(accessToken?.value || "").trim();
+  if (!raw) return "";
+  if (/^Bearer\\s+/i.test(raw)) return raw;
+  // Basic JWT-ish heuristic: three base64url segments separated by dots.
+  if (raw.split(".").length >= 3) return `Bearer ${raw}`;
+  return raw;
+};
+
 const getUserIdFromAccessToken = (token) => {
   const payload = decodeJwtPayload(extractJwtToken(token));
   return payload?.preferred_username || payload?.uid || payload?.sub || "";
 };
 
-const buildCookieHeader = (cookies) => {
-  const byName = new Map();
-  for (const cookie of cookies || []) {
-    if (!cookie?.name) continue;
-    if (cookie.value === undefined || cookie.value === null) continue;
-    const value = String(cookie.value);
-    if (!value) continue;
-    byName.set(cookie.name, value);
-  }
-  return Array.from(byName.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join("; ");
-};
+const buildCookieHeader = (cookies, targetUrl) => buildCookieHeaderForUrl(cookies, targetUrl);
 
 const buildAxiosConfig = ({ proxy, headers = {}, timeout = 20000 } = {}) => {
   const config = {
@@ -671,37 +741,52 @@ const ensureProxyCanReachKleinanzeigen = async (proxy, timeoutMs = 12000) => {
 };
 
 const fetchMessageboxAccessToken = async ({ cookies, proxy, deviceProfile, timeoutMs = 20000 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
+  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
+  const cookieHeader = buildCookieHeader(cookies, tokenUrl);
+  const derivedBearer = deriveMessageboxBearerFromCookies(cookies);
   if (!cookieHeader) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxKey: "", expiration: Date.now() + 10 * 60 * 1000 };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = "missing-cookie-header";
     throw error;
   }
 
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const response = await axios.get(
-    "https://www.kleinanzeigen.de/m-access-token.json",
+    tokenUrl,
     buildAxiosConfig({
       proxy,
       timeout: timeoutMs,
       headers: {
         Cookie: cookieHeader,
         "User-Agent": userAgent,
+        "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9,en;q=0.8",
         Accept: "application/json"
       }
     })
   );
 
   if (response.status === 401 || response.status === 403) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxKey: "", expiration: Date.now() + 10 * 60 * 1000 };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = `token-endpoint-status:${response.status}`;
     throw error;
   }
 
   const token = response.headers?.authorization || response.headers?.Authorization || "";
   if (!token) {
+    if (derivedBearer) {
+      return { token: derivedBearer, messageboxKey: "", expiration: Date.now() + 10 * 60 * 1000 };
+    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
+    error.details = `token-missing-authorization-header:status:${response.status}`;
     throw error;
   }
 
@@ -721,10 +806,10 @@ const fetchConversationListViaApi = async ({
   page = 0,
   size = 20
 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations`
     + `?page=${page}&size=${size}`;
+  const cookieHeader = buildCookieHeader(cookies, url);
 
   const response = await axios.get(
     url,
@@ -762,10 +847,10 @@ const fetchConversationDetailViaApi = async ({
   deviceProfile,
   timeoutMs = 20000
 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations/${encodeURIComponent(conversationId)}`
     + "?contentWarnings=true";
+  const cookieHeader = buildCookieHeader(cookies, url);
 
   const response = await axios.get(
     url,
@@ -804,9 +889,9 @@ const sendConversationMessageViaApi = async ({
   deviceProfile,
   text
 }) => {
-  const cookieHeader = buildCookieHeader(cookies);
   const userAgent = deviceProfile?.userAgent || MESSAGEBOX_USER_AGENT;
   const url = `${MESSAGEBOX_API_HOST}/messagebox/api/users/${encodeURIComponent(userId)}/conversations/${encodeURIComponent(conversationId)}`;
+  const cookieHeader = buildCookieHeader(cookies, url);
 
   const response = await axios.post(
     url,
@@ -1355,80 +1440,6 @@ const findFirstDeepHandleInContext = async (context, selectors, { requireVisible
   return elementHandle;
 };
 
-const findFirstDeepInteractiveHandleInContext = async (context, selectors) => {
-  if (!context || !Array.isArray(selectors) || !selectors.length) return null;
-  const resultHandle = await evaluateHandleInContext(context, (selectorList) => {
-    const normalize = (value) => String(value || "").trim();
-    const preparedSelectors = (Array.isArray(selectorList) ? selectorList : [])
-      .map((selector) => normalize(selector))
-      .filter(Boolean);
-    if (!preparedSelectors.length) return null;
-
-    const isInteractive = (node) => {
-      if (!node || !node.ownerDocument) return false;
-      const view = node.ownerDocument.defaultView || window;
-      const style = view.getComputedStyle(node);
-      if (!style) return false;
-      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-        return false;
-      }
-      const rect = node.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return false;
-      if (node.hasAttribute("disabled")) return false;
-      if (String(node.getAttribute("aria-disabled") || "").toLowerCase() === "true") return false;
-      if (String(node.getAttribute("aria-busy") || "").toLowerCase() === "true") return false;
-      return true;
-    };
-
-    const collectRoots = (startRoot) => {
-      const roots = [startRoot];
-      const queue = [startRoot];
-      const seen = new Set([startRoot]);
-      while (queue.length) {
-        const root = queue.shift();
-        let nodes = [];
-        try {
-          nodes = Array.from(root.querySelectorAll("*"));
-        } catch (error) {
-          nodes = [];
-        }
-        for (const node of nodes) {
-          const shadowRoot = node?.shadowRoot;
-          if (!shadowRoot || seen.has(shadowRoot)) continue;
-          seen.add(shadowRoot);
-          roots.push(shadowRoot);
-          queue.push(shadowRoot);
-        }
-      }
-      return roots;
-    };
-
-    const roots = collectRoots(document);
-    for (const selector of preparedSelectors) {
-      for (const root of roots) {
-        let nodes = [];
-        try {
-          nodes = Array.from(root.querySelectorAll(selector));
-        } catch (error) {
-          nodes = [];
-        }
-        for (const node of nodes) {
-          if (!isInteractive(node)) continue;
-          return node;
-        }
-      }
-    }
-    return null;
-  }, selectors);
-  if (!resultHandle) return null;
-  const elementHandle = typeof resultHandle.asElement === "function" ? resultHandle.asElement() : null;
-  if (!elementHandle) {
-    await resultHandle.dispose().catch(() => {});
-    return null;
-  }
-  return elementHandle;
-};
-
 const findFirstHandleInAnyContext = async (
   page,
   selectors,
@@ -1508,20 +1519,21 @@ const clickFirstInteractiveHandleInAnyContext = async (
           const clicked = await clickHandleHumanLike(page, handle);
           if (clicked) return true;
         }
-      }
 
-      // Some Kleinanzeigen UI variants render controls inside shadow roots.
-      // The fast querySelectorAll-based branch above doesn't see those.
-      const deepHandle = await findFirstDeepInteractiveHandleInContext(context, selectors).catch(() => null);
-      if (deepHandle) {
-        try {
-          if (randomChance(0.35)) {
-            await performHumanLikePageActivity(page, { intensity: "light" });
+        // Some messagebox controls can live inside open shadow roots; fall back to a deep query.
+        const deepHandle = await findFirstDeepHandleInContext(context, [selector], { requireVisible: true });
+        if (deepHandle) {
+          try {
+            if (await isInteractiveButtonHandle(deepHandle)) {
+              if (randomChance(0.35)) {
+                await performHumanLikePageActivity(page, { intensity: "light" });
+              }
+              const clicked = await clickHandleHumanLike(page, deepHandle);
+              if (clicked) return true;
+            }
+          } finally {
+            await deepHandle.dispose().catch(() => {});
           }
-          const clicked = await clickHandleHumanLike(page, deepHandle);
-          if (clicked) return true;
-        } finally {
-          await deepHandle.dispose().catch(() => {});
         }
       }
     }
@@ -1952,9 +1964,12 @@ const hasVisibleDialogInAnyContext = async (page, { mainFrameOnly = false } = {}
 
 const dismissConversationBlockingModals = async (
   page,
-  { maxPasses = 6, mainFrameOnly = false } = {}
+  { maxPasses = 6, mainFrameOnly = false, skipIfTextIncludes = [] } = {}
 ) => {
   if (!page) return false;
+  const skipNeedles = (Array.isArray(skipIfTextIncludes) ? skipIfTextIncludes : [])
+    .map((value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase())
+    .filter(Boolean);
   const continueLabels = [
     "Weiter",
     "Fortfahren",
@@ -1982,6 +1997,125 @@ const dismissConversationBlockingModals = async (
 
   for (let pass = 0; pass < maxPasses; pass += 1) {
     let acted = false;
+    const hasDialogAtPassStart = await hasVisibleDialogInAnyContext(page, { mainFrameOnly }).catch(() => false);
+    if (!hasDialogAtPassStart) break;
+
+    if (skipNeedles.length) {
+      const shouldSkip = await (async () => {
+        const contexts = getPageContexts(page, { mainFrameOnly });
+        for (const context of contexts) {
+          const found = await evaluateInContext(context, (rawNeedles) => {
+            const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+            const needles = (Array.isArray(rawNeedles) ? rawNeedles : [])
+              .map((value) => normalize(value))
+              .filter(Boolean);
+            if (!needles.length) return false;
+
+            const getComposedParent = (node) => {
+              if (!node) return null;
+              if (node.parentElement) return node.parentElement;
+              const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+              return root && root.host ? root.host : null;
+            };
+            const isInsideNode = (node, container) => {
+              let current = node;
+              while (current) {
+                if (current === container) return true;
+                current = getComposedParent(current);
+              }
+              return false;
+            };
+            const isVisible = (node) => {
+              if (!node) return false;
+              const style = window.getComputedStyle(node);
+              if (!style) return false;
+              if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+                return false;
+              }
+              const rect = node.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            };
+            const isEnabled = (node) => {
+              if (!node) return false;
+              if (node.hasAttribute("disabled")) return false;
+              if (String(node.getAttribute("aria-disabled") || "").toLowerCase() === "true") return false;
+              if (String(node.getAttribute("aria-busy") || "").toLowerCase() === "true") return false;
+              return true;
+            };
+            const collectRoots = (startRoot) => {
+              const roots = [startRoot];
+              const queue = [startRoot];
+              const seen = new Set([startRoot]);
+              while (queue.length) {
+                const root = queue.shift();
+                let nodes = [];
+                try {
+                  nodes = Array.from(root.querySelectorAll("*"));
+                } catch (error) {
+                  nodes = [];
+                }
+                for (const node of nodes) {
+                  const shadowRoot = node?.shadowRoot;
+                  if (!shadowRoot || seen.has(shadowRoot)) continue;
+                  seen.add(shadowRoot);
+                  roots.push(shadowRoot);
+                  queue.push(shadowRoot);
+                }
+              }
+              return roots;
+            };
+
+            const dialogSelectors = [
+              "[role='dialog']",
+              "[aria-modal='true']",
+              "[data-testid*='modal']",
+              "[data-testid*='dialog']",
+              "[class*='Modal']",
+              "[class*='modal']",
+              "[class*='Dialog']",
+              "[class*='dialog']"
+            ];
+            const roots = collectRoots(document);
+            const dialogs = roots.flatMap((root) => {
+              return dialogSelectors.flatMap((selector) => {
+                try {
+                  return Array.from(root.querySelectorAll(selector));
+                } catch (error) {
+                  return [];
+                }
+              });
+            }).filter(isVisible);
+            if (!dialogs.length) return false;
+
+            const candidates = roots.flatMap((root) => {
+              try {
+                return Array.from(root.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit']"));
+              } catch (error) {
+                return [];
+              }
+            });
+            for (const candidate of candidates) {
+              if (!isVisible(candidate)) continue;
+              if (!isEnabled(candidate)) continue;
+              if (!dialogs.some((dialog) => isInsideNode(candidate, dialog))) continue;
+              const text = normalize(
+                candidate.textContent
+                || candidate.getAttribute("aria-label")
+                || candidate.getAttribute("title")
+                || candidate.getAttribute("value")
+              );
+              if (!text) continue;
+              if (needles.some((needle) => text.includes(needle))) return true;
+            }
+            return false;
+          }, needles);
+          if (found) return true;
+        }
+        return false;
+      })();
+      if (shouldSkip) break;
+    }
+
     const clickedContinue = await clickVisibleButtonByText(page, continueLabels, {
       timeout: 1400,
       preferDialog: true,
@@ -2006,11 +2140,16 @@ const dismissConversationBlockingModals = async (
       continue;
     }
 
+    // Do not fire Escape blindly when there is no visible modal:
+    // in some messagebox builds this can clear composer state (typed text/attachments).
+    const hasDialogBeforeEscape = await hasVisibleDialogInAnyContext(page, { mainFrameOnly }).catch(() => false);
+    if (!hasDialogBeforeEscape) break;
+
     await page.keyboard.press("Escape").catch(() => {});
     await sleep(120);
 
-    const hasDialog = await hasVisibleDialogInAnyContext(page, { mainFrameOnly });
-    if (!hasDialog) break;
+    const hasDialogAfterEscape = await hasVisibleDialogInAnyContext(page, { mainFrameOnly }).catch(() => false);
+    if (!hasDialogAfterEscape) break;
     if (!acted) {
       await sleep(120);
     }
@@ -2027,20 +2166,54 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
     for (const context of contexts) {
       const ready = await evaluateInContext(context, (expected) => {
         const normalizeExpected = Math.max(1, Number(expected) || 1);
+        const collectRoots = (startRoot) => {
+          const roots = [startRoot];
+          const queue = [startRoot];
+          const seen = new Set([startRoot]);
+          while (queue.length) {
+            const root = queue.shift();
+            let nodes = [];
+            try {
+              nodes = Array.from(root.querySelectorAll("*"));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              const shadowRoot = node?.shadowRoot;
+              if (!shadowRoot || seen.has(shadowRoot)) continue;
+              seen.add(shadowRoot);
+              roots.push(shadowRoot);
+              queue.push(shadowRoot);
+            }
+          }
+          return roots;
+        };
+
+        const roots = collectRoots(document);
         const inputSelectors = [
+          ".ReplyBox input[data-testid='reply-box-file-input']",
+          "[class*='ReplyBox'] input[data-testid='reply-box-file-input']",
           "input[data-testid='reply-box-file-input']",
-          "input[type='file'][accept*='image']",
-          "input[type='file']"
+          ".ReplyBox input[type='file'][accept*='image']",
+          "[class*='ReplyBox'] input[type='file'][accept*='image']",
+          ".ReplyBox input[type='file']",
+          "[class*='ReplyBox'] input[type='file']",
+          "[data-testid*='reply'] input[type='file'][accept*='image']",
+          "input[type='file'][accept*='image']"
         ];
         const previewSelectors = [
-          "[data-testid*='attachment'] img",
-          "[class*='Attachment'] img",
-          "[class*='attachment'] img",
-          "[class*='Reply'] img[src^='blob:']",
-          "[class*='Reply'] img[src*='img.kleinanzeigen.de']",
-          "[class*='Reply'] img",
-          "[class*='reply'] img",
-          ".ReplyBox img"
+          ".ReplyBox .Reply--Attachment--List li",
+          "[class*='ReplyBox'] .Reply--Attachment--List li",
+          ".ReplyBox [class*='Reply--Attachment']",
+          "[class*='ReplyBox'] [class*='Reply--Attachment']",
+          ".ReplyBox [data-testid*='attachment']",
+          "[class*='ReplyBox'] [data-testid*='attachment']",
+          ".ReplyBox img[src^='blob:']",
+          "[class*='ReplyBox'] img[src^='blob:']",
+          ".ReplyBox img[src^='data:']",
+          "[class*='ReplyBox'] img[src^='data:']",
+          ".ReplyBox img",
+          "[class*='ReplyBox'] img"
         ];
         const sendSelectors = [
           ".ReplyBox button[data-testid='submit-button']",
@@ -2051,35 +2224,43 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
           "button[data-testid='submit-button']"
         ];
 
-        const fileCount = inputSelectors.reduce((max, selector) => {
-          let current = max;
-          try {
-            const inputs = Array.from(document.querySelectorAll(selector));
+        const composerFileCount = inputSelectors.reduce((max, selector) => {
+          let currentMax = max;
+          for (const root of roots) {
+            let inputs = [];
+            try {
+              inputs = Array.from(root.querySelectorAll(selector));
+            } catch (error) {
+              inputs = [];
+            }
             for (const input of inputs) {
               const count = Number(input?.files?.length || 0);
-              if (count > current) current = count;
+              if (count > currentMax) currentMax = count;
             }
-          } catch (error) {
-            // ignore invalid selectors
           }
-          return current;
+          return currentMax;
         }, 0);
 
-        const previewCount = previewSelectors.reduce((max, selector) => {
-          try {
-            return Math.max(max, document.querySelectorAll(selector).length);
-          } catch (error) {
-            return max;
+        const composerPreviewCount = previewSelectors.reduce((max, selector) => {
+          let currentMax = max;
+          for (const root of roots) {
+            try {
+              currentMax = Math.max(currentMax, root.querySelectorAll(selector).length);
+            } catch (error) {
+              // ignore per-root selector failures
+            }
           }
+          return currentMax;
         }, 0);
 
         const sendReady = sendSelectors.some((selector) => {
-          let buttons = [];
-          try {
-            buttons = Array.from(document.querySelectorAll(selector));
-          } catch (error) {
-            buttons = [];
-          }
+          const buttons = roots.flatMap((root) => {
+            try {
+              return Array.from(root.querySelectorAll(selector));
+            } catch (error) {
+              return [];
+            }
+          });
           return buttons.some((button) => {
             if (!button) return false;
             const style = window.getComputedStyle(button);
@@ -2096,7 +2277,7 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
           });
         });
 
-        const hasAttachment = fileCount >= normalizeExpected || previewCount > 0;
+        const hasAttachment = composerFileCount >= normalizeExpected || composerPreviewCount >= normalizeExpected;
         return Boolean(hasAttachment && sendReady);
       }, expectedCount);
 
@@ -2105,6 +2286,185 @@ const waitForMessageAttachmentReady = async (page, expectedCount = 1, timeout = 
     await sleep(220);
   }
   return false;
+};
+
+const clickOfferDeclineButtonInPaymentBox = async (
+  page,
+  paymentActionSelectors,
+  { timeout = 3500, mainFrameOnly = false } = {}
+) => {
+  if (!page) return { clicked: false, reason: "NO_PAGE", pickedText: "", candidates: [] };
+  const selectors = Array.isArray(paymentActionSelectors) ? paymentActionSelectors : [];
+  if (!selectors.length) return { clicked: false, reason: "NO_SELECTORS", pickedText: "", candidates: [] };
+
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeout) {
+    const contexts = getPageContexts(page, { mainFrameOnly });
+    for (const context of contexts) {
+      const result = await evaluateInContext(context, (containerSelectors) => {
+        const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+        const isVisible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          if (!style) return false;
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+            return false;
+          }
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const isEnabled = (node) => {
+          if (!node) return false;
+          if (node.hasAttribute("disabled")) return false;
+          if (String(node.getAttribute("aria-disabled") || "").toLowerCase() === "true") return false;
+          if (String(node.getAttribute("aria-busy") || "").toLowerCase() === "true") return false;
+          return true;
+        };
+        const getComposedParent = (node) => {
+          if (!node) return null;
+          if (node.parentElement) return node.parentElement;
+          const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+          return root && root.host ? root.host : null;
+        };
+        const isInsideNode = (node, container) => {
+          let current = node;
+          while (current) {
+            if (current === container) return true;
+            current = getComposedParent(current);
+          }
+          return false;
+        };
+        const collectRoots = (startRoot) => {
+          const roots = [startRoot];
+          const queue = [startRoot];
+          const seen = new Set([startRoot]);
+          while (queue.length) {
+            const root = queue.shift();
+            let nodes = [];
+            try {
+              nodes = Array.from(root.querySelectorAll("*"));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              const shadowRoot = node?.shadowRoot;
+              if (!shadowRoot || seen.has(shadowRoot)) continue;
+              seen.add(shadowRoot);
+              roots.push(shadowRoot);
+              queue.push(shadowRoot);
+            }
+          }
+          return roots;
+        };
+
+        const roots = collectRoots(document);
+        const paymentBoxes = roots.flatMap((root) => {
+          return (Array.isArray(containerSelectors) ? containerSelectors : []).flatMap((selector) => {
+            try {
+              return Array.from(root.querySelectorAll(selector));
+            } catch (error) {
+              return [];
+            }
+          });
+        }).filter(isVisible);
+
+        if (!paymentBoxes.length) {
+          return { clicked: false, reason: "NO_PAYMENT_BOX", pickedText: "", candidates: [] };
+        }
+
+        const allCandidates = roots.flatMap((root) => {
+          try {
+            return Array.from(root.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit']"));
+          } catch (error) {
+            return [];
+          }
+        });
+
+        const scored = [];
+        const candidateTexts = [];
+        for (const candidate of allCandidates) {
+          if (!isVisible(candidate)) continue;
+          if (!isEnabled(candidate)) continue;
+          if (!paymentBoxes.some((box) => isInsideNode(candidate, box))) continue;
+
+          const text = normalize(
+            candidate.textContent
+            || candidate.getAttribute("aria-label")
+            || candidate.getAttribute("title")
+            || candidate.getAttribute("value")
+          );
+          if (!text) continue;
+          if (candidateTexts.length < 40) candidateTexts.push(text);
+
+          const hasDecline = text.includes("ablehn");
+          if (!hasDecline) continue;
+          const hasAccept = text.includes("akzept");
+          if (hasAccept) continue;
+          const hasCounter = text.includes("gegenangebot") || text.includes("gegen angebot");
+          if (hasCounter) continue;
+
+          let score = 0;
+          if (text.includes("anfrage ablehnen")) score += 60;
+          if (text.includes("angebot ablehnen")) score += 60;
+          if (text === "ablehnen") score += 45;
+          if (text.includes("ja") && text.includes("ablehn")) score += 35;
+          if (text.includes("ablehn")) score += 20;
+
+          const rect = candidate.getBoundingClientRect();
+          scored.push({
+            candidate,
+            text,
+            score,
+            area: rect.width * rect.height
+          });
+        }
+
+        if (!scored.length) {
+          return { clicked: false, reason: "NO_DECLINE_CANDIDATE", pickedText: "", candidates: candidateTexts };
+        }
+
+        scored.sort((a, b) => {
+          if (a.score !== b.score) return b.score - a.score;
+          if (a.area !== b.area) return b.area - a.area;
+          return 0;
+        });
+
+        const target = scored[0].candidate;
+        const pickedText = scored[0].text;
+        try {
+          if (typeof target.scrollIntoView === "function") {
+            target.scrollIntoView({ block: "center", inline: "center" });
+          }
+          if (typeof target.focus === "function") {
+            target.focus({ preventScroll: true });
+          }
+          const rect = target.getBoundingClientRect();
+          const clientX = Math.max(1, Math.min(window.innerWidth - 2, rect.left + rect.width / 2));
+          const clientY = Math.max(1, Math.min(window.innerHeight - 2, rect.top + rect.height / 2));
+          const dispatch = (type) => target.dispatchEvent(new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX,
+            clientY
+          }));
+          dispatch("pointerdown");
+          dispatch("mousedown");
+          dispatch("pointerup");
+          dispatch("mouseup");
+          target.click();
+          return { clicked: true, reason: "CLICKED", pickedText, candidates: candidateTexts };
+        } catch (error) {
+          return { clicked: false, reason: "CLICK_FAILED", pickedText, candidates: candidateTexts };
+        }
+      }, selectors);
+      if (result?.clicked) return result;
+    }
+    await sleep(220);
+  }
+
+  return { clicked: false, reason: "TIMEOUT", pickedText: "", candidates: [] };
 };
 
 const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
@@ -2117,12 +2477,18 @@ const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
         const selectors = [
           ".ReplyBox button[data-testid='submit-button']",
           "[class*='ReplyBox'] button[data-testid='submit-button']",
+          ".Reply--Actions-Send button[data-testid='submit-button']",
+          "[class*='Reply--Actions-Send'] button[data-testid='submit-button']",
           "button[data-testid='submit-button'][aria-label*='Senden']",
           "button[data-testid='submit-button']",
+          ".ReplyBox button[aria-label*='Senden']",
+          "[class*='ReplyBox'] button[aria-label*='Senden']",
           "button[aria-label*='Senden']",
+          "button[aria-label*='Send']",
           ".ReplyBox button[type='submit']",
           "[class*='ReplyBox'] button[type='submit']",
-          "button[type='submit']"
+          ".Reply--Actions-Send button[type='submit']",
+          "[class*='Reply--Actions-Send'] button[type='submit']"
         ];
         const collectRoots = (startRoot) => {
           const roots = [startRoot];
@@ -2146,6 +2512,7 @@ const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
           }
           return roots;
         };
+        const roots = collectRoots(document);
         const isVisible = (node) => {
           if (!node) return false;
           const style = window.getComputedStyle(node);
@@ -2156,7 +2523,6 @@ const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
           const rect = node.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0;
         };
-        const roots = collectRoots(document);
         for (const selector of selectors) {
           const buttons = roots.flatMap((root) => {
             try {
@@ -2165,13 +2531,13 @@ const waitForMessageSendButtonReady = async (page, timeout = 12000) => {
               return [];
             }
           });
-          if (buttons.some((button) => {
-            if (!isVisible(button)) return false;
-            if (button.hasAttribute("disabled")) return false;
-            if (button.getAttribute("aria-disabled") === "true") return false;
-            if (button.getAttribute("aria-busy") === "true") return false;
+          for (const button of buttons) {
+            if (!isVisible(button)) continue;
+            if (button.hasAttribute("disabled")) continue;
+            if (button.getAttribute("aria-disabled") === "true") continue;
+            if (button.getAttribute("aria-busy") === "true") continue;
             return true;
-          })) return true;
+          }
         }
         return false;
       });
@@ -2215,12 +2581,12 @@ const isLikelyMessagingMutationRequest = (requestUrl, method = "", postData = ""
     return false;
   }
 
-  const payloadHintsMutation = /(mutation|send|reply|upload|attachment|image|media|picture|photo)/i.test(payload);
+  const payloadHintsMutation = /(mutation|send|reply|upload|attachment|image|media|picture|photo|decline|reject|ablehnen|anfrage|angebot|offer|payment|shipping)/i.test(payload);
   if (payload) {
     return payloadHintsMutation;
   }
 
-  return /(\/send|\/reply|\/upload|\/attachment|\/media|bilder|photos?)/i.test(href);
+  return /(\/send|\/reply|\/upload|\/attachment|\/media|\/decline|\/reject|ablehnen|angebot|anfrage|offer|payment|shipping|bilder|photos?)/i.test(href);
 };
 
 const isConsentInterruptionUrl = (url) => {
@@ -2240,6 +2606,36 @@ const getSafePageUrl = (page) => {
   }
 };
 
+const isConsentOverlayVisible = async (page) => {
+  if (!page) return false;
+  return page.evaluate(() => {
+    const isVisible = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const consentBanner = document.getElementById("consentBanner");
+    const consentManagement = document.getElementById("consentManagementPage");
+    const gdprDialog = document.querySelector("#gdpr-banner[open]");
+    const gdprContainer = document.querySelector("[data-testid='gdpr-banner-container']");
+    const gdprAccept = document.querySelector("#gdpr-banner-accept, [data-testid='gdpr-banner-accept']");
+
+    return Boolean(
+      isVisible(consentBanner)
+      || isVisible(consentManagement)
+      || isVisible(gdprDialog)
+      || isVisible(gdprContainer)
+      || isVisible(gdprAccept)
+    );
+  }).catch(() => false);
+};
+
 const ensureCookieConsentBeforeMessagingAction = async ({
   page,
   conversationUrl = "",
@@ -2255,6 +2651,22 @@ const ensureCookieConsentBeforeMessagingAction = async ({
   while (Date.now() - startedAt < Math.max(1200, timeoutMs || 0)) {
     let currentUrl = getSafePageUrl(page);
     const wasInterruption = isConsentInterruptionUrl(currentUrl);
+    const overlayVisibleBeforeAccept = wasInterruption
+      ? true
+      : (await isConsentOverlayVisible(page).catch(() => false));
+
+    // Guardrail: do not run generic "accept" clickers unless consent is actually visible
+    // (or we're on a known consent/GDPR interruption URL). This prevents accidental clicks on
+    // business buttons like "Anfrage akzeptieren" inside the conversation UI.
+    if (!wasInterruption && !overlayVisibleBeforeAccept) {
+      if (acceptedAny && typeof captureArtifact === "function") {
+        await captureArtifact("consent-handled", page, {
+          stage,
+          url: currentUrl
+        });
+      }
+      return true;
+    }
 
     if (wasInterruption && typeof captureArtifact === "function") {
       await captureArtifact("consent-redirect-detected", page, {
@@ -2305,19 +2717,34 @@ const ensureCookieConsentBeforeMessagingAction = async ({
     }
 
     if (!isConsentInterruptionUrl(currentUrl)) {
+      const overlayVisible = await isConsentOverlayVisible(page);
+      if (!overlayVisible) {
+        if (acceptedAny && typeof captureArtifact === "function") {
+          await captureArtifact("consent-handled", page, {
+            stage,
+            url: currentUrl
+          });
+        }
+        return true;
+      }
+
+      // Consent overlay can appear without redirecting (e.g. gdpr-banner dialog).
+      // Keep trying until it disappears or we time out.
       try {
-        const accepted = await acceptCookieModal(page, { timeout: 1200 });
+        const accepted = await acceptCookieModal(page, { timeout: Math.min(2500, remaining) });
         if (accepted) acceptedAny = true;
       } catch (error) {
         // ignore consent click errors
       }
-      if (acceptedAny && typeof captureArtifact === "function") {
-        await captureArtifact("consent-handled", page, {
-          stage,
-          url: currentUrl
-        });
+      if (!(await isConsentOverlayVisible(page))) {
+        if (acceptedAny && typeof captureArtifact === "function") {
+          await captureArtifact("consent-handled", page, {
+            stage,
+            url: getSafePageUrl(page)
+          });
+        }
+        return true;
       }
-      return true;
     }
 
     await sleep(220);
@@ -2535,82 +2962,82 @@ const readMessageboxBootstrapState = async (page) => {
   }).catch(() => null);
 };
 
-	const tryRecoverMessageboxBundle = async (page, timeoutMs = 9000) => {
-	  if (!page) return null;
-	  return page.evaluate(async (rawTimeoutMs) => {
-	    const maxWaitMs = Math.max(3000, Number(rawTimeoutMs) || 9000);
-	    const outcome = {
-	      attempted: true,
-	      renderedBeforeReload: false,
-	      scriptLoadStatus: "",
-	      renderedAfterReload: false,
-	      scriptSrc: "",
-	      error: ""
-	    };
-	    const normalizeScriptSrc = (value) => {
-	      const raw = String(value || "").trim();
-	      if (!raw) return "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js";
-	      const noHash = raw.split("#")[0];
-	      return noHash.split("?")[0];
-	    };
-	    const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-	    const isVisible = (node) => {
-	      if (!node) return false;
-	      const style = window.getComputedStyle(node);
-	      if (!style) return false;
-	      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-	        return false;
-	      }
-	      const rect = node.getBoundingClientRect();
-	      return rect.width > 0 && rect.height > 0;
-	    };
-	    const spinnerVisible = () => {
-	      const spinner = document.querySelector("#messagebox-bundle .spinner-big");
-	      return Boolean(spinner && isVisible(spinner));
-	    };
-	    const replyUiVisible = () => Boolean(document.querySelector(
-	      ".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht'], input[data-testid='reply-box-file-input'], button[aria-label*='Bilder hochladen']"
-	    ));
-	    const hasRenderEngine = () => Boolean(window.ekMessageboxWeb && typeof window.ekMessageboxWeb.render === "function");
-	    const tryRender = async () => {
-	      try {
-	        const props = window.messageboxRenderProps;
-	        if (!props) return false;
-	
-	        const uiBefore = replyUiVisible();
-	        const spinnerBefore = spinnerVisible();
-	        const engineBefore = hasRenderEngine();
-	
-	        // Prefer direct render when the bundle already loaded.
-	        if (hasRenderEngine()) {
-	          window.ekMessageboxWeb.render(props);
-	        } else if (typeof window.renderMessagebox === "function") {
-	          // NOTE: On Kleinanzeigen, `renderMessagebox` can be a thin inline wrapper that
-	          // is a no-op until `ekMessageboxWeb` is available. Do not treat the call itself
-	          // as "rendered" unless we observe UI/progress.
-	          window.renderMessagebox(props);
-	        } else {
-	          return false;
-	        }
-	
-	        const waitMs = Math.max(250, Math.min(1400, Math.floor(maxWaitMs * 0.25)));
-	        const startedAt = Date.now();
-	        while (Date.now() - startedAt < waitMs) {
-	          if (!uiBefore && replyUiVisible()) return true;
-	          if (spinnerBefore && !spinnerVisible()) return true;
-	          if (!engineBefore && hasRenderEngine()) return true;
-	          await sleep(120);
-	        }
-	
-	        return replyUiVisible() || (spinnerBefore && !spinnerVisible()) || hasRenderEngine();
-	      } catch (error) {
-	        outcome.error = String(error?.message || error || "");
-	      }
-	      return false;
-	    };
+const tryRecoverMessageboxBundle = async (page, timeoutMs = 9000) => {
+  if (!page) return null;
+  return page.evaluate(async (rawTimeoutMs) => {
+    const maxWaitMs = Math.max(3000, Number(rawTimeoutMs) || 9000);
+    const outcome = {
+      attempted: true,
+      renderedBeforeReload: false,
+      scriptLoadStatus: "",
+      renderedAfterReload: false,
+      scriptSrc: "",
+      error: ""
+    };
+    const normalizeScriptSrc = (value) => {
+      const raw = String(value || "").trim();
+      if (!raw) return "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js";
+      const noHash = raw.split("#")[0];
+      return noHash.split("?")[0];
+    };
+    const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const isVisible = (node) => {
+      if (!node) return false;
+      const style = window.getComputedStyle(node);
+      if (!style) return false;
+      if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+        return false;
+      }
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const spinnerVisible = () => {
+      const spinner = document.querySelector("#messagebox-bundle .spinner-big");
+      return Boolean(spinner && isVisible(spinner));
+    };
+    const replyUiVisible = () => Boolean(document.querySelector(
+      ".ReplyBox, [class*='ReplyBox'], textarea#nachricht, textarea[placeholder*='Nachricht'], input[data-testid='reply-box-file-input'], button[aria-label*='Bilder hochladen']"
+    ));
+    const hasRenderEngine = () => Boolean(window.ekMessageboxWeb && typeof window.ekMessageboxWeb.render === "function");
+    const tryRender = async () => {
+      try {
+        const props = window.messageboxRenderProps;
+        if (!props) return false;
 
-	    outcome.renderedBeforeReload = await tryRender();
-	    if (outcome.renderedBeforeReload) return outcome;
+        const uiBefore = replyUiVisible();
+        const spinnerBefore = spinnerVisible();
+        const engineBefore = hasRenderEngine();
+
+        // Prefer direct render when the bundle already loaded.
+        if (hasRenderEngine()) {
+          window.ekMessageboxWeb.render(props);
+        } else if (typeof window.renderMessagebox === "function") {
+          // NOTE: On Kleinanzeigen, `renderMessagebox` can be a thin inline wrapper that
+          // is a no-op until `ekMessageboxWeb` is available. Do not treat the call itself
+          // as "rendered" unless we observe UI/progress.
+          window.renderMessagebox(props);
+        } else {
+          return false;
+        }
+
+        const waitMs = Math.max(250, Math.min(1400, Math.floor(maxWaitMs * 0.25)));
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < waitMs) {
+          if (!uiBefore && replyUiVisible()) return true;
+          if (spinnerBefore && !spinnerVisible()) return true;
+          if (!engineBefore && hasRenderEngine()) return true;
+          await sleep(120);
+        }
+
+        return replyUiVisible() || (spinnerBefore && !spinnerVisible()) || hasRenderEngine();
+      } catch (error) {
+        outcome.error = String(error?.message || error || "");
+      }
+      return false;
+    };
+
+    outcome.renderedBeforeReload = await tryRender();
+    if (outcome.renderedBeforeReload) return outcome;
 
     const existingScripts = Array.from(document.querySelectorAll("script[src*='/bffstatic/messagebox-web/bundle.js']"));
     const latestExisting = existingScripts.length ? existingScripts[existingScripts.length - 1] : null;
@@ -2642,14 +3069,14 @@ const readMessageboxBootstrapState = async (page) => {
         finish("error", "bundle-load-error");
       };
       (document.head || document.body || document.documentElement).appendChild(script);
-	    });
+    });
 
-	    outcome.renderedAfterReload = await tryRender();
-	    return outcome;
-	  }, timeoutMs).catch((error) => ({
-	    attempted: true,
-	    renderedBeforeReload: false,
-	    scriptLoadStatus: "exception",
+    outcome.renderedAfterReload = await tryRender();
+    return outcome;
+  }, timeoutMs).catch((error) => ({
+    attempted: true,
+    renderedBeforeReload: false,
+    scriptLoadStatus: "exception",
     renderedAfterReload: false,
     scriptSrc: "",
     error: String(error?.message || error || "")
@@ -2687,11 +3114,6 @@ const isConversationUiReadyInAnyContext = async (page, mode = "send-media") => {
       ".PaymentMessageBox",
       "[data-testid='payment-message-header-extended']"
     ];
-    const declineSelectors = [
-      "button",
-      "[role='button']",
-      "a"
-    ];
 
     const paymentHandle = await findFirstHandleInAnyContext(page, paymentSelectors, {
       timeout: 320,
@@ -2703,27 +3125,65 @@ const isConversationUiReadyInAnyContext = async (page, mode = "send-media") => {
       return true;
     }
 
-    const declineHandle = await findFirstHandleInAnyContext(page, declineSelectors, {
-      timeout: 320,
-      requireVisible: true,
-      mainFrameOnly: false
-    });
-    if (!declineHandle?.handle) return false;
-    try {
-      const matched = await declineHandle.handle.evaluate((node) => {
-        const text = String(
-          node?.textContent
-          || node?.getAttribute?.("aria-label")
-          || node?.getAttribute?.("title")
-          || node?.getAttribute?.("value")
-          || ""
-        ).replace(/\s+/g, " ").trim().toLowerCase();
-        return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
-      }).catch(() => false);
-      return Boolean(matched);
-    } finally {
-      await declineHandle.handle.dispose().catch(() => {});
+    const contexts = getPageContexts(page, { mainFrameOnly: false });
+    for (const context of contexts) {
+      const matched = await evaluateInContext(context, () => {
+        const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const isVisible = (node) => {
+          if (!node) return false;
+          const style = window.getComputedStyle(node);
+          if (!style) return false;
+          if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+            return false;
+          }
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        };
+        const collectRoots = (startRoot) => {
+          const roots = [startRoot];
+          const queue = [startRoot];
+          const seen = new Set([startRoot]);
+          while (queue.length) {
+            const root = queue.shift();
+            let nodes = [];
+            try {
+              nodes = Array.from(root.querySelectorAll("*"));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              const shadowRoot = node?.shadowRoot;
+              if (!shadowRoot || seen.has(shadowRoot)) continue;
+              seen.add(shadowRoot);
+              roots.push(shadowRoot);
+              queue.push(shadowRoot);
+            }
+          }
+          return roots;
+        };
+
+        const roots = collectRoots(document);
+        const nodes = roots.flatMap((root) => {
+          try {
+            return Array.from(root.querySelectorAll("button, [role='button'], a"));
+          } catch (error) {
+            return [];
+          }
+        });
+        return nodes.some((node) => {
+          if (!isVisible(node)) return false;
+          const text = normalize(
+            node.textContent
+            || node.getAttribute("aria-label")
+            || node.getAttribute("title")
+            || node.getAttribute("value")
+          );
+          return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
+        });
+      });
+      if (matched) return true;
     }
+    return false;
   }
 
   const mediaSelectors = [
@@ -3158,25 +3618,34 @@ const waitForConversationUiReady = async ({
       });
     }
 
-    const timeLeftMs = effectiveTimeout - (Date.now() - startedAt);
+    const now = Date.now();
+    const timeLeftMs = effectiveTimeout - (now - startedAt);
     if (timeLeftMs < 2200) break;
 
-    // Messagebox bundle can get stuck on a spinner (especially behind slow proxies).
-    // If Kleinanzeigen already exposed its render hook, try to re-render before doing heavier recovery.
+    const noProgressMs = now - lastProgressAt;
+
+    // Messagebox bundle can get stuck on a skeleton even after the spinner disappears (especially behind slow proxies).
+    // If Kleinanzeigen already exposed its render hook, try to re-render (and, as a fallback, reload the bundle script)
+    // before doing heavier navigation recovery.
     const canAttemptBundleRecovery = Boolean(
       lastState?.isLoadingBlocking
       && bootstrapState?.hasMessageboxContainer
-      && (bootstrapState?.spinnerVisible || lastState?.hasLoadingSkeleton)
       && bootstrapState?.hasMessageboxRenderProps
       && (bootstrapState?.hasRenderMessageboxFn || bootstrapState?.hasEkMessageboxWeb)
       && bundleRecoveryCount < 2
-      && (Date.now() - lastBundleRecoveryAt) > 5500
-      && timeLeftMs > 4500
+      && (now - lastBundleRecoveryAt) > 5500
+      && (now - startedAt) > 1500
+      && noProgressMs > 2500
+      && timeLeftMs > 5200
     );
     if (canAttemptBundleRecovery) {
       bundleRecoveryCount += 1;
-      lastBundleRecoveryAt = Date.now();
-      const recoveryTimeout = Math.max(4500, Math.min(15000, timeLeftMs - 1200));
+      lastBundleRecoveryAt = now;
+      const desiredRecoveryTimeout = Math.max(
+        9500,
+        Math.min(25000, Math.floor(effectiveTimeout * 0.55))
+      );
+      const recoveryTimeout = Math.max(3500, Math.min(desiredRecoveryTimeout, timeLeftMs - 1200));
       const bootstrapBefore = bootstrapState;
       const bundleRecovery = await tryRecoverMessageboxBundle(page, recoveryTimeout).catch(() => null);
       await humanPause(90, 150);
@@ -3198,9 +3667,8 @@ const waitForConversationUiReady = async ({
     }
 
     const graceMs = Math.min(12000, Math.max(7000, Math.floor(effectiveTimeout * 0.55)));
-    const noProgressMs = Date.now() - lastProgressAt;
     const allowRecovery = (
-      (Date.now() - startedAt) >= graceMs
+      (now - startedAt) >= graceMs
       && noProgressMs > 4500
       && timeLeftMs > 4200
     );
@@ -3290,24 +3758,20 @@ const waitForConversationUiReady = async ({
 };
 
 const parseConversationList = async (page) => {
+  // Wait for actual conversation list items, not just the messagebox container.
+  // Otherwise we can parse too early (before XHR/render), returning an empty list.
   await waitForDynamicContent(page, [
     "#conversation-list article",
     "[data-testid='conversation-list'] article",
-    "a[href*='conversationId']",
-    "a[href*='m-nachrichten']",
-    "a[href*='nachrichten']",
-    "a.AdImage img",
-    "#conversation-list img",
-    "[data-testid*='conversation']",
-    "[data-qa*='conversation']",
-    "[data-qa*='message-list']",
-    "[data-testid*='message-list-item']",
-    "[data-qa*='message-list-item']",
-    "[class*='Conversation']",
-    "[class*='conversation']",
-    "[class*='MessageList']",
-    "[class*='messagelist']"
-  ]);
+    "article.ConversationListItem",
+    "#conversation-list [role='listitem']",
+    "[data-testid='conversation-list'] [role='listitem']",
+    "#conversation-list li",
+    "[data-testid='conversation-list'] li",
+    "#conversation-list input[data-testid]",
+    "[data-testid='conversation-list'] input[data-testid]",
+    "a[href*='conversationId']"
+  ], 20000);
 
   return page.evaluate(() => {
     const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
@@ -4431,16 +4895,16 @@ const sendConversationMessage = async ({
             page: 0,
             size: 50
           });
-          const candidates = Array.isArray(apiList?.conversations) ? apiList.conversations : [];
+          const candidates = extractConversationListFromApiResponse(apiList);
           const matched = candidates.find((item) => {
             const participantName = pickParticipantFromApi(item, userId);
             return matchConversation(
-              { participant: participantName, adTitle: item.adTitle || "" },
+              { participant: participantName, adTitle: pickAdTitleFromApiConversation(item) },
               { participant, adTitle }
             );
           });
           if (matched) {
-            resolvedConversationId = matched.id;
+            resolvedConversationId = extractConversationIdFromApiConversation(matched) || matched.id;
           }
         }
 
@@ -4815,16 +5279,8 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
         size
       });
 
-      let apiConversations = Array.isArray(apiData?.conversations)
-        ? apiData.conversations
-        : Array.isArray(apiData?.items)
-          ? apiData.items
-          : Array.isArray(apiData?.data)
-            ? apiData.data
-            : Array.isArray(apiData?.results)
-              ? apiData.results
-              : [];
-      const totalFound = Number(apiData?._meta?.numFound || apiData?.total || apiData?.totalElements || apiConversations.length);
+      let apiConversations = extractConversationListFromApiResponse(apiData);
+      const totalFound = extractConversationTotalFoundFromApiResponse(apiData, apiConversations.length);
       if (!maxConversations && apiConversations.length < totalFound) {
         let page = 1;
         while (apiConversations.length < totalFound && page < 10) {
@@ -4837,15 +5293,7 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
             page,
             size
           });
-          const nextConversations = Array.isArray(nextPage?.conversations)
-            ? nextPage.conversations
-            : Array.isArray(nextPage?.items)
-              ? nextPage.items
-              : Array.isArray(nextPage?.data)
-                ? nextPage.data
-                : Array.isArray(nextPage?.results)
-                  ? nextPage.results
-                  : [];
+          const nextConversations = extractConversationListFromApiResponse(nextPage);
           if (!nextConversations.length) break;
           apiConversations = apiConversations.concat(nextConversations);
           page += 1;
@@ -4854,25 +5302,28 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       const uniqueApi = [];
       const seenApi = new Set();
       for (const conversation of apiConversations) {
-        const id = conversation?.id || conversation?.conversationId || "";
+        const id = extractConversationIdFromApiConversation(conversation);
         if (id && seenApi.has(id)) continue;
         if (id) seenApi.add(id);
         uniqueApi.push(conversation);
       }
 
       const limited = maxConversations ? uniqueApi.slice(0, maxConversations) : uniqueApi;
-      let mapped = limited.map((conversation) => ({
-        href: buildConversationUrl(conversation.id),
-        conversationId: conversation.id,
+      let mapped = limited.map((conversation) => {
+        const conversationId = extractConversationIdFromApiConversation(conversation);
+        return {
+        href: buildConversationUrl(conversationId),
+        conversationId,
         participant: pickParticipantFromApi(conversation, userId),
-        adTitle: conversation.adTitle || "",
+        adTitle: pickAdTitleFromApiConversation(conversation),
         adImage: pickAdImageFromApi(conversation),
-        lastMessage: conversation.textShortTrimmed || "",
-        timeText: conversation.receivedDate || "",
-        unread: Boolean(conversation.unread),
+        lastMessage: pickLastMessageFromApiConversation(conversation),
+        timeText: pickTimeTextFromApiConversation(conversation),
+        unread: pickUnreadFromApiConversation(conversation),
         accountId: account.id,
         accountLabel
-      }));
+        };
+      });
 
       mapped = mapped.map((item) => ({
         ...item,
@@ -4956,13 +5407,16 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
         }
       }
 
-      console.log(`[messageService] API conversations: ${mapped.length} for ${accountLabel}`);
-      if (!mapped.length) {
+      console.log(`[messageService] API conversations: ${mapped.length} (totalFound=${Number.isFinite(totalFound) ? totalFound : "n/a"}) for ${accountLabel}`);
+      if (!mapped.length && totalFound > 0) {
         throw new Error("MESSAGEBOX_API_EMPTY");
       }
       return { conversations: mapped };
       } catch (error) {
-        console.log(`[messageService] API fetch failed for ${accountLabel}: ${error.message}`);
+        const code = String(error?.code || "").trim();
+        const details = String(error?.details || "").trim();
+        const extra = details ? ` | ${details}` : "";
+        console.log(`[messageService] API fetch failed for ${accountLabel}: ${(error?.message || code || "error")}${extra}`);
       }
     }
   }
@@ -5014,12 +5468,30 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       });
     }, deviceProfile.platform);
 
-    await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded" });
+    await gotoWithProxyHandling(
+      page,
+      "https://www.kleinanzeigen.de/",
+      { waitUntil: "domcontentloaded", timeout: 20000 },
+      "MESSAGES_HOME_GOTO"
+    );
     await humanPause();
+    await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+    if (isGdprPage(page.url())) {
+      await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+    }
     await performHumanLikePageActivity(page, { intensity: "light" });
     await page.setCookie(...cookies);
     await humanPause();
-    await page.goto(MESSAGE_LIST_URL, { waitUntil: "domcontentloaded" });
+    await gotoWithProxyHandling(
+      page,
+      MESSAGE_LIST_URL,
+      { waitUntil: "domcontentloaded", timeout: 25000 },
+      "MESSAGES_LIST_GOTO"
+    );
+    await acceptCookieModal(page, { timeout: MESSAGE_CONSENT_TIMEOUT_MS }).catch(() => {});
+    if (isGdprPage(page.url())) {
+      await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
+    }
     await humanPause(180, 360);
     await performHumanLikePageActivity(page, { intensity: "medium" });
 
@@ -5040,35 +5512,21 @@ const fetchAccountConversations = async ({ account, proxy, accountLabel, options
       await dumpMessageListDebug(page, accountLabel);
     }
     const conversationLimit = maxConversations || dedupedConversations.length;
-
-    const parsed = [];
-    for (const conversation of dedupedConversations.slice(0, conversationLimit)) {
-      const href = conversation.href || "";
-      const conversationId = conversation.conversationId || extractConversationId(href);
-      if (!href) continue;
-
-      await page.goto(href, { waitUntil: "domcontentloaded" });
-      await humanPause(120, 240);
-      if (randomChance(0.5)) {
-        await performHumanLikePageActivity(page, { intensity: "light" });
-      }
-
-      const messages = await parseMessagesFromThread(page, conversation.participant);
-      const meta = await parseConversationMetaFromThread(page);
-      console.log(`[messageService] Thread ${conversationId}: ${messages.length} messages, adTitle="${meta.adTitle || conversation.adTitle}"`);
-      parsed.push({
-        ...conversation,
-        participant: conversation.participant || meta.participant || "",
-        adTitle: conversation.adTitle || meta.adTitle,
-        adImage: conversation.adImage || meta.adImage,
-        conversationId,
-        messages,
-        accountId: account.id,
-        accountLabel
+    const limited = dedupedConversations
+      .slice(0, conversationLimit)
+      .map((conversation) => {
+        const href = conversation.href || "";
+        const conversationId = conversation.conversationId || extractConversationId(href);
+        return {
+          ...conversation,
+          href,
+          conversationId,
+          accountId: account.id,
+          accountLabel
+        };
       });
-    }
 
-    return { conversations: parsed };
+    return { conversations: limited };
   } finally {
     await browser.close();
     if (anonymizedProxyUrl) {
@@ -5090,6 +5548,7 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
 
   let cursor = 0;
   const collected = [];
+  const failures = [];
 
   const runNext = async () => {
     while (true) {
@@ -5098,9 +5557,7 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
       cursor += 1;
 
       const account = queuedAccounts[nextIndex];
-      const proxy = account.proxyId
-        ? (proxies || []).find((item) => item.id === account.proxyId)
-        : null;
+      const proxy = findProxyById(proxies, account.proxyId);
       const profileName = account.profileName || account.username || "Аккаунт";
       const profileEmail = account.profileEmail || "";
       const accountLabel = profileEmail ? `${profileName} (${profileEmail})` : profileName;
@@ -5111,13 +5568,43 @@ const fetchMessages = async ({ accounts, proxies, options = {} }) => {
           collected.push(...data.conversations);
         }
       } catch (error) {
-        console.log(`[messageService] Messages fetch failed for ${accountLabel}: ${error?.message || error}`);
+        const code = String(error?.code || "").trim();
+        const message = String(error?.message || code || error || "unknown").trim();
+        const details = String(error?.details || "").trim();
+        const reason = (details ? `${message} | ${details}` : message).trim().slice(0, 420);
+        failures.push({
+          accountId: account?.id,
+          accountLabel,
+          code,
+          reason,
+          details: details ? details.slice(0, 800) : ""
+        });
+        console.log(`[messageService] Messages fetch failed for ${accountLabel}: ${reason}`);
       }
     }
   };
 
   const workers = Array.from({ length: Math.min(concurrency, queuedAccounts.length) }, () => runNext());
   await Promise.all(workers);
+  if (!collected.length && failures.length) {
+    const allAuth = failures.every((item) => item?.code === "AUTH_REQUIRED" || item?.reason === "AUTH_REQUIRED");
+    const allProxyTunnel = failures.every((item) => (
+      item?.code === PROXY_TUNNEL_ERROR_CODE
+      || /err_tunnel_connection_failed|err_proxy_connection_failed|err_no_supported_proxies|tunneling socket could not be established/i.test(String(item?.reason || ""))
+    ));
+    const sample = failures
+      .slice(0, 3)
+      .map((item) => `${item.accountLabel}: ${item.reason || item.code || "error"}`)
+      .join("; ");
+    const error = new Error(`Не удалось загрузить сообщения ни для одного аккаунта. ${sample}`.trim());
+    if (allAuth) {
+      error.code = "AUTH_REQUIRED";
+    } else if (allProxyTunnel) {
+      error.code = PROXY_TUNNEL_ERROR_CODE;
+    }
+    error.details = JSON.stringify(failures.slice(0, 8));
+    throw error;
+  }
   return collected;
 };
 
@@ -5171,16 +5658,16 @@ const fetchThreadMessages = async ({
           page: 0,
           size: 50
         });
-        const candidates = Array.isArray(apiList?.conversations) ? apiList.conversations : [];
+        const candidates = extractConversationListFromApiResponse(apiList);
         const matched = candidates.find((item) => {
           const participantName = pickParticipantFromApi(item, userId);
           return matchConversation(
-            { participant: participantName, adTitle: item.adTitle || "" },
+            { participant: participantName, adTitle: pickAdTitleFromApiConversation(item) },
             { participant, adTitle }
           );
         });
         if (matched) {
-          resolvedConversationId = matched.id;
+          resolvedConversationId = extractConversationIdFromApiConversation(matched) || matched.id;
         }
       }
 
@@ -5653,6 +6140,12 @@ const declineConversationOffer = async ({
     })
   );
   let beforeSnapshot = null;
+  let firstDeclineClickStartedAt = 0;
+  let observedDeclineMutationAfterClick = false;
+  let observedDeclineMutationUrl = "";
+  let observedDeclineMutationOkAfterClick = false;
+  let observedDeclineMutationOkUrl = "";
+  let observedDeclineMutationOkStatus = null;
   const fetchAfterSnapshotIfAvailable = async () => {
     if (!hasTimeLeft(2200)) return null;
     const timeoutForSnapshot = Math.max(1200, Math.min(snapshotTimeoutMs, Math.max(1400, remainingMs() - 1200)));
@@ -5722,10 +6215,64 @@ const declineConversationOffer = async ({
   }
 
   let page = null;
+  let requestListener = null;
+  let responseListener = null;
   try {
     throwIfAborted("offer-decline-before-new-page");
     page = await browser.newPage();
     pageEventCollector = createMessageActionPageEventCollector(page, { maxEntries: 140 });
+    let lastLikelyMutationAt = 0;
+    let lastLikelyMutationUrl = "";
+    let lastLikelyMutationOkAt = 0;
+    let lastLikelyMutationOkUrl = "";
+    let lastLikelyMutationOkStatus = 0;
+    requestListener = (request) => {
+      const requestUrl = typeof request?.url === "function" ? request.url() : "";
+      const requestMethod = typeof request?.method === "function" ? request.method() : "";
+      const requestBody = typeof request?.postData === "function" ? request.postData() : "";
+      if (!isLikelyMessagingMutationRequest(requestUrl, requestMethod, requestBody)) return;
+      lastLikelyMutationAt = Date.now();
+      lastLikelyMutationUrl = requestUrl;
+    };
+    responseListener = (response) => {
+      const responseUrl = typeof response?.url === "function" ? response.url() : "";
+      const status = typeof response?.status === "function" ? response.status() : null;
+      const request = typeof response?.request === "function" ? response.request() : null;
+      const requestMethod = request && typeof request.method === "function" ? request.method() : "";
+      const requestBody = request && typeof request.postData === "function" ? request.postData() : "";
+      if (!isLikelyMessagingMutationRequest(responseUrl, requestMethod, requestBody)) return;
+      if (Number.isFinite(status) && status < 400) {
+        lastLikelyMutationOkAt = Date.now();
+        lastLikelyMutationOkUrl = responseUrl;
+        lastLikelyMutationOkStatus = status;
+      }
+    };
+    page.on("request", requestListener);
+    page.on("response", responseListener);
+
+    const syncObservedDeclineNetworkSince = (minTimestamp) => {
+      if (!minTimestamp) return;
+      if (!observedDeclineMutationAfterClick && lastLikelyMutationAt >= minTimestamp) {
+        observedDeclineMutationAfterClick = true;
+        observedDeclineMutationUrl = lastLikelyMutationUrl;
+      }
+      if (!observedDeclineMutationOkAfterClick && lastLikelyMutationOkAt >= minTimestamp) {
+        observedDeclineMutationOkAfterClick = true;
+        observedDeclineMutationOkUrl = lastLikelyMutationOkUrl;
+        observedDeclineMutationOkStatus = lastLikelyMutationOkStatus;
+      }
+    };
+
+    const waitForDeclineNetworkSince = async (minTimestamp, timeoutMs = 3500) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        syncObservedDeclineNetworkSince(minTimestamp);
+        if (observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick) return true;
+        await sleep(160);
+      }
+      syncObservedDeclineNetworkSince(minTimestamp);
+      return observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick;
+    };
     const localTimeout = getStepTimeout(
       Math.min(PUPPETEER_NAV_TIMEOUT, 18000),
       4500,
@@ -5770,11 +6317,21 @@ const declineConversationOffer = async ({
       await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
     }
     await humanPause(40, 120);
+    if (hasTimeLeft(12000)) {
+      await captureDeclineArtifact("home-opened", page, {
+        url: getSafePageUrl(page)
+      });
+    }
 
     ensureDeadline("offer-decline-before-set-cookie-after-home");
     throwIfAborted("offer-decline-before-set-cookie-after-home");
     await page.setCookie(...cookies);
     await humanPause(35, 90);
+    if (hasTimeLeft(12000)) {
+      await captureDeclineArtifact("cookies-set", page, {
+        url: getSafePageUrl(page)
+      });
+    }
     const conversationGotoTimeout = getStepTimeout(
       localTimeout,
       4500,
@@ -5788,6 +6345,11 @@ const declineConversationOffer = async ({
       "DECLINE_CONVERSATION_GOTO"
     );
     throwIfAborted("offer-decline-after-conversation-goto");
+    if (hasTimeLeft(12000)) {
+      await captureDeclineArtifact("conversation-domcontentloaded", page, {
+        url: getSafePageUrl(page)
+      });
+    }
     if (await isAuthFailure(page)) {
       const error = new Error("AUTH_REQUIRED");
       error.code = "AUTH_REQUIRED";
@@ -5807,7 +6369,13 @@ const declineConversationOffer = async ({
       stage: "offer-decline-after-open",
       captureArtifact: captureDeclineArtifact
     }).catch(() => false);
-    if (!consentHandledAfterOpen && isConsentInterruptionUrl(getSafePageUrl(page))) {
+    if (
+      !consentHandledAfterOpen
+      && (
+        isConsentInterruptionUrl(getSafePageUrl(page))
+        || (await isConsentOverlayVisible(page))
+      )
+    ) {
       const error = new Error("CONSENT_REQUIRED");
       error.code = "CONSENT_REQUIRED";
       error.details = `offer-decline-after-open:${getSafePageUrl(page)}`;
@@ -5817,27 +6385,28 @@ const declineConversationOffer = async ({
       hasBeforeSnapshot: Boolean(beforeSnapshot)
     });
     ensureDeadline("offer-decline-before-ui-ready");
-    const uiReadyReserveMs = 35000;
+    // Decline flow itself is quick (3 confirmation clicks), so allow more time for the UI to leave skeleton state.
+    const uiReadyReserveMs = 22000;
     const uiReadyTimeoutMs = getStepTimeout(
       remainingMs() - uiReadyReserveMs,
       12000,
       uiReadyReserveMs,
       "offer-decline-ui-ready"
     );
-	    await waitForConversationUiReady({
-	      page,
-	      conversationId: resolvedConversationId,
-	      conversationUrl: resolvedConversationUrl,
-	      mode: "offer-decline",
-	      timeoutMs: uiReadyTimeoutMs,
-	      gotoTimeoutMs: 9000,
-	      captureArtifact: captureDeclineArtifact,
-	      abortSignal,
-	      consentHandler: async (suffix) => {
-	        await ensureCookieConsentBeforeMessagingAction({
-	          page,
-	          conversationUrl: resolvedConversationUrl,
-	          timeoutMs: 4200,
+    await waitForConversationUiReady({
+      page,
+      conversationId: resolvedConversationId,
+      conversationUrl: resolvedConversationUrl,
+      mode: "offer-decline",
+      timeoutMs: uiReadyTimeoutMs,
+      gotoTimeoutMs: 9000,
+      captureArtifact: captureDeclineArtifact,
+      abortSignal,
+      consentHandler: async (suffix) => {
+        await ensureCookieConsentBeforeMessagingAction({
+          page,
+          conversationUrl: resolvedConversationUrl,
+          timeoutMs: 4200,
           navigationTimeoutMs: 7000,
           stage: `offer-decline-ui-ready-${suffix}`,
           captureArtifact: captureDeclineArtifact
@@ -5859,7 +6428,19 @@ const declineConversationOffer = async ({
     const paymentActionSelectors = [
       "section.PaymentMessageBox",
       ".PaymentMessageBox",
+      "[class*='PaymentMessageBox']",
+      "[data-testid*='payment-message']",
+      "[data-testid*='paymentMessage']",
       "[data-testid='payment-message-header-extended']"
+    ];
+    const dialogSelectors = [
+      "[role='dialog']",
+      "[aria-modal='true']",
+      ".Modal",
+      "[class*='Modal']",
+      "[class*='Dialog']",
+      "[class*='modal']",
+      "[class*='dialog']"
     ];
     const declineLabels = [
       "Anfrage ablehnen",
@@ -5884,420 +6465,212 @@ const declineConversationOffer = async ({
       "Weiterlesen"
     ];
 
-    await ensureCookieConsentBeforeMessagingAction({
+    const consentHandledBeforeClicks = await ensureCookieConsentBeforeMessagingAction({
       page,
       conversationUrl: resolvedConversationUrl,
       timeoutMs: 5500,
       navigationTimeoutMs: 8000,
       stage: "offer-decline-before-clicks",
       captureArtifact: captureDeclineArtifact
-    }).catch(() => {});
+    }).catch(() => false);
+    if (!consentHandledBeforeClicks && (await isConsentOverlayVisible(page))) {
+      const error = new Error("CONSENT_REQUIRED");
+      error.code = "CONSENT_REQUIRED";
+      error.details = `offer-decline-before-clicks:${getSafePageUrl(page)}`;
+      throw error;
+    }
 
-    const hasVisibleButtonsOutsidePayment = async (labels) => {
-      const contexts = getPageContexts(page, { mainFrameOnly: false });
-      for (const context of contexts) {
-        const hasVisible = await evaluateInContext(context, (needles, excludeSelectors) => {
-          const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-          const preparedNeedles = (Array.isArray(needles) ? needles : [])
-            .map((value) => normalize(value))
-            .filter(Boolean);
-          if (!preparedNeedles.length) return false;
-          const isVisible = (node) => {
-            if (!node) return false;
-            const style = window.getComputedStyle(node);
-            if (!style) return false;
-            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-              return false;
-            }
-            const rect = node.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-          };
-          const isEnabled = (node) => {
-            if (!node) return false;
-            if (node.hasAttribute("disabled")) return false;
-            if (String(node.getAttribute("aria-disabled") || "").toLowerCase() === "true") return false;
-            if (String(node.getAttribute("aria-busy") || "").toLowerCase() === "true") return false;
-            return true;
-          };
-          const getComposedParent = (node) => {
-            if (!node) return null;
-            if (node.parentElement) return node.parentElement;
-            const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
-            return root && root.host ? root.host : null;
-          };
-          const isInsideSelectors = (node, selectors) => {
-            if (!node || !Array.isArray(selectors) || !selectors.length) return false;
-            return selectors.some((selector) => {
-              if (!selector) return false;
-              let current = node;
-              while (current) {
-                try {
-                  if (typeof current.matches === "function" && current.matches(selector)) return true;
-                } catch (error) {
-                  return false;
-                }
-                current = getComposedParent(current);
-              }
-              return false;
-            });
-          };
+    // Decline flow as performed by a real user:
+    // 1) Inline in offer/payment box: "Anfrage ablehnen"
+    // 2) Modal: "Anfrage ablehnen"
+    // 3) Modal: "Angebot ablehnen"
 
-          const collectRoots = () => {
-            const roots = [document];
-            const queue = [document];
-            const seen = new Set([document]);
-            while (queue.length) {
-              const root = queue.shift();
-              let nodes = [];
-              try {
-                nodes = Array.from(root.querySelectorAll("*"));
-              } catch (error) {
-                nodes = [];
-              }
-              for (const node of nodes) {
-                const shadowRoot = node?.shadowRoot;
-                if (!shadowRoot || seen.has(shadowRoot)) continue;
-                seen.add(shadowRoot);
-                roots.push(shadowRoot);
-                queue.push(shadowRoot);
-              }
-            }
-            return roots;
-          };
-
-          const nodes = collectRoots().flatMap((root) => {
-            try {
-              return Array.from(root.querySelectorAll("button, [role='button'], a"));
-            } catch (error) {
-              return [];
-            }
-          });
-          return nodes.some((node) => {
-            if (!isVisible(node)) return false;
-            if (!isEnabled(node)) return false;
-            if (isInsideSelectors(node, excludeSelectors)) return false;
-            const text = normalize(
-              node.textContent
-              || node.getAttribute("aria-label")
-              || node.getAttribute("title")
-              || node.getAttribute("value")
-            );
-            if (!text) return false;
-            return preparedNeedles.some((label) => text === label || text.includes(label));
-          });
-        }, labels, paymentActionSelectors);
-        if (hasVisible) return true;
-      }
-      return false;
-    };
-
-    const hasInlineDeclineButtons = async () => {
-      const contexts = getPageContexts(page, { mainFrameOnly: false });
-      for (const context of contexts) {
-        const hasInline = await evaluateInContext(context, (selectors) => {
-          const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-          const isVisible = (node) => {
-            if (!node) return false;
-            const style = window.getComputedStyle(node);
-            if (!style) return false;
-            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-              return false;
-            }
-            const rect = node.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-          };
-          const isEnabled = (node) => {
-            if (!node) return false;
-            if (node.hasAttribute("disabled")) return false;
-            if (String(node.getAttribute("aria-disabled") || "").toLowerCase() === "true") return false;
-            if (String(node.getAttribute("aria-busy") || "").toLowerCase() === "true") return false;
-            return true;
-          };
-          return selectors.some((selector) => {
-            let roots = [];
-            try {
-              roots = Array.from(document.querySelectorAll(selector));
-            } catch (error) {
-              roots = [];
-            }
-            return roots.some((root) => {
-              const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
-              return buttons.some((button) => {
-                if (!isVisible(button)) return false;
-                if (!isEnabled(button)) return false;
-                const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
-                return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
-              });
-            });
-          });
-        }, paymentActionSelectors);
-        if (hasInline) return true;
-      }
-      return false;
-    };
-
-    await page.waitForFunction((selectors) => {
-      const normalize = (value) => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
-      const isVisible = (node) => {
-        if (!node) return false;
-        const style = window.getComputedStyle(node);
-        if (!style) return false;
-        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
-          return false;
-        }
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      };
-      return selectors.some((selector) => {
-        let roots = [];
-        try {
-          roots = Array.from(document.querySelectorAll(selector));
-        } catch (error) {
-          roots = [];
-        }
-        return roots.some((root) => {
-          const buttons = Array.from(root.querySelectorAll("button, [role='button'], a"));
-          return buttons.some((button) => {
-            if (!isVisible(button)) return false;
-            const text = normalize(button.textContent || button.getAttribute("aria-label") || button.getAttribute("title"));
-            return text.includes("anfrage ablehnen") || text.includes("angebot ablehnen");
-          });
-        });
-      });
-    }, { timeout: 1000 }, paymentActionSelectors).catch(() => {});
-
-    // There can be several onboarding/payment dialogs before the actual decline action appears.
-    for (let pass = 0; pass < 3 && hasTimeLeft(5000); pass += 1) {
+    // Close generic onboarding dialogs before starting the confirmation chain.
+    for (let pass = 0; pass < 2 && hasTimeLeft(4200); pass += 1) {
       const progressed = await clickVisibleButtonByText(page, modalContinueLabels, {
-        timeout: 850,
+        timeout: 900,
         preferDialog: true,
         preferTopLayer: true,
         mainFrameOnly: false
       });
       if (!progressed) break;
       await humanPause(90, 150);
-      await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
+    }
+    await dismissConversationBlockingModals(page, {
+      maxPasses: 2,
+      mainFrameOnly: false,
+      skipIfTextIncludes: ["Anfrage ablehnen", "Angebot ablehnen"]
+    }).catch(() => {});
+
+    if (!firstDeclineClickStartedAt) {
+      firstDeclineClickStartedAt = Date.now();
     }
 
-    const clicked = await clickVisibleButtonByText(page, declineLabels, {
-      timeout: 4200,
-      preferDialog: true,
-      preferTopLayer: true,
-      mainFrameOnly: false
-    });
-    let declineClicksPerformed = Boolean(clicked);
-    if (!clicked) {
-      const fallbackClicked = await clickVisibleButtonByText(page, declineLabels, {
-        timeout: 2200,
+    const clickDeclineInline = async () => {
+      const timeoutMs = getStepTimeout(6500, 1600, 12000, "offer-decline-step1-inline");
+      return clickVisibleButtonByText(page, ["Anfrage ablehnen"], {
+        timeout: timeoutMs,
+        preferTopLayer: true,
         requireInSelectors: paymentActionSelectors,
+        excludeInSelectors: dialogSelectors,
         mainFrameOnly: false
       });
-      if (!fallbackClicked) {
-        const clickedAfterContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-          timeout: 1200,
-          preferDialog: true,
-          preferTopLayer: true,
-          mainFrameOnly: false
-        });
-        if (clickedAfterContinue) {
-          await humanPause(100, 170);
-        }
-        const finalTry = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: 1800,
-          preferDialog: true,
-          preferTopLayer: true,
-          mainFrameOnly: false
-        });
-        if (!finalTry) {
-          const maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
-          if (isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined)) {
-            return maybeAlreadyDeclined;
-          }
-          const notFoundError = new Error("DECLINE_BUTTON_NOT_FOUND");
-          notFoundError.details = "decline-not-found-after-initial-clicks";
-          await captureDeclineArtifact("decline-button-not-found", page, {
-            stage: "after-initial-clicks"
-          }, notFoundError);
-          throw notFoundError;
-        }
-        declineClicksPerformed = true;
-      } else {
-        declineClicksPerformed = true;
-      }
-    }
-    await humanPause(100, 170);
-    await performHumanLikePageActivity(page, { intensity: "light" });
-
-    const declineFlowState = async () => {
-      const hasInline = await hasInlineDeclineButtons();
-      const hasModalDecline = await hasVisibleButtonsOutsidePayment(declineLabels);
-      const hasModalContinue = await hasVisibleButtonsOutsidePayment(modalContinueLabels);
-      return {
-        hasInline,
-        hasModalDecline,
-        hasModalContinue,
-        visible: hasInline || hasModalDecline || hasModalContinue
-      };
     };
 
-    let confirmed = false;
-    for (let attempt = 0; attempt < 5 && hasTimeLeft(5000); attempt += 1) {
-      if (isConsentInterruptionUrl(getSafePageUrl(page))) {
-        await ensureCookieConsentBeforeMessagingAction({
-          page,
-          conversationUrl: resolvedConversationUrl,
-          timeoutMs: 5000,
-          navigationTimeoutMs: 7000,
-          stage: `offer-decline-loop-${attempt + 1}`,
-          captureArtifact: captureDeclineArtifact
-        }).catch(() => {});
-      }
-      const state = await declineFlowState();
-      if (!state.visible) {
-        confirmed = true;
-        break;
-      }
-
-      let acted = false;
-      const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-        timeout: state.hasModalContinue ? 1300 : 650,
+    const clickDeclineInDialog = async (needle, contextLabel) => {
+      const timeoutMs = getStepTimeout(8500, 1800, 9000, contextLabel);
+      return clickVisibleButtonByText(page, [needle], {
+        timeout: timeoutMs,
         preferDialog: true,
         preferTopLayer: true,
+        requireInSelectors: dialogSelectors,
         mainFrameOnly: false
       });
-      if (clickedContinue) {
-        acted = true;
-      }
+    };
 
-      const clickedDecline = await clickVisibleButtonByText(page, declineLabels, {
-        timeout: state.hasModalDecline ? 1700 : 750,
-        preferDialog: true,
-        preferTopLayer: true,
-        mainFrameOnly: false
-      });
-      if (clickedDecline) {
-        acted = true;
-        declineClicksPerformed = true;
-      }
-
-      if (state.hasInline) {
-        const clickedInline = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: 900,
-          requireInSelectors: paymentActionSelectors,
-          mainFrameOnly: false
-        });
-        if (clickedInline) {
-          acted = true;
-          declineClicksPerformed = true;
-        }
-      }
-
-      if (!acted) {
-        break;
-      }
-      await humanPause(100, 170);
-      await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
+    ensureDeadline("offer-decline-step1");
+    throwIfAborted("offer-decline-step1");
+    let clickedStep1 = await clickDeclineInline();
+    await captureDeclineArtifact("decline-step1-inline", page, { clicked: clickedStep1 });
+    if (!clickedStep1) {
+      // Some layouts open the decline flow directly in a dialog.
+      clickedStep1 = await clickDeclineInDialog("Anfrage ablehnen", "offer-decline-step1-dialog");
+      await captureDeclineArtifact("decline-step1-dialog", page, { clicked: clickedStep1 });
     }
-
-    if (!confirmed) {
-      const state = await declineFlowState();
-      confirmed = !state.visible;
-    }
-
-    if (!confirmed && declineClicksPerformed && hasTimeLeft(4000)) {
-      for (let retry = 0; retry < 2 && hasTimeLeft(2500); retry += 1) {
-        let acted = false;
-        const clickedContinue = await clickVisibleButtonByText(page, modalContinueLabels, {
-          timeout: 900,
-          preferDialog: true,
-          preferTopLayer: true,
-          mainFrameOnly: false
-        });
-        if (clickedContinue) acted = true;
-        const clickedDecline = await clickVisibleButtonByText(page, declineLabels, {
-          timeout: 1000,
-          preferDialog: true,
-          preferTopLayer: true,
-          mainFrameOnly: false
-        });
-        if (clickedDecline) {
-          acted = true;
-          declineClicksPerformed = true;
-        }
-        if (!acted) break;
-        await humanPause(90, 150);
-      }
-      const state = await declineFlowState();
-      confirmed = !state.visible;
-    }
-
-    if (!confirmed && !declineClicksPerformed) {
+    if (!clickedStep1) {
       const maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
       if (isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined)) {
         return maybeAlreadyDeclined;
       }
       const notFoundError = new Error("DECLINE_BUTTON_NOT_FOUND");
-      notFoundError.details = "decline-not-clicked";
+      notFoundError.details = "step1-anfrage-ablehnen-not-found";
       await captureDeclineArtifact("decline-button-not-found", page, {
-        stage: "decline-not-clicked"
+        step: 1
       }, notFoundError);
       throw notFoundError;
     }
-    if (!confirmed && hasTimeLeft(1000)) {
-      const state = await declineFlowState();
-      if (state.visible) {
-        if (hasTimeLeft(4200)) {
-          try {
-            const retryGotoTimeout = getStepTimeout(
-              localTimeout,
-              3000,
-              2500,
-              "offer-decline-final-reload"
-            );
-            await gotoWithProxyHandling(
-              page,
-              resolvedConversationUrl,
-              { waitUntil: "domcontentloaded", timeout: retryGotoTimeout },
-              "DECLINE_FINAL_RELOAD_GOTO"
-            );
-            await humanPause(90, 150);
-            await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
-            const stateAfterReload = await declineFlowState();
-            if (!stateAfterReload.visible) {
-              confirmed = true;
-            }
-          } catch (error) {
-            await captureDeclineArtifact("decline-final-reload-error", page, {
-              flowVisible: true
-            }, error);
-          }
-        }
-        if (confirmed) {
-          // Conversation refresh can lag UI updates; do not fail if controls disappeared after reload.
-          await captureDeclineArtifact("decline-confirmed-after-reload", page, {
-            flowVisible: false
-          });
-        } else {
-        let maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
-        if (maybeAlreadyDeclined && !isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined) && hasTimeLeft(700)) {
-          await sleep(320);
-          maybeAlreadyDeclined = await fetchAfterSnapshotIfAvailable();
-        }
-        if (isDeclineAppliedInSnapshot(beforeSnapshot, maybeAlreadyDeclined)) {
-          return maybeAlreadyDeclined;
-        }
+
+    await humanPause(110, 190);
+    await performHumanLikePageActivity(page, { intensity: "light" });
+    await ensureCookieConsentBeforeMessagingAction({
+      page,
+      conversationUrl: resolvedConversationUrl,
+      timeoutMs: 2800,
+      navigationTimeoutMs: 6000,
+      stage: "offer-decline-after-step1",
+      captureArtifact: captureDeclineArtifact
+    }).catch(() => {});
+
+    // Step 2: first confirmation modal.
+    ensureDeadline("offer-decline-step2");
+    throwIfAborted("offer-decline-step2");
+    let clickedStep2 = await clickDeclineInDialog("Anfrage ablehnen", "offer-decline-step2-dialog");
+    await captureDeclineArtifact("decline-step2-dialog", page, { clicked: clickedStep2 });
+    if (!clickedStep2) {
+      const step2FallbackTimeoutMs = getStepTimeout(4200, 1300, 8500, "offer-decline-step2-fallback");
+      const step2FallbackClicked = await clickVisibleButtonByText(page, declineLabels, {
+        timeout: step2FallbackTimeoutMs,
+        preferDialog: true,
+        preferTopLayer: true,
+        requireInSelectors: dialogSelectors,
+        mainFrameOnly: false
+      });
+      await captureDeclineArtifact("decline-step2-fallback", page, { clicked: step2FallbackClicked });
+      clickedStep2 = Boolean(step2FallbackClicked);
+    }
+    if (clickedStep2) {
+      await humanPause(100, 180);
+      await performHumanLikePageActivity(page, { intensity: "light" });
+    }
+    await ensureCookieConsentBeforeMessagingAction({
+      page,
+      conversationUrl: resolvedConversationUrl,
+      timeoutMs: 2400,
+      navigationTimeoutMs: 6000,
+      stage: "offer-decline-after-step2",
+      captureArtifact: captureDeclineArtifact
+    }).catch(() => {});
+
+    // Step 3: final confirmation modal.
+    ensureDeadline("offer-decline-step3");
+    throwIfAborted("offer-decline-step3");
+    let clickedStep3 = await clickDeclineInDialog("Angebot ablehnen", "offer-decline-step3-dialog");
+    await captureDeclineArtifact("decline-step3-dialog", page, { clicked: clickedStep3 });
+    if (!clickedStep3) {
+      // Some variants keep the same label in both modals; fall back to any decline-ish label in the dialog.
+      const fallbackTimeoutMs = getStepTimeout(4500, 1400, 7500, "offer-decline-step3-fallback");
+      const fallbackClicked = await clickVisibleButtonByText(page, declineLabels, {
+        timeout: fallbackTimeoutMs,
+        preferDialog: true,
+        preferTopLayer: true,
+        requireInSelectors: dialogSelectors,
+        mainFrameOnly: false
+      });
+      await captureDeclineArtifact("decline-step3-fallback", page, { clicked: fallbackClicked });
+      clickedStep3 = Boolean(fallbackClicked);
+    }
+
+    await humanPause(120, 200);
+    await waitForDeclineNetworkSince(firstDeclineClickStartedAt, 6500).catch(() => false);
+    syncObservedDeclineNetworkSince(firstDeclineClickStartedAt);
+
+    const afterSnapshot = await fetchAfterSnapshotIfAvailable();
+    const declineApplied = isDeclineAppliedInSnapshot(beforeSnapshot, afterSnapshot);
+
+    if (!clickedStep3) {
+      if (declineApplied) {
+        return afterSnapshot;
+      }
+      if (observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick) {
+        await captureDeclineArtifact("decline-confirmed-by-network", page, {
+          observedRequest: observedDeclineMutationAfterClick,
+          observedOk: observedDeclineMutationOkAfterClick,
+          observedUrl: observedDeclineMutationOkUrl || observedDeclineMutationUrl,
+          observedStatus: observedDeclineMutationOkStatus
+        });
+      } else {
         const uiState = await readMessagingConversationUiState(page, resolvedConversationId);
         const bootstrapState = await readMessageboxBootstrapState(page);
         const notAppliedError = new Error("DECLINE_NOT_APPLIED");
-        notAppliedError.details = `decline-flow-still-visible;ui-state:${JSON.stringify(uiState || {}).slice(0, 400)};bootstrap:${JSON.stringify(bootstrapState || {}).slice(0, 400)}`;
+        notAppliedError.details = `decline-step3-not-clicked;ui-state:${JSON.stringify(uiState || {}).slice(0, 400)};bootstrap:${JSON.stringify(bootstrapState || {}).slice(0, 400)}`;
         await captureDeclineArtifact("decline-not-applied", page, {
-          flowVisible: true,
           uiState,
-          bootstrapState
+          bootstrapState,
+          observedRequest: observedDeclineMutationAfterClick,
+          observedOk: observedDeclineMutationOkAfterClick,
+          observedUrl: observedDeclineMutationOkUrl || observedDeclineMutationUrl,
+          observedStatus: observedDeclineMutationOkStatus
         }, notAppliedError);
         throw notAppliedError;
-        }
       }
+    } else if (!declineApplied && !(observedDeclineMutationOkAfterClick || observedDeclineMutationAfterClick)) {
+      const uiState = await readMessagingConversationUiState(page, resolvedConversationId);
+      const bootstrapState = await readMessageboxBootstrapState(page);
+      const notAppliedError = new Error("DECLINE_NOT_APPLIED");
+      notAppliedError.details = `decline-not-confirmed;ui-state:${JSON.stringify(uiState || {}).slice(0, 400)};bootstrap:${JSON.stringify(bootstrapState || {}).slice(0, 400)}`;
+      await captureDeclineArtifact("decline-not-applied", page, {
+        uiState,
+        bootstrapState,
+        observedRequest: observedDeclineMutationAfterClick,
+        observedOk: observedDeclineMutationOkAfterClick,
+        observedUrl: observedDeclineMutationOkUrl || observedDeclineMutationUrl,
+        observedStatus: observedDeclineMutationOkStatus
+      }, notAppliedError);
+      throw notAppliedError;
+    }
+
+    await captureDeclineArtifact("decline-confirmed", page, {
+      clickedStep1,
+      clickedStep2,
+      clickedStep3,
+      declineApplied,
+      observedRequest: observedDeclineMutationAfterClick,
+      observedOk: observedDeclineMutationOkAfterClick,
+      observedUrl: observedDeclineMutationOkUrl || observedDeclineMutationUrl,
+      observedStatus: observedDeclineMutationOkStatus
+    });
+    if (declineApplied && afterSnapshot) {
+      return afterSnapshot;
     }
 
     ensureDeadline("offer-decline-after-clicks");
@@ -6313,6 +6686,24 @@ const declineConversationOffer = async ({
   } finally {
     if (abortSignal && abortListener) {
       abortSignal.removeEventListener("abort", abortListener);
+    }
+    if (page && requestListener) {
+      try {
+        if (typeof page.off === "function") {
+          page.off("request", requestListener);
+        } else if (typeof page.removeListener === "function") {
+          page.removeListener("request", requestListener);
+        }
+      } catch (error) {}
+    }
+    if (page && responseListener) {
+      try {
+        if (typeof page.off === "function") {
+          page.off("response", responseListener);
+        } else if (typeof page.removeListener === "function") {
+          page.removeListener("response", responseListener);
+        }
+      } catch (error) {}
     }
     try { pageEventCollector?.dispose?.(); } catch (e) {}
     await safeCloseBrowser(browser);
@@ -6474,6 +6865,9 @@ const sendConversationMedia = async ({
   let observedSendRequestUrl = "";
   let composerSettledAfterSend = false;
   let sendInteractionTriggered = false;
+  let attachmentsReadyBeforeSend = fileList.length === 0;
+  let uploadMethod = "";
+  let fileInputInfo = null;
 
   const guessExtension = (file) => {
     const name = String(file?.originalname || "").trim().toLowerCase();
@@ -6490,14 +6884,49 @@ const sendConversationMedia = async ({
   };
 
   try {
+    const moveIntoTmpDir = (sourcePath, targetPath) => {
+      try {
+        fs.renameSync(sourcePath, targetPath);
+        return true;
+      } catch (error) {
+        if (error?.code === "EXDEV") {
+          fs.copyFileSync(sourcePath, targetPath);
+          fs.rmSync(sourcePath, { force: true });
+          return true;
+        }
+        throw error;
+      }
+    };
+
     for (let index = 0; index < fileList.length; index += 1) {
       const file = fileList[index];
+      const diskPath = file?.path ? String(file.path) : "";
+      if (diskPath) {
+        let stat = null;
+        try {
+          stat = fs.statSync(diskPath);
+        } catch (error) {
+          stat = null;
+        }
+        if (stat && stat.isFile() && stat.size > 0) {
+          const base = sanitizeFilename(file?.originalname || path.basename(diskPath) || `image-${index + 1}`);
+          const ext = guessExtension(file);
+          const safeName = base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`;
+          const uniquePrefix = `${index + 1}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+          const targetPath = path.join(tmpDir, `${uniquePrefix}-${safeName}`);
+          moveIntoTmpDir(diskPath, targetPath);
+          tempPaths.push(targetPath);
+          continue;
+        }
+      }
+
       const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.from(file?.buffer || "");
       if (!buffer.length) continue;
       const base = sanitizeFilename(file?.originalname || `image-${index + 1}`);
       const ext = guessExtension(file);
       const safeName = base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`;
-      const targetPath = path.join(tmpDir, safeName);
+      const uniquePrefix = `${index + 1}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+      const targetPath = path.join(tmpDir, `${uniquePrefix}-${safeName}`);
       fs.writeFileSync(targetPath, buffer);
       tempPaths.push(targetPath);
     }
@@ -6596,11 +7025,21 @@ const sendConversationMedia = async ({
         await acceptGdprConsent(page, { timeout: MESSAGE_GDPR_TIMEOUT_MS }).catch(() => {});
       }
       await humanPause(40, 120);
+      if (hasTimeLeft(12000)) {
+        await captureMediaArtifact("home-opened", page, {
+          url: getSafePageUrl(page)
+        });
+      }
 
       ensureDeadline("send-media-before-set-cookie-after-home");
       throwIfAborted("send-media-before-set-cookie-after-home");
       await page.setCookie(...cookies);
       await humanPause(35, 90);
+      if (hasTimeLeft(12000)) {
+        await captureMediaArtifact("cookies-set", page, {
+          url: getSafePageUrl(page)
+        });
+      }
       const conversationGotoTimeout = getStepTimeout(
         localTimeout,
         4500,
@@ -6614,6 +7053,11 @@ const sendConversationMedia = async ({
         "MEDIA_CONVERSATION_GOTO"
       );
       throwIfAborted("send-media-after-conversation-goto");
+      if (hasTimeLeft(12000)) {
+        await captureMediaArtifact("conversation-domcontentloaded", page, {
+          url: getSafePageUrl(page)
+        });
+      }
       if (await isAuthFailure(page)) {
         const error = new Error("AUTH_REQUIRED");
         error.code = "AUTH_REQUIRED";
@@ -6633,7 +7077,13 @@ const sendConversationMedia = async ({
         stage: "send-media-after-open",
         captureArtifact: captureMediaArtifact
       }).catch(() => false);
-      if (!consentHandledAfterOpen && isConsentInterruptionUrl(getSafePageUrl(page))) {
+      if (
+        !consentHandledAfterOpen
+        && (
+          isConsentInterruptionUrl(getSafePageUrl(page))
+          || (await isConsentOverlayVisible(page))
+        )
+      ) {
         const error = new Error("CONSENT_REQUIRED");
         error.code = "CONSENT_REQUIRED";
         error.details = `send-media-after-open:${getSafePageUrl(page)}`;
@@ -6645,26 +7095,28 @@ const sendConversationMedia = async ({
         filesPreparedCount: tempPaths.length,
         textLength: trimmedText.length
       });
-      const uiReadyReserveMs = tempPaths.length ? 55000 : 40000;
+      // UI can take a long time to leave the skeleton state behind slow proxies.
+      // Reserve enough time for upload/send, but allow a longer UI-ready wait than before.
+      const uiReadyReserveMs = tempPaths.length ? 35000 : 25000;
       const uiReadyTimeoutMs = getStepTimeout(
         remainingMs() - uiReadyReserveMs,
         12000,
         uiReadyReserveMs,
         "send-media-ui-ready"
       );
-	      await waitForConversationUiReady({
-	        page,
-	        conversationId: resolvedConversationId,
-	        conversationUrl: resolvedConversationUrl,
-	        mode: "send-media",
-	        timeoutMs: uiReadyTimeoutMs,
-	        gotoTimeoutMs: 9000,
-	        captureArtifact: captureMediaArtifact,
-	        abortSignal,
-	        consentHandler: async (suffix) => {
-	          await ensureCookieConsentBeforeMessagingAction({
-	            page,
-	            conversationUrl: resolvedConversationUrl,
+      await waitForConversationUiReady({
+        page,
+        conversationId: resolvedConversationId,
+        conversationUrl: resolvedConversationUrl,
+        mode: "send-media",
+        timeoutMs: uiReadyTimeoutMs,
+        gotoTimeoutMs: 9000,
+        captureArtifact: captureMediaArtifact,
+        abortSignal,
+        consentHandler: async (suffix) => {
+          await ensureCookieConsentBeforeMessagingAction({
+            page,
+            conversationUrl: resolvedConversationUrl,
             timeoutMs: 4200,
             navigationTimeoutMs: 7000,
             stage: `send-media-ui-ready-${suffix}`,
@@ -6719,7 +7171,13 @@ const sendConversationMedia = async ({
           stage: "send-media-before-upload-controls",
           captureArtifact: captureMediaArtifact
         }).catch(() => false);
-        if (!consentHandledBeforeUpload && isConsentInterruptionUrl(getSafePageUrl(page))) {
+        if (
+          !consentHandledBeforeUpload
+          && (
+            isConsentInterruptionUrl(getSafePageUrl(page))
+            || (await isConsentOverlayVisible(page))
+          )
+        ) {
           const error = new Error("CONSENT_REQUIRED");
           error.code = "CONSENT_REQUIRED";
           error.details = `send-media-before-upload-controls:${getSafePageUrl(page)}`;
@@ -6807,6 +7265,73 @@ const sendConversationMedia = async ({
         ];
         let uploaded = false;
         let fileInputHandle = null;
+        const describeFileInput = async (handle) => {
+          if (!handle) return null;
+          return handle.evaluate((node) => {
+            const toText = (value, max = 180) => {
+              const raw = String(value || "");
+              if (raw.length <= max) return raw;
+              return raw.slice(0, max) + "…";
+            };
+            const getComposedParent = (current) => {
+              if (!current) return null;
+              if (current.parentElement) return current.parentElement;
+              const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+              return root && root.host ? root.host : null;
+            };
+            const matchesAny = (current, selectors) => {
+              for (const selector of selectors) {
+                if (!selector) continue;
+                try {
+                  if (typeof current.matches === "function" && current.matches(selector)) return true;
+                } catch (error) {
+                  // ignore selector errors
+                }
+              }
+              return false;
+            };
+            const isInsideReplyBox = (() => {
+              const selectors = [".ReplyBox", "[class*='ReplyBox']", "[class*='Reply']", "[data-testid*='reply']"];
+              let current = node;
+              while (current) {
+                if (matchesAny(current, selectors)) return true;
+                current = getComposedParent(current);
+              }
+              return false;
+            })();
+
+            const tag = String(node?.tagName || "").toUpperCase();
+            const type = String(node?.getAttribute?.("type") || "").toLowerCase();
+            return {
+              tag,
+              type,
+              id: toText(node?.id || ""),
+              name: toText(node?.getAttribute?.("name") || ""),
+              accept: toText(node?.getAttribute?.("accept") || ""),
+              multiple: Boolean(node?.multiple),
+              disabled: Boolean(node?.disabled),
+              dataTestId: toText(node?.getAttribute?.("data-testid") || ""),
+              dataQa: toText(node?.getAttribute?.("data-qa") || ""),
+              className: toText(node?.className || ""),
+              insideReplyBox: isInsideReplyBox,
+              outerHtml: toText(node?.outerHTML || "", 420)
+            };
+          }).catch(() => null);
+        };
+
+        const isLikelyReplyFileInput = async (handle) => {
+          const info = await describeFileInput(handle);
+          if (!info) return false;
+          if (info.tag !== "INPUT") return false;
+          if (info.type !== "file") return false;
+          if (info.disabled) return false;
+          const accept = String(info.accept || "").toLowerCase();
+          const testId = String(info.dataTestId || "").toLowerCase();
+          const qa = String(info.dataQa || "").toLowerCase();
+          const acceptOk = !accept || accept.includes("image");
+          const idOk = testId.includes("reply") || qa.includes("reply");
+          return Boolean(info.insideReplyBox && (acceptOk || idOk));
+        };
         const getDirectReplyFileInput = async () => {
           const handle = await page.evaluateHandle((selectors) => {
             const list = Array.isArray(selectors) ? selectors : [];
@@ -6828,6 +7353,99 @@ const sendConversationMedia = async ({
             return null;
           }
           return element;
+        };
+        const getReplyFileInputNearCameraButton = async (cameraButtonHandle) => {
+          if (!cameraButtonHandle) return null;
+          const maybeHandle = await cameraButtonHandle.evaluateHandle((buttonNode) => {
+            const getComposedParent = (node) => {
+              if (!node) return null;
+              if (node.parentElement) return node.parentElement;
+              const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+              return root && root.host ? root.host : null;
+            };
+
+            const findFileInputInScope = (scope) => {
+              if (!scope || typeof scope.querySelector !== "function") return null;
+              const selectors = [
+                "input[data-testid='reply-box-file-input']",
+                "input[data-qa*='reply-box-file-input']",
+                "input[type='file'][accept*='image']",
+                "input[type='file'][accept*='image/*']",
+                "input[type='file']"
+              ];
+              for (const selector of selectors) {
+                let candidate = null;
+                try {
+                  candidate = scope.querySelector(selector);
+                } catch (error) {
+                  candidate = null;
+                }
+                if (candidate) return candidate;
+              }
+              return null;
+            };
+
+            const button = buttonNode;
+            let current = button;
+            for (let depth = 0; depth < 12 && current; depth += 1) {
+              const direct = findFileInputInScope(current);
+              if (direct) return direct;
+              const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+              if (root && typeof root.querySelector === "function") {
+                const inRoot = findFileInputInScope(root);
+                if (inRoot) return inRoot;
+              }
+              current = getComposedParent(current);
+            }
+
+            return (
+              document.querySelector("input[data-testid='reply-box-file-input']")
+              || document.querySelector(".ReplyBox input[type='file'], [class*='ReplyBox'] input[type='file']")
+              || document.querySelector("input[type='file']")
+              || null
+            );
+          }).catch(() => null);
+          if (!maybeHandle) return null;
+          const element = typeof maybeHandle.asElement === "function" ? maybeHandle.asElement() : null;
+          if (!element) {
+            await maybeHandle.dispose().catch(() => {});
+            return null;
+          }
+          return element;
+        };
+        const uploadViaInputHandle = async ({
+          inputHandle,
+          methodLabel = "input",
+          stage = "upload-input-dispatched",
+          uploadButtonInfo = null
+        } = {}) => {
+          if (!inputHandle) return false;
+          if (!(await isLikelyReplyFileInput(inputHandle))) return false;
+          await inputHandle.evaluate((node) => {
+            node.hidden = false;
+            node.style.display = "block";
+            node.style.visibility = "visible";
+            node.style.opacity = "1";
+          }).catch(() => {});
+          fileInputInfo = await describeFileInput(inputHandle);
+          await inputHandle.uploadFile(...tempPaths);
+          const selectedInputFileCount = await inputHandle.evaluate((node) => Number(node?.files?.length || 0)).catch(() => 0);
+          await inputHandle.evaluate((node) => {
+            node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+          }).catch(() => {});
+          uploadMethod = methodLabel;
+          if (!fileInputHandle) {
+            fileInputHandle = inputHandle;
+          }
+          await captureMediaArtifact(stage, page, {
+            uploadMethod,
+            selectedInputFileCount,
+            fileInputInfo,
+            uploadButtonInfo,
+            filesPreparedCount: tempPaths.length
+          });
+          return true;
         };
         const collectComposerDiagnostics = async () => page.evaluate(() => {
           const count = (selector) => {
@@ -6906,16 +7524,115 @@ const sendConversationMedia = async ({
             }
           }
           if (!cameraButton?.handle) return false;
-          const chooserPromise = page.waitForFileChooser({ timeout: 4200 }).catch(() => null);
+          const uploadButtonInfo = await cameraButton.handle.evaluate((node) => {
+            const toText = (value, max = 180) => {
+              const raw = String(value || "");
+              if (raw.length <= max) return raw;
+              return raw.slice(0, max) + "…";
+            };
+            const getComposedParent = (current) => {
+              if (!current) return null;
+              if (current.parentElement) return current.parentElement;
+              const root = typeof current.getRootNode === "function" ? current.getRootNode() : null;
+              return root && root.host ? root.host : null;
+            };
+            const matchesAny = (current, selectors) => {
+              for (const selector of selectors) {
+                if (!selector) continue;
+                try {
+                  if (typeof current.matches === "function" && current.matches(selector)) return true;
+                } catch (error) {
+                  // ignore selector errors
+                }
+              }
+              return false;
+            };
+            const isInsideReplyBox = (() => {
+              const selectors = [".ReplyBox", "[class*='ReplyBox']", "[class*='Reply']", "[data-testid*='reply']"];
+              let current = node;
+              while (current) {
+                if (matchesAny(current, selectors)) return true;
+                current = getComposedParent(current);
+              }
+              return false;
+            })();
+            const tag = String(node?.tagName || "").toUpperCase();
+            return {
+              tag,
+              ariaLabel: toText(node?.getAttribute?.("aria-label") || ""),
+              dataTestId: toText(node?.getAttribute?.("data-testid") || ""),
+              className: toText(node?.className || ""),
+              text: toText(node?.textContent || ""),
+              insideReplyBox: isInsideReplyBox,
+              outerHtml: toText(node?.outerHTML || "", 420)
+            };
+          }).catch(() => null);
+          await captureMediaArtifact("upload-button-picked", page, {
+            uploadButtonInfo
+          });
+          if (uploadButtonInfo && uploadButtonInfo.insideReplyBox === false) {
+            // Avoid clicking camera icons from message history attachments.
+            return false;
+          }
+          let nearReplyInputHandle = await getReplyFileInputNearCameraButton(cameraButton.handle);
+          if (nearReplyInputHandle && !(await isLikelyReplyFileInput(nearReplyInputHandle))) {
+            await nearReplyInputHandle.dispose().catch(() => {});
+            nearReplyInputHandle = null;
+          }
+          if (nearReplyInputHandle && !fileInputHandle) {
+            fileInputHandle = nearReplyInputHandle;
+          }
+          const uploadedViaNearInputFirst = await uploadViaInputHandle({
+            inputHandle: nearReplyInputHandle || fileInputHandle,
+            methodLabel: "input-near-camera",
+            stage: "upload-near-camera-direct-dispatched",
+            uploadButtonInfo
+          }).catch(() => false);
+          if (uploadedViaNearInputFirst) {
+            if (nearReplyInputHandle && nearReplyInputHandle !== fileInputHandle) {
+              await nearReplyInputHandle.dispose().catch(() => {});
+            }
+            return true;
+          }
+          const chooserWaitBudget = Math.max(900, Math.min(3000, remainingMs() - 7000));
+          const chooserPromise = Promise.race([
+            page.waitForFileChooser({ timeout: chooserWaitBudget }).catch(() => null),
+            sleep(chooserWaitBudget + 250).then(() => null)
+          ]);
           const clickedCamera = await clickHandleHumanLike(page, cameraButton.handle);
           if (!clickedCamera) {
             await cameraButton.handle.click({ delay: 30 }).catch(() => {});
           }
           const chooser = await chooserPromise;
-          if (!chooser) return false;
+          if (!chooser) {
+            const uploadedViaNearInput = await uploadViaInputHandle({
+              inputHandle: nearReplyInputHandle || fileInputHandle,
+              methodLabel: "input-near-camera",
+              stage: "upload-near-camera-dispatched",
+              uploadButtonInfo
+            }).catch(() => false);
+            if (uploadedViaNearInput) return true;
+            if (nearReplyInputHandle && nearReplyInputHandle !== fileInputHandle) {
+              await nearReplyInputHandle.dispose().catch(() => {});
+            }
+            return false;
+          }
           await chooser.accept(tempPaths);
+          uploadMethod = "file-chooser";
+          await captureMediaArtifact("file-chooser-accepted", page, {
+            uploadMethod,
+            uploadButtonInfo,
+            filesPreparedCount: tempPaths.length
+          });
+          if (nearReplyInputHandle && nearReplyInputHandle !== fileInputHandle) {
+            await nearReplyInputHandle.dispose().catch(() => {});
+          }
           return true;
         };
+
+        // Prefer the same path as a real user: click the upload button and accept the file chooser.
+        // Some versions of the messagebox UI rely on composed events that can be flaky with direct uploadFile().
+        uploaded = await tryCameraChooserUpload();
 
         for (let attempt = 0; attempt < 3 && !uploaded && hasTimeLeft(11000); attempt += 1) {
           if (isConsentInterruptionUrl(getSafePageUrl(page))) {
@@ -6940,11 +7657,11 @@ const sendConversationMedia = async ({
           if (!fileInputHandle) {
             fileInputHandle = await getDirectReplyFileInput();
           }
-          if (fileInputHandle) break;
-          if (attempt === 0 || randomChance(0.35)) {
-            uploaded = await tryCameraChooserUpload();
-            if (uploaded) break;
+          if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+            await fileInputHandle.dispose().catch(() => {});
+            fileInputHandle = null;
           }
+          if (fileInputHandle) break;
           await dismissConversationBlockingModals(page, { maxPasses: 2, mainFrameOnly: false }).catch(() => {});
           await humanPause(100, 180);
         }
@@ -6963,6 +7680,10 @@ const sendConversationMedia = async ({
         }
         if (!uploaded && !fileInputHandle) {
           fileInputHandle = await getDirectReplyFileInput();
+        }
+        if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+          await fileInputHandle.dispose().catch(() => {});
+          fileInputHandle = null;
         }
 
         if (!uploaded && !fileInputHandle && hasTimeLeft(14000)) {
@@ -7024,6 +7745,10 @@ const sendConversationMedia = async ({
             if (!fileInputHandle) {
               fileInputHandle = await getDirectReplyFileInput();
             }
+            if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+              await fileInputHandle.dispose().catch(() => {});
+              fileInputHandle = null;
+            }
             if (fileInputHandle) break;
             await humanPause(110, 190);
           }
@@ -7052,25 +7777,112 @@ const sendConversationMedia = async ({
             node.style.opacity = "1";
           }).catch(() => {});
 
+          fileInputInfo = await describeFileInput(fileInputHandle);
+          uploadMethod = uploadMethod || "input";
+          await captureMediaArtifact("file-input-picked", page, {
+            uploadMethod,
+            fileInputInfo
+          });
+
           await fileInputHandle.uploadFile(...tempPaths);
+          const selectedInputFileCount = await fileInputHandle.evaluate((node) => Number(node?.files?.length || 0)).catch(() => 0);
           await fileInputHandle.evaluate((node) => {
-            node.dispatchEvent(new Event("input", { bubbles: true }));
-            node.dispatchEvent(new Event("change", { bubbles: true }));
+            node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
           }).catch(() => {});
+          await captureMediaArtifact("upload-input-dispatched", page, {
+            uploadMethod,
+            selectedInputFileCount,
+            fileInputInfo
+          });
         }
 
         await humanPause(140, 220);
-        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 3500).catch(() => false);
+        let attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 4500).catch(() => false);
         let sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 3000).catch(() => false);
         if (!attachmentsReady && !sendReadyAfterAttachment) {
           await humanPause(140, 240);
-          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 2500).catch(() => false);
+          attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 3500).catch(() => false);
           sendReadyAfterAttachment = await waitForMessageSendButtonReady(page, 2500).catch(() => false);
         }
-        if (!attachmentsReady && !sendReadyAfterAttachment) {
-          // Kleinanzeigen can keep image previews in loading state for a while.
-          // Do not fail hard here; proceed to send click path with retries below.
-          await humanPause(100, 170);
+        if (!attachmentsReady && !uploadMethod) {
+          uploadMethod = "unknown";
+        }
+        if (!attachmentsReady && (uploadMethod === "file-chooser" || uploadMethod === "input-near-camera")) {
+          // If the chooser was opened from the wrong button/input (or the UI ignored it),
+          // try the direct input upload path before we retry the chooser.
+          if (!fileInputHandle) {
+            const fallbackInput = await findFirstHandleInAnyContext(page, fileInputSelectors, {
+              timeout: 2800,
+              requireVisible: false,
+              mainFrameOnly: false
+            });
+            fileInputHandle = fallbackInput?.handle || null;
+          }
+          if (!fileInputHandle) {
+            fileInputHandle = await getDirectReplyFileInput();
+          }
+          if (fileInputHandle && !(await isLikelyReplyFileInput(fileInputHandle))) {
+            await fileInputHandle.dispose().catch(() => {});
+            fileInputHandle = null;
+          }
+          if (fileInputHandle) {
+            fileInputInfo = await describeFileInput(fileInputHandle);
+            await captureMediaArtifact("upload-fallback-input-before", page, {
+              uploadMethod,
+              fileInputInfo,
+              filesPreparedCount: tempPaths.length
+            });
+            await fileInputHandle.uploadFile(...tempPaths);
+            const selectedInputFileCount = await fileInputHandle.evaluate((node) => Number(node?.files?.length || 0)).catch(() => 0);
+            await fileInputHandle.evaluate((node) => {
+              node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+              node.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+            }).catch(() => {});
+            uploadMethod = "input-fallback";
+            await captureMediaArtifact("upload-fallback-input-dispatched", page, {
+              uploadMethod,
+              selectedInputFileCount,
+              fileInputInfo,
+              filesPreparedCount: tempPaths.length
+            });
+            await humanPause(140, 240);
+            attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 4500).catch(() => false);
+          }
+        }
+        if (!attachmentsReady) {
+          // Last attempt: use file chooser path even if we already used the file input.
+          const chooserUploaded = await tryCameraChooserUpload();
+          if (chooserUploaded) {
+            await humanPause(140, 240);
+            attachmentsReady = await waitForMessageAttachmentReady(page, tempPaths.length, 4500).catch(() => false);
+          }
+        }
+
+        attachmentsReadyBeforeSend = Boolean(attachmentsReady);
+        await captureMediaArtifact("upload-checked", page, {
+          uploadMethod,
+          attachmentsReadyBeforeSend,
+          sendReadyAfterAttachment,
+          fileInputInfo,
+          filesPreparedCount: tempPaths.length
+        });
+        if (!attachmentsReadyBeforeSend) {
+          const diagnostics = await collectComposerDiagnostics();
+          const uiState = await readMessagingConversationUiState(page, resolvedConversationId);
+          const bootstrapState = await readMessageboxBootstrapState(page);
+          const error = new Error("MESSAGE_ATTACHMENTS_NOT_READY");
+          error.code = "MESSAGE_ATTACHMENTS_NOT_READY";
+          error.details = `uploadMethod=${uploadMethod};diagnostics=${JSON.stringify(diagnostics).slice(0, 500)};uiState=${JSON.stringify(uiState || {}).slice(0, 500)};bootstrap=${JSON.stringify(bootstrapState || {}).slice(0, 500)}`;
+          await captureMediaArtifact("attachments-not-ready", page, {
+            uploadMethod,
+            diagnostics,
+            uiState,
+            bootstrapState,
+            fileInputInfo,
+            filesPreparedCount: tempPaths.length
+          }, error);
+          throw error;
         }
         await performHumanLikePageActivity(page, { intensity: "light" });
       }
@@ -7111,35 +7923,73 @@ const sendConversationMedia = async ({
       await dismissConversationBlockingModals(page, { maxPasses: 3, mainFrameOnly: false }).catch(() => {});
 
       const sendSelectors = [
+        ".ReplyBox .Reply--Actions-Send",
+        "[class*='ReplyBox'] .Reply--Actions-Send",
+        "[class*='ReplyBox'] [class*='Reply--Actions-Send']",
+        ".Reply--Actions-Send",
+        "[class*='Reply--Actions-Send']",
         ".ReplyBox button[data-testid='submit-button'][aria-label*='Senden']",
         "[class*='ReplyBox'] button[data-testid='submit-button'][aria-label*='Senden']",
+        ".Reply--Actions-Send button[data-testid='submit-button'][aria-label*='Senden']",
+        "[class*='Reply--Actions-Send'] button[data-testid='submit-button'][aria-label*='Senden']",
         "button[data-testid='submit-button'][aria-label*='Senden']",
         ".ReplyBox button[data-testid='submit-button']",
         "[class*='ReplyBox'] button[data-testid='submit-button']",
+        ".Reply--Actions-Send button[data-testid='submit-button']",
+        "[class*='Reply--Actions-Send'] button[data-testid='submit-button']",
         ".ReplyBox button[aria-label*='Senden']",
         "[class*='ReplyBox'] button[aria-label*='Senden']",
+        ".ReplyBox button[type='submit']",
+        "[class*='ReplyBox'] button[type='submit']",
+        ".Reply--Actions-Send button[type='submit']",
+        "[class*='Reply--Actions-Send'] button[type='submit']",
         "button[data-testid='submit-button']",
-        "button[aria-label*='Senden']"
+        "button[aria-label*='Senden']",
+        "button[aria-label*='Send']"
       ];
-      await ensureCookieConsentBeforeMessagingAction({
+      const consentHandledBeforeSendClick = await ensureCookieConsentBeforeMessagingAction({
         page,
         conversationUrl: resolvedConversationUrl,
         timeoutMs: 5000,
         navigationTimeoutMs: 7000,
         stage: "send-media-before-send-click",
         captureArtifact: captureMediaArtifact
-      }).catch(() => {});
+      }).catch(() => false);
+      if (
+        !consentHandledBeforeSendClick
+        && (
+          isConsentInterruptionUrl(getSafePageUrl(page))
+          || (await isConsentOverlayVisible(page))
+        )
+      ) {
+        const error = new Error("CONSENT_REQUIRED");
+        error.code = "CONSENT_REQUIRED";
+        error.details = `send-media-before-send-click:${getSafePageUrl(page)}`;
+        throw error;
+      }
       ensureDeadline("send-media-before-send-click");
+      const sendButtonReadyTimeout = getStepTimeout(
+        tempPaths.length ? 7000 : 5200,
+        1800,
+        tempPaths.length ? 10000 : 7800,
+        "send-media-send-button-ready"
+      );
+      const sendClickTimeout = getStepTimeout(
+        tempPaths.length ? 7000 : 5200,
+        1600,
+        tempPaths.length ? 8500 : 7000,
+        "send-media-send-click"
+      );
       const sendAttemptStartedAt = Date.now();
-      await waitForDynamicContent(page, sendSelectors, 4500);
-      await waitForMessageSendButtonReady(page, 2500).catch(() => false);
+      await waitForDynamicContent(page, sendSelectors, Math.max(1800, Math.min(4800, sendButtonReadyTimeout))).catch(() => {});
+      await waitForMessageSendButtonReady(page, sendButtonReadyTimeout).catch(() => false);
       let sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, {
-        timeout: 4500,
+        timeout: sendClickTimeout,
         mainFrameOnly: false
       });
       if (!sendClicked) {
         sendClicked = await clickVisibleButtonByText(page, ["Senden"], {
-          timeout: 1200,
+          timeout: Math.max(1000, Math.min(2200, sendClickTimeout)),
           preferTopLayer: true,
           mainFrameOnly: false
         });
@@ -7147,12 +7997,24 @@ const sendConversationMedia = async ({
       if (!sendClicked) {
         sendClicked = await page.evaluate(() => {
           const selectors = [
+            ".ReplyBox .Reply--Actions-Send",
+            "[class*='ReplyBox'] .Reply--Actions-Send",
+            "[class*='ReplyBox'] [class*='Reply--Actions-Send']",
+            ".Reply--Actions-Send",
+            "[class*='Reply--Actions-Send']",
             ".ReplyBox button[data-testid='submit-button']",
             "[class*='ReplyBox'] button[data-testid='submit-button']",
+            ".Reply--Actions-Send button[data-testid='submit-button']",
+            "[class*='Reply--Actions-Send'] button[data-testid='submit-button']",
             ".ReplyBox button[aria-label*='Senden']",
             "[class*='ReplyBox'] button[aria-label*='Senden']",
+            ".ReplyBox button[type='submit']",
+            "[class*='ReplyBox'] button[type='submit']",
+            ".Reply--Actions-Send button[type='submit']",
+            "[class*='Reply--Actions-Send'] button[type='submit']",
             "button[data-testid='submit-button']",
-            "button[aria-label*='Senden']"
+            "button[aria-label*='Senden']",
+            "button[aria-label*='Send']"
           ];
           const isVisible = (node) => {
             if (!node) return false;
@@ -7183,10 +8045,87 @@ const sendConversationMedia = async ({
         }).catch(() => false);
       }
       if (!sendClicked) {
+        // Fallback for messagebox builds where the visual send control is wrapped and
+        // click handlers live on wrapper nodes rather than the button itself.
+        sendClicked = await page.evaluate(() => {
+          const selectors = [
+            ".ReplyBox .Reply--Actions-Send",
+            "[class*='ReplyBox'] .Reply--Actions-Send",
+            "[class*='ReplyBox'] [class*='Reply--Actions-Send']",
+            ".Reply--Actions-Send",
+            "[class*='Reply--Actions-Send']",
+            ".ReplyBox button[data-testid='submit-button']",
+            "[class*='ReplyBox'] button[data-testid='submit-button']",
+            ".ReplyBox button[aria-label*='Senden']",
+            "[class*='ReplyBox'] button[aria-label*='Senden']",
+            "button[data-testid='submit-button']",
+            "button[aria-label*='Senden']",
+            "button[aria-label*='Send']"
+          ];
+          const isVisible = (node) => {
+            if (!node) return false;
+            const style = window.getComputedStyle(node);
+            if (!style) return false;
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+              return false;
+            }
+            const rect = node.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+          const clickNode = (node) => {
+            if (!node) return false;
+            try {
+              if (typeof node.scrollIntoView === "function") {
+                node.scrollIntoView({ block: "center", inline: "center" });
+              }
+              const rect = node.getBoundingClientRect();
+              const clientX = Math.max(1, Math.min(window.innerWidth - 2, rect.left + rect.width / 2));
+              const clientY = Math.max(1, Math.min(window.innerHeight - 2, rect.top + rect.height / 2));
+              const dispatch = (type) => node.dispatchEvent(new MouseEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                view: window,
+                clientX,
+                clientY
+              }));
+              dispatch("pointerdown");
+              dispatch("mousedown");
+              dispatch("pointerup");
+              dispatch("mouseup");
+              node.click();
+              return true;
+            } catch (error) {
+              return false;
+            }
+          };
+          const seen = new Set();
+          for (const selector of selectors) {
+            let nodes = [];
+            try {
+              nodes = Array.from(document.querySelectorAll(selector));
+            } catch (error) {
+              nodes = [];
+            }
+            for (const node of nodes) {
+              if (!node || seen.has(node)) continue;
+              seen.add(node);
+              if (!isVisible(node)) continue;
+              const buttonNode = node.tagName === "BUTTON"
+                ? node
+                : (typeof node.querySelector === "function" ? node.querySelector("button") : null);
+              if (buttonNode && isVisible(buttonNode) && clickNode(buttonNode)) return true;
+              if (clickNode(node)) return true;
+            }
+          }
+          return false;
+        }).catch(() => false);
+      }
+      if (!sendClicked) {
         await page.keyboard.press("Enter").catch(() => {});
         await humanPause(90, 150);
         sendClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, {
-          timeout: 1400,
+          timeout: Math.max(1200, Math.min(2400, sendClickTimeout)),
           mainFrameOnly: false
         });
       }
@@ -7211,7 +8150,9 @@ const sendConversationMedia = async ({
           }, 0);
           if (previewCount === 0) return true;
 
-          const sendButton = document.querySelector("button[data-testid='submit-button'], button[aria-label*='Senden'], button[type='submit']");
+          const sendButton = document.querySelector(
+            ".ReplyBox button[data-testid='submit-button'], [class*='ReplyBox'] button[data-testid='submit-button'], .Reply--Actions-Send button[data-testid='submit-button'], [class*='Reply--Actions-Send'] button[data-testid='submit-button'], .ReplyBox button[aria-label*='Senden'], [class*='ReplyBox'] button[aria-label*='Senden'], .ReplyBox button[type='submit'], [class*='ReplyBox'] button[type='submit']"
+          );
           if (!sendButton) return false;
           if (sendButton.hasAttribute("disabled")) return true;
           if (sendButton.getAttribute("aria-disabled") === "true") return true;
@@ -7240,13 +8181,19 @@ const sendConversationMedia = async ({
       if (tempPaths.length > 0 && !observedSendRequestAfterClick && !composerSettledAfterSend) {
         ensureDeadline("send-media-retry-send-click");
         const retrySendAttemptStartedAt = Date.now();
+        const retrySendClickTimeout = getStepTimeout(
+          2600,
+          1200,
+          6500,
+          "send-media-retry-send-click-timeout"
+        );
         let retryClicked = await clickFirstInteractiveHandleInAnyContext(page, sendSelectors, {
-          timeout: 1400,
+          timeout: retrySendClickTimeout,
           mainFrameOnly: false
         });
         if (!retryClicked) {
           retryClicked = await clickVisibleButtonByText(page, ["Senden"], {
-            timeout: 900,
+            timeout: Math.max(900, Math.min(1800, retrySendClickTimeout)),
             preferTopLayer: true,
             mainFrameOnly: false
           });
@@ -7266,6 +8213,7 @@ const sendConversationMedia = async ({
         observedSendRequestAfterClick,
         observedSendRequestUrl,
         composerSettledAfterSend,
+        attachmentsReadyBeforeSend,
         filesPreparedCount: tempPaths.length,
         textLength: trimmedText.length
       });
@@ -7275,6 +8223,7 @@ const sendConversationMedia = async ({
         observedSendRequestAfterClick,
         observedSendRequestUrl,
         composerSettledAfterSend,
+        attachmentsReadyBeforeSend,
         filesPreparedCount: tempPaths.length,
         textLength: trimmedText.length
       }, error);
@@ -7330,8 +8279,7 @@ const sendConversationMedia = async ({
       || (beforeTextCount === 0 && hasOutgoingTextInSnapshot(afterSnapshot, trimmedText));
     let mediaConfirmed = !requireMediaConfirmation
       || countOutgoingAttachmentUnits(afterSnapshot) > beforeAttachmentUnits
-      || observedSendRequestAfterClick
-      || composerSettledAfterSend;
+      || (attachmentsReadyBeforeSend && (observedSendRequestAfterClick || composerSettledAfterSend));
 
     if ((!textConfirmed || !mediaConfirmed) && (trimmedText || tempPaths.length)) {
       await sleep(350);
@@ -7376,6 +8324,8 @@ const sendConversationMedia = async ({
       observedSendRequestAfterClick,
       observedSendRequestUrl,
       composerSettledAfterSend,
+      attachmentsReadyBeforeSend,
+      uploadMethod,
       filesPreparedCount: tempPaths.length,
       textLength: trimmedText.length
     });

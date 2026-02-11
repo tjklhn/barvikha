@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-02-06T21:54:18.456Z",
+  "updatedAt": "2026-02-11T05:48:58.953Z",
   "items": {
     "93": {
       "savedAt": 1770162230184,
@@ -1566,6 +1566,339 @@
         }
       ]
     },
+    "225": {
+      "savedAt": 1770786667201,
+      "expiresAt": 1771391467201,
+      "fields": [
+        {
+          "name": "attributeMap[pc_zubehoer_software.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "drucker_scanner",
+              "label": "Drucker & Scanner"
+            },
+            {
+              "value": "festplatten_laufwerke",
+              "label": "Festplatten & Laufwerke"
+            },
+            {
+              "value": "gehaeuse",
+              "label": "Gehäuse"
+            },
+            {
+              "value": "grafikkarten",
+              "label": "Grafikkarten"
+            },
+            {
+              "value": "kabel_adapter",
+              "label": "Kabel & Adapter"
+            },
+            {
+              "value": "mainboards",
+              "label": "Mainboards"
+            },
+            {
+              "value": "monitore",
+              "label": "Monitore"
+            },
+            {
+              "value": "multimedia",
+              "label": "Multimedia"
+            },
+            {
+              "value": "netzwerk_modem",
+              "label": "Netzwerk & Modem"
+            },
+            {
+              "value": "prozessor_cpu",
+              "label": "Prozessoren / CPUs"
+            },
+            {
+              "value": "speicher",
+              "label": "Speicher"
+            },
+            {
+              "value": "software",
+              "label": "Software"
+            },
+            {
+              "value": "tastatur_maus",
+              "label": "Tastatur & Maus"
+            },
+            {
+              "value": "sonstiges",
+              "label": "Weiteres PC-Zubehör"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[pc_zubehoer_software.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "condition-select",
+          "label": "condition-select",
+          "required": false,
+          "options": [
+            {
+              "value": "-1",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[pc_zubehoer_software.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "226": {
+      "savedAt": 1770786938119,
+      "expiresAt": 1770787238119,
+      "fields": []
+    },
+    "227": {
+      "savedAt": 1770787770084,
+      "expiresAt": 1771392570084,
+      "fields": [
+        {
+          "name": "attributeMap[pc_videospiele.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "dsi_psp",
+              "label": "DS(i)- & PSP Spiele"
+            },
+            {
+              "value": "nintendo",
+              "label": "Nintendo Spiele"
+            },
+            {
+              "value": "playstation",
+              "label": "PlayStation Spiele"
+            },
+            {
+              "value": "xbox",
+              "label": "Xbox Spiele"
+            },
+            {
+              "value": "wii",
+              "label": "Wii Spiele"
+            },
+            {
+              "value": "pc_spiele",
+              "label": "PC Spiele"
+            },
+            {
+              "value": "sonstige",
+              "label": "Weitere Videospiele"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[pc_videospiele.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            }
+          ]
+        },
+        {
+          "name": "condition-select",
+          "label": "condition-select",
+          "required": false,
+          "options": [
+            {
+              "value": "-1",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[pc_videospiele.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "228": {
+      "savedAt": 1770787301886,
+      "expiresAt": 1771392101886,
+      "fields": [
+        {
+          "name": "attributeMap[pcs.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[pcs.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
     "230": {
       "savedAt": 1770309918836,
       "expiresAt": 1770914718836,
@@ -1751,6 +2084,395 @@
           ]
         }
       ]
+    },
+    "246": {
+      "savedAt": 1770788937953,
+      "expiresAt": 1771393737953,
+      "fields": [
+        {
+          "name": "attributeMap[dekoration.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "bilder_poster",
+              "label": "Bilder & Poster"
+            },
+            {
+              "value": "kerzen_kerzenhalter",
+              "label": "Kerzen & Kerzenhalter"
+            },
+            {
+              "value": "spiegel",
+              "label": "Spiegel"
+            },
+            {
+              "value": "vasen",
+              "label": "Vasen"
+            },
+            {
+              "value": "weitere",
+              "label": "Weitere Dekoration"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[dekoration.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            }
+          ]
+        },
+        {
+          "name": "condition-select",
+          "label": "condition-select",
+          "required": false,
+          "options": [
+            {
+              "value": "-1",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[dekoration.color_s]",
+          "label": "Farbe",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "beige",
+              "label": "Beige"
+            },
+            {
+              "value": "blau",
+              "label": "Blau"
+            },
+            {
+              "value": "braun",
+              "label": "Braun"
+            },
+            {
+              "value": "bunt",
+              "label": "Bunt"
+            },
+            {
+              "value": "burgunderrot",
+              "label": "Burgunderrot"
+            },
+            {
+              "value": "gelb",
+              "label": "Gelb"
+            },
+            {
+              "value": "gold",
+              "label": "Gold"
+            },
+            {
+              "value": "grau",
+              "label": "Grau"
+            },
+            {
+              "value": "grün",
+              "label": "Grün"
+            },
+            {
+              "value": "holz",
+              "label": "Holz"
+            },
+            {
+              "value": "khaki",
+              "label": "Khaki"
+            },
+            {
+              "value": "lila",
+              "label": "Lila"
+            },
+            {
+              "value": "orange",
+              "label": "Orange"
+            },
+            {
+              "value": "rosa",
+              "label": "Rosa"
+            },
+            {
+              "value": "rot",
+              "label": "Rot"
+            },
+            {
+              "value": "schwarz",
+              "label": "Schwarz"
+            },
+            {
+              "value": "silber",
+              "label": "Silber"
+            },
+            {
+              "value": "transparent",
+              "label": "Transparent"
+            },
+            {
+              "value": "weiß",
+              "label": "Weiß"
+            },
+            {
+              "value": "sonstige",
+              "label": "Andere Farben"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[dekoration.material_s]",
+          "label": "Material",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "bronze",
+              "label": "Bronze"
+            },
+            {
+              "value": "oak",
+              "label": "Eiche"
+            },
+            {
+              "value": "iron",
+              "label": "Eisen"
+            },
+            {
+              "value": "glass",
+              "label": "Glas"
+            },
+            {
+              "value": "wood",
+              "label": "Holz"
+            },
+            {
+              "value": "ceramic",
+              "label": "Keramik"
+            },
+            {
+              "value": "pine",
+              "label": "Kiefer"
+            },
+            {
+              "value": "rattan_wicker",
+              "label": "Korb & Rattan"
+            },
+            {
+              "value": "plastic",
+              "label": "Kunststoff"
+            },
+            {
+              "value": "lacquered",
+              "label": "Lackiert"
+            },
+            {
+              "value": "leather",
+              "label": "Leder"
+            },
+            {
+              "value": "marble",
+              "label": "Marmor"
+            },
+            {
+              "value": "solid_wood",
+              "label": "Massivholz"
+            },
+            {
+              "value": "metal",
+              "label": "Metall"
+            },
+            {
+              "value": "velvet",
+              "label": "Samt"
+            },
+            {
+              "value": "formica",
+              "label": "Schichtstoff"
+            },
+            {
+              "value": "steel",
+              "label": "Stahl"
+            },
+            {
+              "value": "stone",
+              "label": "Stein"
+            },
+            {
+              "value": "fabric",
+              "label": "Stoff"
+            },
+            {
+              "value": "other",
+              "label": "Sonstige"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[dekoration.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "278": {
+      "savedAt": 1770787112934,
+      "expiresAt": 1770787412934,
+      "fields": []
+    },
+    "279": {
+      "savedAt": 1770787158807,
+      "expiresAt": 1771391958807,
+      "fields": [
+        {
+          "name": "attributeMap[konsolen.art_s]",
+          "label": "Art",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "dsi_psp",
+              "label": "Pocket Konsolen"
+            },
+            {
+              "value": "playstation",
+              "label": "PlayStation"
+            },
+            {
+              "value": "xbox",
+              "label": "Xbox"
+            },
+            {
+              "value": "wii",
+              "label": "Wii"
+            },
+            {
+              "value": "weitere",
+              "label": "Weitere Konsolen"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[konsolen.condition_s]",
+          "label": "Zustand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "new",
+              "label": "Neu"
+            },
+            {
+              "value": "like_new",
+              "label": "Sehr Gut"
+            },
+            {
+              "value": "ok",
+              "label": "Gut"
+            },
+            {
+              "value": "alright",
+              "label": "In Ordnung"
+            },
+            {
+              "value": "defect",
+              "label": "Defekt"
+            }
+          ]
+        },
+        {
+          "name": "attributeMap[konsolen.versand_s]",
+          "label": "Versand",
+          "required": false,
+          "options": [
+            {
+              "value": "",
+              "label": "Bitte wählen"
+            },
+            {
+              "value": "ja",
+              "label": "Versand möglich"
+            },
+            {
+              "value": "nein",
+              "label": "Nur Abholung"
+            }
+          ]
+        }
+      ]
+    },
+    "285": {
+      "savedAt": 1770787524907,
+      "expiresAt": 1770787824907,
+      "fields": []
     }
   }
 }

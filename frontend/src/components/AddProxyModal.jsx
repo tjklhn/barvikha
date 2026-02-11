@@ -102,7 +102,7 @@ const AddProxyModal = ({ isOpen, onClose, onSuccess }) => {
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      zIndex: 1000,
+      zIndex: 5000,
       padding: "20px",
       animation: "fadeIn 0.2s ease-out"
     }}>

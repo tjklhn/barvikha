@@ -1,6 +1,0 @@
-(function(){/* 
- 
- Copyright The Closure Library Authors. 
- SPDX-License-Identifier: Apache-2.0 
-*/ 
-function a(){}for(var b=["r3px"],c=this||self,d;b.length&&(d=b.shift());)b.length||a===void 0?c[d]&&c[d]!==Object.prototype[d]?c=c[d]:c=c[d]={}:c[d]=a;}).call(this);

@@ -246,6 +246,10 @@ const collectPreferredFieldValues = ({ ad, categoryPathIds = [] } = {}) => {
 
 const selectCategoryPathOnSelectionPage = async (page, pathIds = []) => {
   if (!pathIds.length) return false;
+  const toPathToken = (value) => {
+    const token = extractCategoryTokenFromPathItem(value);
+    return String(token || "").trim();
+  };
   try {
     await page.waitForFunction(() => {
       const collectRoots = (root, bucket) => {
@@ -286,8 +290,8 @@ const selectCategoryPathOnSelectionPage = async (page, pathIds = []) => {
   ]);
 
   for (let index = 0; index < pathIds.length; index += 1) {
-    const id = normalizeCategoryId(pathIds[index]);
-    if (!id) return false;
+    const id = toPathToken(pathIds[index]);
+    if (!id) continue;
     const selectors = buildSelectors(id);
     let clicked = false;
     try {
@@ -410,7 +414,7 @@ const selectCategoryPathOnSelectionPage = async (page, pathIds = []) => {
       // ignore navigation timeout between steps
     }
 
-    const nextId = normalizeCategoryId(pathIds[index + 1]);
+    const nextId = toPathToken(pathIds[index + 1]);
     if (nextId) {
       const nextSelectorList = buildSelectors(nextId).join(",");
       try {
@@ -545,6 +549,7 @@ const applyCategoryPathViaTree = async (page, pathIds = []) => {
 
       const applyFallback = () => {
         const numericIds = targetIds.filter((id) => /^\d+$/.test(id));
+        const fakeCategoryToken = [...targetIds].reverse().find((id) => !/^\d+$/.test(id)) || "";
         if (!numericIds.length) {
           return { success: false, reason: "non-numeric-path", targetIds, numericOnly: false };
         }
@@ -552,6 +557,15 @@ const applyCategoryPathViaTree = async (page, pathIds = []) => {
           applyField("parentCategoryId", numericIds[0]);
         }
         applyField("categoryId", numericIds[numericIds.length - 1]);
+        if (fakeCategoryToken) {
+          applyField("l3FakeCategory", fakeCategoryToken);
+          const fakeById = document.querySelector("#l3FakeCategory");
+          if (fakeById) {
+            fakeById.value = String(fakeCategoryToken);
+            fakeById.dispatchEvent(new Event("input", { bubbles: true }));
+            fakeById.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
         applyField("submitted", "true");
         form.submit();
         return {
@@ -559,6 +573,7 @@ const applyCategoryPathViaTree = async (page, pathIds = []) => {
           applied: [
             numericIds.length > 1 ? { fieldName: "parentCategoryId", fieldValue: numericIds[0] } : null,
             { fieldName: "categoryId", fieldValue: numericIds[numericIds.length - 1] },
+            fakeCategoryToken ? { fieldName: "l3FakeCategory", fieldValue: fakeCategoryToken } : null,
             { fieldName: "submitted", fieldValue: "true" }
           ].filter(Boolean),
           fallback: true,
@@ -608,6 +623,17 @@ const applyCategoryPathViaTree = async (page, pathIds = []) => {
         applyField(fieldName, fieldValue ?? node?.identifier ?? "");
         applied.push({ fieldName, fieldValue: fieldValue ?? node?.identifier ?? "" });
       });
+      const fakeCategoryToken = [...targetIds].reverse().find((id) => !/^\d+$/.test(id)) || "";
+      if (fakeCategoryToken) {
+        applyField("l3FakeCategory", fakeCategoryToken);
+        applied.push({ fieldName: "l3FakeCategory", fieldValue: fakeCategoryToken });
+        const fakeById = document.querySelector("#l3FakeCategory");
+        if (fakeById) {
+          fakeById.value = String(fakeCategoryToken);
+          fakeById.dispatchEvent(new Event("input", { bubbles: true }));
+          fakeById.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
       applyField("submitted", "true");
       applied.push({ fieldName: "submitted", fieldValue: "true" });
 
@@ -4338,18 +4364,16 @@ const parseExtraSelectFields = async (context) =>
       const rect = node.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     };
-    const collectRoots = (root, bucket) => {
-      if (!root || bucket.includes(root)) return;
-      bucket.push(root);
-      const elements = root.querySelectorAll ? root.querySelectorAll("*") : [];
-      elements.forEach((el) => {
-        if (el && el.shadowRoot) {
-          collectRoots(el.shadowRoot, bucket);
-        }
-      });
-    };
-    const roots = [];
-    collectRoots(document, roots);
+    const formRoot =
+      document.querySelector("#postad-step1-frm")
+      || document.querySelector("form[action*='anzeige-aufgeben-schritt2']")
+      || document.querySelector("form")
+      || document.body
+      || document;
+    const roots = [formRoot];
+    if (formRoot !== document) {
+      roots.push(document);
+    }
     const queryAllDeep = (selector) => {
       const result = [];
       roots.forEach((root) => {
@@ -4460,17 +4484,47 @@ const parseExtraSelectFields = async (context) =>
 const parseExtraSelectFieldsAcrossContexts = async (page) => {
   const collected = [];
   const seen = new Set();
-  const contexts = [page, ...page.frames()];
-  for (const context of contexts) {
+
+  const isLikelyRelevantFrame = (frame) => {
     try {
-      const fields = await parseExtraSelectFields(context);
-      if (!Array.isArray(fields)) continue;
-      fields.forEach((field) => {
-        const key = field?.name || field?.label;
-        if (!key || seen.has(key)) return;
-        seen.add(key);
-        collected.push(field);
-      });
+      const frameUrl = String(frame?.url?.() || "").toLowerCase();
+      if (!frameUrl || frameUrl === "about:blank") return true;
+      return frameUrl.includes("kleinanzeigen.de");
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const pushUniqueFields = (fields) => {
+    if (!Array.isArray(fields)) return;
+    fields.forEach((field) => {
+      const key = field?.name || field?.label;
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      collected.push(field);
+    });
+  };
+
+  // Main page usually contains all category selects; parse it first.
+  const pageFields = await withTimeout(
+    parseExtraSelectFields(page),
+    3500,
+    "parse-fields-main-timeout"
+  ).catch(() => []);
+  pushUniqueFields(pageFields);
+  if (collected.length) return collected;
+
+  // Some UI variants render inputs in same-origin frames; avoid heavy ad/third-party frames.
+  const frames = page.frames().filter(isLikelyRelevantFrame).slice(0, 8);
+  for (const frame of frames) {
+    try {
+      const fields = await withTimeout(
+        parseExtraSelectFields(frame),
+        2500,
+        "parse-fields-frame-timeout"
+      ).catch(() => []);
+      pushUniqueFields(fields);
+      if (collected.length) break;
     } catch (error) {
       // ignore frame parsing errors
     }

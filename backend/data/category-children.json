@@ -1,6 +1,132 @@
 {
-  "updatedAt": "2026-02-11T02:49:26.215Z",
+  "updatedAt": "2026-02-06T22:47:57.397Z",
   "items": {
+    "id:161": {
+      "savedAt": 1770079261938,
+      "expiresAt": 1770684061938,
+      "children": [
+        {
+          "id": "172",
+          "name": "Audio & Hifi",
+          "url": "https://www.kleinanzeigen.de/s-audio-hifi/c172",
+          "children": []
+        },
+        {
+          "id": "226",
+          "name": "Dienstleistungen Elektronik",
+          "url": "https://www.kleinanzeigen.de/s-dienstleistungen-edv/c226",
+          "children": []
+        },
+        {
+          "id": "245",
+          "name": "Foto",
+          "url": "https://www.kleinanzeigen.de/s-foto/c245",
+          "children": []
+        },
+        {
+          "id": "173",
+          "name": "Handy & Telefon",
+          "url": "https://www.kleinanzeigen.de/s-handy-telekom/c173",
+          "children": []
+        },
+        {
+          "id": "176",
+          "name": "Haushaltsgeräte",
+          "url": "https://www.kleinanzeigen.de/s-haushaltsgeraete/c176",
+          "children": []
+        },
+        {
+          "id": "279",
+          "name": "Konsolen",
+          "url": "https://www.kleinanzeigen.de/s-konsolen/c279",
+          "children": []
+        },
+        {
+          "id": "278",
+          "name": "Notebooks",
+          "url": "https://www.kleinanzeigen.de/s-notebooks/c278",
+          "children": []
+        },
+        {
+          "id": "228",
+          "name": "PCs",
+          "url": "https://www.kleinanzeigen.de/s-pcs/c228",
+          "children": []
+        },
+        {
+          "id": "225",
+          "name": "PC-Zubehör & Software",
+          "url": "https://www.kleinanzeigen.de/s-pc-zubehoer-software/c225",
+          "children": []
+        },
+        {
+          "id": "285",
+          "name": "Tablets & Reader",
+          "url": "https://www.kleinanzeigen.de/s-tablets-reader/c285",
+          "children": []
+        },
+        {
+          "id": "175",
+          "name": "TV & Video",
+          "url": "https://www.kleinanzeigen.de/s-tv-video/c175",
+          "children": []
+        },
+        {
+          "id": "227",
+          "name": "Videospiele",
+          "url": "https://www.kleinanzeigen.de/s-pc-videospiele/c227",
+          "children": []
+        },
+        {
+          "id": "168",
+          "name": "Weitere Elektronik",
+          "url": "https://www.kleinanzeigen.de/s-multimedia-elektronik/sonstiges/c168",
+          "children": []
+        }
+      ]
+    },
+    "id:172": {
+      "savedAt": 1770079275870,
+      "expiresAt": 1770684075870,
+      "children": [
+        {
+          "id": "cd_player",
+          "name": "CD Player",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "lautsprecher_kopfhoerer",
+          "name": "Lautsprecher & Kopfhörer",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "mp3_player",
+          "name": "MP3 Player",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "radio_receiver",
+          "name": "Radio & Receiver",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "stereoanlagen",
+          "name": "Stereoanlagen",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "sonstiges",
+          "name": "Weiteres Audio & Hifi",
+          "url": "",
+          "children": []
+        }
+      ]
+    },
     "id:245": {
       "savedAt": 1770079307301,
       "expiresAt": 1770684107301,
@@ -212,6 +338,96 @@
         {
           "id": "weitere",
           "name": "Weitere Konsolen",
+          "url": "",
+          "children": []
+        }
+      ]
+    },
+    "id:225": {
+      "savedAt": 1770079368784,
+      "expiresAt": 1770684168784,
+      "children": [
+        {
+          "id": "drucker_scanner",
+          "name": "Drucker & Scanner",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "festplatten_laufwerke",
+          "name": "Festplatten & Laufwerke",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "gehaeuse",
+          "name": "Gehäuse",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "grafikkarten",
+          "name": "Grafikkarten",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "kabel_adapter",
+          "name": "Kabel & Adapter",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "mainboards",
+          "name": "Mainboards",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "monitore",
+          "name": "Monitore",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "multimedia",
+          "name": "Multimedia",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "netzwerk_modem",
+          "name": "Netzwerk & Modem",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "prozessor_cpu",
+          "name": "Prozessoren / CPUs",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "speicher",
+          "name": "Speicher",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "software",
+          "name": "Software",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "tastatur_maus",
+          "name": "Tastatur & Maus",
+          "url": "",
+          "children": []
+        },
+        {
+          "id": "sonstiges",
+          "name": "Weiteres PC-Zubehör",
           "url": "",
           "children": []
         }
@@ -25288,6 +25504,11 @@
       "expiresAt": 1770314889363,
       "children": []
     },
+    "id:226": {
+      "savedAt": 1770414632718,
+      "expiresAt": 1770418232718,
+      "children": []
+    },
     "id:168": {
       "savedAt": 1770418076397,
       "expiresAt": 1770421676397,
@@ -25301,227 +25522,6 @@
     "id:228": {
       "savedAt": 1770414314601,
       "expiresAt": 1770417914601,
-      "children": []
-    },
-    "id:161": {
-      "savedAt": 1770778058886,
-      "expiresAt": 1771382858886,
-      "children": [
-        {
-          "id": "172",
-          "name": "Audio & Hifi",
-          "url": "https://www.kleinanzeigen.de/s-audio-hifi/c172",
-          "children": []
-        },
-        {
-          "id": "226",
-          "name": "Dienstleistungen Elektronik",
-          "url": "https://www.kleinanzeigen.de/s-dienstleistungen-edv/c226",
-          "children": []
-        },
-        {
-          "id": "245",
-          "name": "Foto",
-          "url": "https://www.kleinanzeigen.de/s-foto/c245",
-          "children": []
-        },
-        {
-          "id": "173",
-          "name": "Handy & Telefon",
-          "url": "https://www.kleinanzeigen.de/s-handy-telekom/c173",
-          "children": []
-        },
-        {
-          "id": "176",
-          "name": "Haushaltsgeräte",
-          "url": "https://www.kleinanzeigen.de/s-haushaltsgeraete/c176",
-          "children": []
-        },
-        {
-          "id": "279",
-          "name": "Konsolen",
-          "url": "https://www.kleinanzeigen.de/s-konsolen/c279",
-          "children": []
-        },
-        {
-          "id": "278",
-          "name": "Notebooks",
-          "url": "https://www.kleinanzeigen.de/s-notebooks/c278",
-          "children": []
-        },
-        {
-          "id": "228",
-          "name": "PCs",
-          "url": "https://www.kleinanzeigen.de/s-pcs/c228",
-          "children": []
-        },
-        {
-          "id": "225",
-          "name": "PC-Zubehör & Software",
-          "url": "https://www.kleinanzeigen.de/s-pc-zubehoer-software/c225",
-          "children": []
-        },
-        {
-          "id": "285",
-          "name": "Tablets & Reader",
-          "url": "https://www.kleinanzeigen.de/s-tablets-reader/c285",
-          "children": []
-        },
-        {
-          "id": "175",
-          "name": "TV & Video",
-          "url": "https://www.kleinanzeigen.de/s-tv-video/c175",
-          "children": []
-        },
-        {
-          "id": "227",
-          "name": "Videospiele",
-          "url": "https://www.kleinanzeigen.de/s-pc-videospiele/c227",
-          "children": []
-        },
-        {
-          "id": "168",
-          "name": "Weitere Elektronik",
-          "url": "https://www.kleinanzeigen.de/s-multimedia-elektronik/sonstiges/c168",
-          "children": []
-        }
-      ]
-    },
-    "id:172": {
-      "savedAt": 1770778096512,
-      "expiresAt": 1771382896512,
-      "children": [
-        {
-          "id": "cd_player",
-          "name": "CD Player",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "lautsprecher_kopfhoerer",
-          "name": "Lautsprecher & Kopfhörer",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "mp3_player",
-          "name": "MP3 Player",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "radio_receiver",
-          "name": "Radio & Receiver",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "stereoanlagen",
-          "name": "Stereoanlagen",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "sonstiges",
-          "name": "Weiteres Audio & Hifi",
-          "url": "",
-          "children": []
-        }
-      ]
-    },
-    "id:225": {
-      "savedAt": 1770778104838,
-      "expiresAt": 1771382904838,
-      "children": [
-        {
-          "id": "drucker_scanner",
-          "name": "Drucker & Scanner",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "festplatten_laufwerke",
-          "name": "Festplatten & Laufwerke",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "gehaeuse",
-          "name": "Gehäuse",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "grafikkarten",
-          "name": "Grafikkarten",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "kabel_adapter",
-          "name": "Kabel & Adapter",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "mainboards",
-          "name": "Mainboards",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "monitore",
-          "name": "Monitore",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "multimedia",
-          "name": "Multimedia",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "netzwerk_modem",
-          "name": "Netzwerk & Modem",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "prozessor_cpu",
-          "name": "Prozessoren / CPUs",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "speicher",
-          "name": "Speicher",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "software",
-          "name": "Software",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "tastatur_maus",
-          "name": "Tastatur & Maus",
-          "url": "",
-          "children": []
-        },
-        {
-          "id": "sonstiges",
-          "name": "Weiteres PC-Zubehör",
-          "url": "",
-          "children": []
-        }
-      ]
-    },
-    "id:226": {
-      "savedAt": 1770778165214,
-      "expiresAt": 1770781765214,
       "children": []
     }
   }
