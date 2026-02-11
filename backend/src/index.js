@@ -104,6 +104,27 @@ const MESSAGE_ACTION_LOCK_STALE_MS = 8 * 60 * 1000;
 const activeMessageActionByAccount = new Map();
 const messageboxAccessTokenCacheByAccount = new Map();
 const MESSAGEBOX_ACCESS_TOKEN_SKEW_MS = 60 * 1000;
+const ACCOUNT_SAFETY_STATE_TTL_MS = Math.max(
+  10 * 60 * 1000,
+  Number(process.env.KL_ACCOUNT_SAFETY_STATE_TTL_MS || 6 * 60 * 60 * 1000)
+);
+const ACCOUNT_PROXY_SETTLE_MS = Math.max(
+  0,
+  Number(process.env.KL_ACCOUNT_PROXY_SETTLE_MS || 45000)
+);
+const ACCOUNT_COOLDOWN_MAX_MS = Math.max(
+  60 * 1000,
+  Number(process.env.KL_ACCOUNT_COOLDOWN_MAX_MS || 20 * 60 * 1000)
+);
+const ACCOUNT_ACTION_PACE_MS = Object.freeze({
+  "send-message": Math.max(0, Number(process.env.KL_PACE_SEND_MESSAGE_MS || 2500)),
+  "offer-decline": Math.max(0, Number(process.env.KL_PACE_OFFER_DECLINE_MS || 5000)),
+  "send-media": Math.max(0, Number(process.env.KL_PACE_SEND_MEDIA_MS || 5000)),
+  "ads-create": Math.max(0, Number(process.env.KL_PACE_ADS_CREATE_MS || 12000))
+});
+const accountLastActionByAccount = new Map();
+const accountCooldownByAccount = new Map();
+const accountProxyBindingByAccount = new Map();
 
 const resolveMessageRouteDeadlineMs = () => {
   const configured = Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || MESSAGE_ROUTE_DEADLINE_DEFAULT_MS);
@@ -151,6 +172,328 @@ const releaseMessageActionLock = (lockInfo) => {
   if (existing?.token === token) {
     activeMessageActionByAccount.delete(key);
   }
+};
+
+const toAccountSafetyKey = (accountId) => String(accountId || "").trim();
+
+const resolveActionPaceMs = (actionKey) => {
+  const value = Number(ACCOUNT_ACTION_PACE_MS[actionKey] || 0);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value;
+};
+
+const toRetryAfterMs = (value, fallbackMs = 1000) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return Math.max(1000, Number(fallbackMs) || 1000);
+  }
+  return Math.max(1000, Math.ceil(numeric));
+};
+
+const toRetryAfterSeconds = (retryAfterMs) => Math.max(1, Math.ceil(toRetryAfterMs(retryAfterMs) / 1000));
+
+const pruneAccountSafetyState = () => {
+  const now = Date.now();
+  for (const [key, entry] of accountCooldownByAccount.entries()) {
+    if (!entry || Number(entry.until || 0) <= now) {
+      accountCooldownByAccount.delete(key);
+    }
+  }
+  for (const [key, entry] of accountLastActionByAccount.entries()) {
+    if (!entry || (now - Number(entry.updatedAt || 0)) > ACCOUNT_SAFETY_STATE_TTL_MS) {
+      accountLastActionByAccount.delete(key);
+    }
+  }
+  for (const [key, entry] of accountProxyBindingByAccount.entries()) {
+    if (!entry || (now - Number(entry.lastSeenAt || 0)) > ACCOUNT_SAFETY_STATE_TTL_MS) {
+      accountProxyBindingByAccount.delete(key);
+    }
+  }
+};
+
+const readActiveAccountCooldown = (accountId, now = Date.now()) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key) return null;
+  const entry = accountCooldownByAccount.get(key);
+  if (!entry) return null;
+  const until = Number(entry.until || 0);
+  if (!until || until <= now) {
+    accountCooldownByAccount.delete(key);
+    return null;
+  }
+  return {
+    ...entry,
+    retryAfterMs: toRetryAfterMs(until - now)
+  };
+};
+
+const registerAccountCooldown = ({
+  accountId,
+  cooldownMs,
+  reason = "",
+  code = "",
+  source = "",
+  details = ""
+} = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key) return null;
+  const normalizedMs = Math.max(1000, Math.min(ACCOUNT_COOLDOWN_MAX_MS, Number(cooldownMs) || 0));
+  if (!normalizedMs) return null;
+  const now = Date.now();
+  const until = now + normalizedMs;
+  const entry = {
+    until,
+    reason: String(reason || ""),
+    code: String(code || ""),
+    source: String(source || ""),
+    details: String(details || "").slice(0, 500),
+    updatedAt: now
+  };
+  accountCooldownByAccount.set(key, entry);
+  return {
+    ...entry,
+    retryAfterMs: normalizedMs
+  };
+};
+
+const registerAccountActionAttempt = ({ accountId, actionKey, now = Date.now() } = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key || !actionKey) return;
+  const current = accountLastActionByAccount.get(key) || { lastByAction: {}, updatedAt: now };
+  current.lastByAction = current.lastByAction || {};
+  current.lastByAction[actionKey] = now;
+  current.updatedAt = now;
+  accountLastActionByAccount.set(key, current);
+};
+
+const checkAccountActionPace = ({ accountId, actionKey, now = Date.now() } = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key || !actionKey) return null;
+  const paceMs = resolveActionPaceMs(actionKey);
+  if (!paceMs) return null;
+  const current = accountLastActionByAccount.get(key);
+  const lastAt = Number(current?.lastByAction?.[actionKey] || 0);
+  if (!lastAt) return null;
+  const elapsedMs = now - lastAt;
+  if (elapsedMs >= paceMs) return null;
+  return {
+    status: 429,
+    code: "ACCOUNT_ACTION_RATE_LIMIT",
+    reason: "action-pace",
+    retryAfterMs: toRetryAfterMs(paceMs - elapsedMs),
+    error: "Слишком частые действия для аккаунта. Подождите немного и повторите попытку."
+  };
+};
+
+const checkAccountProxyStability = ({ accountId, proxyId, now = Date.now() } = {}) => {
+  if (!ACCOUNT_PROXY_SETTLE_MS) return null;
+  const key = toAccountSafetyKey(accountId);
+  const normalizedProxyId = String(proxyId || "").trim();
+  if (!key || !normalizedProxyId) return null;
+
+  const current = accountProxyBindingByAccount.get(key);
+  if (!current) {
+    accountProxyBindingByAccount.set(key, {
+      proxyId: normalizedProxyId,
+      lastChangeAt: 0,
+      lastSeenAt: now
+    });
+    return null;
+  }
+
+  if (String(current.proxyId || "") !== normalizedProxyId) {
+    accountProxyBindingByAccount.set(key, {
+      proxyId: normalizedProxyId,
+      lastChangeAt: now,
+      lastSeenAt: now
+    });
+    return {
+      status: 429,
+      code: "ACCOUNT_PROXY_SWITCH_COOLDOWN",
+      reason: "proxy-switch",
+      retryAfterMs: toRetryAfterMs(ACCOUNT_PROXY_SETTLE_MS),
+      error: "Прокси аккаунта недавно изменился. Подождите немного и повторите действие."
+    };
+  }
+
+  const lastChangeAt = Number(current.lastChangeAt || 0);
+  const elapsedSinceChange = now - lastChangeAt;
+  current.lastSeenAt = now;
+  if (lastChangeAt > 0 && elapsedSinceChange < ACCOUNT_PROXY_SETTLE_MS) {
+    accountProxyBindingByAccount.set(key, current);
+    return {
+      status: 429,
+      code: "ACCOUNT_PROXY_SWITCH_COOLDOWN",
+      reason: "proxy-switch",
+      retryAfterMs: toRetryAfterMs(ACCOUNT_PROXY_SETTLE_MS - elapsedSinceChange),
+      error: "Прокси аккаунта недавно изменился. Подождите немного и повторите действие."
+    };
+  }
+
+  if (lastChangeAt > 0 && elapsedSinceChange >= ACCOUNT_PROXY_SETTLE_MS) {
+    current.lastChangeAt = 0;
+  }
+  accountProxyBindingByAccount.set(key, current);
+  return null;
+};
+
+const evaluateAccountSafetyPrecheck = ({ accountId, actionKey, proxyId, touchAction = true } = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key || !actionKey) return { ok: true };
+  pruneAccountSafetyState();
+  const now = Date.now();
+
+  const cooldown = readActiveAccountCooldown(key, now);
+  if (cooldown) {
+    return {
+      ok: false,
+      rejection: {
+        status: 429,
+        code: "ACCOUNT_COOLDOWN_ACTIVE",
+        reason: cooldown.reason || "risk-cooldown",
+        retryAfterMs: cooldown.retryAfterMs,
+        error: "Для этого аккаунта включена пауза безопасности. Подождите и повторите попытку."
+      }
+    };
+  }
+
+  const paceRejection = checkAccountActionPace({ accountId: key, actionKey, now });
+  if (paceRejection) {
+    return { ok: false, rejection: paceRejection };
+  }
+
+  const proxyRejection = checkAccountProxyStability({ accountId: key, proxyId, now });
+  if (proxyRejection) {
+    return { ok: false, rejection: proxyRejection };
+  }
+
+  if (touchAction) {
+    registerAccountActionAttempt({ accountId: key, actionKey, now });
+  }
+  return { ok: true };
+};
+
+const detectAccountRiskCooldown = ({ error, statusCode } = {}) => {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || statusCode || 0);
+  const code = String(error?.code || "").trim().toUpperCase();
+  const message = String(error?.message || "").toLowerCase();
+  const details = String(error?.details || "").toLowerCase();
+  const combined = `${message} ${details}`.trim();
+
+  if (
+    status === 429
+    || code === "TOO_MANY_REQUESTS"
+    || combined.includes("too many requests")
+    || combined.includes("rate limit")
+  ) {
+    return { cooldownMs: 8 * 60 * 1000, reason: "rate-limit", code: "RISK_RATE_LIMIT" };
+  }
+
+  if (
+    code === "AUTH_REQUIRED"
+    || status === 401
+    || status === 403
+    || combined.includes("redirected-to-login")
+    || combined.includes("m-einloggen")
+    || combined.includes("cookie файл")
+    || combined.includes("cookies")
+    || combined.includes("cookie file")
+    || combined.includes("session expired")
+  ) {
+    return { cooldownMs: 15 * 60 * 1000, reason: "auth", code: "RISK_AUTH" };
+  }
+
+  if (
+    code === "CONSENT_REQUIRED"
+    || combined.includes("gdpr")
+    || combined.includes("consent")
+    || combined.includes("alle akzeptieren")
+  ) {
+    return { cooldownMs: 6 * 60 * 1000, reason: "consent", code: "RISK_CONSENT" };
+  }
+
+  if (
+    code === "PROXY_TUNNEL_CONNECTION_FAILED"
+    || code === "PROXY_REQUIRED"
+    || combined.includes("proxy")
+    || combined.includes("tunnel_connection_failed")
+  ) {
+    return { cooldownMs: 4 * 60 * 1000, reason: "proxy", code: "RISK_PROXY" };
+  }
+
+  if (
+    code === "MESSAGE_ACTION_TIMEOUT"
+    || status === 504
+    || code === "ETIMEDOUT"
+    || code === "ECONNABORTED"
+    || combined.includes("timeout")
+  ) {
+    return { cooldownMs: 2 * 60 * 1000, reason: "timeout", code: "RISK_TIMEOUT" };
+  }
+
+  return null;
+};
+
+const applyAccountRiskCooldown = ({
+  accountId,
+  route = "",
+  error,
+  statusCode = 0,
+  debugId = "",
+  requestId = "",
+  logPath = ""
+} = {}) => {
+  const risk = detectAccountRiskCooldown({ error, statusCode });
+  if (!risk) return null;
+  const message = String(error?.message || "");
+  const details = String(error?.details || "");
+  const cooldown = registerAccountCooldown({
+    accountId,
+    cooldownMs: risk.cooldownMs,
+    reason: risk.reason,
+    code: risk.code,
+    source: route,
+    details: `${message}${details ? ` | ${details}` : ""}`
+  });
+  if (cooldown && logPath) {
+    appendServerLog(logPath, {
+      event: "account-safety-cooldown-set",
+      route,
+      debugId,
+      requestId,
+      accountId,
+      cooldownCode: cooldown.code || "",
+      cooldownReason: cooldown.reason || "",
+      retryAfterMs: cooldown.retryAfterMs
+    });
+  }
+  return cooldown;
+};
+
+const sendAccountSafetyRejection = (res, rejection, { debugId = "", requestId = "" } = {}) => {
+  const status = Number(rejection?.status || 429);
+  const retryAfterMs = toRetryAfterMs(rejection?.retryAfterMs || 1000);
+  if (retryAfterMs > 0) {
+    res.setHeader("Retry-After", String(toRetryAfterSeconds(retryAfterMs)));
+  }
+  res.status(status).json({
+    success: false,
+    error: String(rejection?.error || "Действие временно ограничено для защиты аккаунта."),
+    code: String(rejection?.code || "ACCOUNT_ACTION_BLOCKED"),
+    reason: String(rejection?.reason || ""),
+    retryAfterMs,
+    debugId,
+    requestId
+  });
+};
+
+const withCooldownHint = (payload, cooldown) => {
+  if (!cooldown) return payload;
+  return {
+    ...payload,
+    retryAfterMs: cooldown.retryAfterMs,
+    cooldownCode: cooldown.code || ""
+  };
 };
 
 const getPuppeteer = () => {
@@ -2765,6 +3108,7 @@ app.post("/api/messages/send", async (req, res) => {
     ? safeClientRequestId
     : `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const startedAt = Date.now();
+  let safetyAccountId = null;
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
     route: "send-message",
@@ -2775,6 +3119,7 @@ app.post("/api/messages/send", async (req, res) => {
   });
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    safetyAccountId = accountId;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
     const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
     const participant = req.body?.participant ? String(req.body.participant) : "";
@@ -2796,6 +3141,29 @@ app.post("/api/messages/send", async (req, res) => {
 
     const proxy = requireAccountProxy(account, res, "отправки сообщения", getOwnerContext(req));
     if (!proxy) return;
+
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: "send-message",
+      proxyId: account?.proxyId
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-safety-reject",
+        route: "send-message",
+        debugId,
+        clientRequestId,
+        accountId,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
 
     const result = await sendConversationMessage({
       account,
@@ -2822,6 +3190,7 @@ app.post("/api/messages/send", async (req, res) => {
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
+    accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
 
     res.json({
       success: true,
@@ -2843,21 +3212,29 @@ app.post("/api/messages/send", async (req, res) => {
       details: error?.details || "",
       stack: error?.stack || ""
     });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "send-message",
+      error,
+      logPath: getMessageActionsLogPath(),
+      debugId,
+      requestId: clientRequestId
+    });
     if (error.code === "AUTH_REQUIRED") {
-      res.status(401).json({
+      res.status(401).json(withCooldownHint({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
-    res.status(500).json({
+    res.status(500).json(withCooldownHint({
       success: false,
       error: error.message,
       debugId,
       requestId: clientRequestId
-    });
+    }, cooldown));
   }
 });
 
@@ -2874,6 +3251,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     : `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const routeDeadlineMs = resolveMessageRouteDeadlineMs();
   const startedAt = Date.now();
+  let safetyAccountId = null;
   let messageActionLock = null;
   let abortController = null;
   appendServerLog(getMessageActionsLogPath(), {
@@ -2917,6 +3295,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   });
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    safetyAccountId = accountId;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
     const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
     appendServerLog(getMessageActionsLogPath(), {
@@ -2961,6 +3340,30 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       return;
     }
 
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: "offer-decline",
+      proxyId: account?.proxyId,
+      touchAction: false
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-safety-reject",
+        route: "offer-decline",
+        debugId,
+        clientRequestId,
+        accountId,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+
     messageActionLock = tryAcquireMessageActionLock({
       accountId,
       route: "offer-decline",
@@ -2992,6 +3395,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       });
       return;
     }
+    registerAccountActionAttempt({ accountId, actionKey: "offer-decline" });
 
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
@@ -3072,6 +3476,7 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
+    accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
     if (res.writableEnded || res.headersSent) {
       appendServerLog(getMessageActionsLogPath(), {
         event: "response-already-closed",
@@ -3103,6 +3508,14 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       details: error?.details || "",
       stack: error?.stack || ""
     });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "offer-decline",
+      error,
+      logPath: getMessageActionsLogPath(),
+      debugId,
+      requestId: clientRequestId
+    });
     if (res.writableEnded || res.headersSent) {
       appendServerLog(getMessageActionsLogPath(), {
         event: "response-already-closed",
@@ -3116,66 +3529,66 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       return;
     }
     if (error.code === "AUTH_REQUIRED") {
-      res.status(401).json({
+      res.status(401).json(withCooldownHint({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
-      res.status(502).json({
+      res.status(502).json(withCooldownHint({
         success: false,
         error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "MESSAGE_ACTION_TIMEOUT") {
-      res.status(504).json({
+      res.status(504).json(withCooldownHint({
         success: false,
         error: "Действие в сообщениях заняло слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "CONVERSATION_NOT_READY") {
-      res.status(503).json({
+      res.status(503).json(withCooldownHint({
         success: false,
         error: "Диалог в Kleinanzeigen не успел прогрузиться (загрузка/скелетон). Обновите диалог и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "CONSENT_REQUIRED") {
-      res.status(503).json({
+      res.status(503).json(withCooldownHint({
         success: false,
         error: "Kleinanzeigen блокирует действие страницей согласия cookie/GDPR. Откройте Kleinanzeigen в браузере через этот же прокси, нажмите «Alle akzeptieren», затем повторите действие.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
-    res.status(500).json({
+    res.status(500).json(withCooldownHint({
       success: false,
       error: error?.message || "Не удалось отклонить предложение",
       code: error?.code || "",
       details: error?.details || "",
       debugId,
       requestId: clientRequestId
-    });
+    }, cooldown));
   }
 });
 
@@ -3192,6 +3605,7 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
     : `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const routeDeadlineMs = resolveMessageRouteDeadlineMs();
   const startedAt = Date.now();
+  let safetyAccountId = null;
   let messageActionLock = null;
   let abortController = null;
   appendServerLog(getMessageActionsLogPath(), {
@@ -3248,6 +3662,7 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
   };
   try {
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
+    safetyAccountId = accountId;
     const conversationId = req.body?.conversationId ? String(req.body.conversationId) : "";
     const conversationUrl = req.body?.conversationUrl ? String(req.body.conversationUrl) : "";
     const text = req.body?.text ? String(req.body.text) : "";
@@ -3307,6 +3722,30 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       return;
     }
 
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: "send-media",
+      proxyId: account?.proxyId,
+      touchAction: false
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "account-safety-reject",
+        route: "send-media",
+        debugId,
+        clientRequestId,
+        accountId,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+
     messageActionLock = tryAcquireMessageActionLock({
       accountId,
       route: "send-media",
@@ -3338,6 +3777,7 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       });
       return;
     }
+    registerAccountActionAttempt({ accountId, actionKey: "send-media" });
 
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
@@ -3420,6 +3860,7 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       elapsedMs: Date.now() - startedAt,
       messagesCount: Array.isArray(result?.messages) ? result.messages.length : 0
     });
+    accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
     if (res.writableEnded || res.headersSent) {
       appendServerLog(getMessageActionsLogPath(), {
         event: "response-already-closed",
@@ -3451,6 +3892,14 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       details: error?.details || "",
       stack: error?.stack || ""
     });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "send-media",
+      error,
+      logPath: getMessageActionsLogPath(),
+      debugId,
+      requestId: clientRequestId
+    });
     if (res.writableEnded || res.headersSent) {
       appendServerLog(getMessageActionsLogPath(), {
         event: "response-already-closed",
@@ -3464,66 +3913,66 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       return;
     }
     if (error.code === "AUTH_REQUIRED") {
-      res.status(401).json({
+      res.status(401).json(withCooldownHint({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
-      res.status(502).json({
+      res.status(502).json(withCooldownHint({
         success: false,
         error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "MESSAGE_ACTION_TIMEOUT") {
-      res.status(504).json({
+      res.status(504).json(withCooldownHint({
         success: false,
         error: "Отправка медиа заняла слишком много времени. Проверьте прокси аккаунта и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "CONVERSATION_NOT_READY") {
-      res.status(503).json({
+      res.status(503).json(withCooldownHint({
         success: false,
         error: "Диалог в Kleinanzeigen не успел прогрузиться (загрузка/скелетон). Обновите диалог и попробуйте снова.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
     if (error.code === "CONSENT_REQUIRED") {
-      res.status(503).json({
+      res.status(503).json(withCooldownHint({
         success: false,
         error: "Kleinanzeigen блокирует отправку страницей согласия cookie/GDPR. Откройте Kleinanzeigen в браузере через этот же прокси, нажмите «Alle akzeptieren», затем повторите отправку.",
         code: error.code,
         details: error?.details || "",
         debugId,
         requestId: clientRequestId
-      });
+      }, cooldown));
       return;
     }
-    res.status(500).json({
+    res.status(500).json(withCooldownHint({
       success: false,
       error: error?.message || "Не удалось отправить фото",
       code: error?.code || "",
       details: error?.details || "",
       debugId,
       requestId: clientRequestId
-    });
+    }, cooldown));
   } finally {
     cleanupUploadedFiles();
   }
@@ -6616,6 +7065,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
     || req.body?.debug === "1"
   );
   let activePublishKey = null;
+  let safetyAccountId = null;
   const releasePublishLock = () => {
     if (!activePublishKey) return;
     const lock = activePublishByAccount.get(activePublishKey);
@@ -6716,6 +7166,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       cleanupFiles();
       return;
     }
+    safetyAccountId = account.id;
 
     const selectedProxy = requireAccountProxy(account, res, "публикации объявления", getOwnerContext(req));
     if (!selectedProxy) {
@@ -6793,6 +7244,28 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       return;
     }
 
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId: account.id,
+      actionKey: "ads-create",
+      proxyId: account?.proxyId
+    });
+    if (!safetyPrecheck.ok) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "account-safety-reject",
+        requestId,
+        accountId: account.id,
+        code: safetyPrecheck.rejection?.code || "",
+        reason: safetyPrecheck.rejection?.reason || "",
+        retryAfterMs: safetyPrecheck.rejection?.retryAfterMs || 0
+      });
+      cleanupFiles();
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId: forceDebug ? requestId : "",
+        requestId
+      });
+      return;
+    }
+
     activePublishByAccount.set(activePublishKey, {
       requestId,
       startedAt: Date.now(),
@@ -6819,8 +7292,23 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       releasePublishLock();
     });
     appendServerLog(getPublishRequestLogPath(), { event: "publish-result", requestId, success: result?.success, error: result?.error || "" });
+    const cooldown = result?.success
+      ? null
+      : applyAccountRiskCooldown({
+          accountId: account.id,
+          route: "ads-create",
+          error: {
+            code: result?.code || "",
+            message: result?.error || "",
+            details: result?.details || ""
+          },
+          logPath: getPublishRequestLogPath(),
+          debugId: requestId,
+          requestId
+        });
 
     if (result.success) {
+      accountCooldownByAccount.delete(toAccountSafetyKey(account.id));
       recentSuccessfulPublishes.set(fingerprint, {
         requestId,
         accountId: account.id,
@@ -6838,19 +7326,27 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
     }
 
     cleanupFiles();
-    res.json({
+    res.json(withCooldownHint({
       ...result,
       debugId: forceDebug ? requestId : undefined
-    });
+    }, cooldown));
     appendServerLog(getPublishRequestLogPath(), { event: "response-sent", requestId, success: result?.success });
   } catch (error) {
     releasePublishLock();
     cleanupFiles();
-    res.status(500).json({
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: "ads-create",
+      error,
+      logPath: getPublishRequestLogPath(),
+      debugId: requestId,
+      requestId
+    });
+    res.status(500).json(withCooldownHint({
       success: false,
       error: error.message,
       debugId: forceDebug ? requestId : undefined
-    });
+    }, cooldown));
     appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
   }
 });
