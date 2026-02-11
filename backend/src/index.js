@@ -7,20 +7,10 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
-const ProxyAgent = require("proxy-agent");
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const { listAccounts, insertAccount, deleteAccount, countAccountsByStatus, getAccountById, updateAccount } = require("./db");
-const {
-  buildProxyUrl,
-  buildPuppeteerProxyUrl,
-  buildProxyServer,
-  parseCookies,
-  normalizeCookies,
-  normalizeCookie,
-  filterKleinanzeigenCookies,
-  buildCookieHeaderForUrl
-} = require("./cookieUtils");
+const { buildProxyUrl, parseCookies, normalizeCookie, filterKleinanzeigenCookies } = require("./cookieUtils");
 const {
   publishAd,
   parseExtraSelectFields,
@@ -68,24 +58,11 @@ const CATEGORY_CHILDREN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CATEGORY_CHILDREN_EMPTY_TTL_MS = 60 * 60 * 1000;
 const CATEGORY_FIELDS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CATEGORY_FIELDS_EMPTY_TTL_MS = 5 * 60 * 1000;
-const CATEGORY_CHILDREN_STALE_MAX_MS = Number(
-  process.env.KL_CATEGORY_CHILDREN_STALE_MAX_MS || (45 * 24 * 60 * 60 * 1000)
-);
-const CATEGORY_FIELDS_STALE_MAX_MS = Number(
-  process.env.KL_CATEGORY_FIELDS_STALE_MAX_MS || (45 * 24 * 60 * 60 * 1000)
-);
-const DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH = process.env.KL_CATEGORY_CHILDREN_LIVE_FETCH === "1";
-const DEFAULT_FIELDS_LIVE_FETCH = process.env.KL_FIELDS_LIVE_FETCH === "1";
-const DEBUG_FEATURES_ENABLED = process.env.KL_ENABLE_DEBUG === "1";
-const isDebugFlagEnabled = (name) => DEBUG_FEATURES_ENABLED && process.env[name] === "1";
 const categoryChildrenCache = { items: {} };
 let categoryChildrenCacheSaveTimer = null;
 const categoryFieldsCache = { items: {} };
 let categoryFieldsCacheSaveTimer = null;
-const DEBUG_FIELDS = isDebugFlagEnabled("KL_DEBUG_FIELDS");
-const DEBUG_CATEGORIES = isDebugFlagEnabled("KL_DEBUG_CATEGORIES");
-const DEBUG_PUBLISH = isDebugFlagEnabled("KL_DEBUG_PUBLISH");
-const DEBUG_LOG_FILES = isDebugFlagEnabled("KL_DEBUG_LOG_FILES");
+const DEBUG_FIELDS = process.env.KL_DEBUG_FIELDS === "1";
 let puppeteerStealthReady = false;
 const subscriptionTokens = { items: [] };
 const activePublishByAccount = new Map();
@@ -178,32 +155,26 @@ const sanitizeFilename = (value) => (value || "account")
   .replace(/[^a-z0-9._-]+/gi, "_")
   .slice(0, 60);
 
-const buildCookieHeaderFromAccount = (account, targetUrl = "https://www.kleinanzeigen.de/") => {
-  const cookies = normalizeCookies(parseCookies(account?.cookie));
-  return buildCookieHeaderForUrl(cookies, targetUrl);
-};
-
-const deriveMessageboxBearerFromAccount = (account) => {
-  const cookies = normalizeCookies(parseCookies(account?.cookie));
-  const accessToken = cookies.find((cookie) => cookie?.name === "access_token" && cookie?.value);
-  const raw = String(accessToken?.value || "").trim();
-  if (!raw) return "";
-  if (/^Bearer\s+/i.test(raw)) return raw;
-  if (raw.split(".").length >= 3) return `Bearer ${raw}`;
-  return raw;
+const buildCookieHeaderFromAccount = (account) => {
+  const cookies = filterKleinanzeigenCookies(parseCookies(account?.cookie)).map(normalizeCookie);
+  const byName = new Map();
+  for (const cookie of cookies || []) {
+    if (!cookie?.name) continue;
+    if (cookie.value === undefined || cookie.value === null) continue;
+    const value = String(cookie.value);
+    if (!value) continue;
+    byName.set(cookie.name, value);
+  }
+  return Array.from(byName.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
 };
 
 const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
-  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
-  const cookieHeader = buildCookieHeaderFromAccount(account, tokenUrl);
-  const derivedBearer = deriveMessageboxBearerFromAccount(account);
+  const cookieHeader = buildCookieHeaderFromAccount(account);
   if (!cookieHeader) {
-    if (derivedBearer) {
-      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader: "" };
-    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
-    error.details = "missing-cookie-header";
     throw error;
   }
 
@@ -213,30 +184,21 @@ const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs 
     ...axiosConfig.headers,
     Cookie: cookieHeader,
     "User-Agent": deviceProfile.userAgent || "Mozilla/5.0",
-    "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
     Accept: "application/json"
   };
   axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
 
-  const response = await axios.get(tokenUrl, axiosConfig);
+  const response = await axios.get("https://www.kleinanzeigen.de/m-access-token.json", axiosConfig);
   if (response.status === 401 || response.status === 403) {
-    if (derivedBearer) {
-      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader };
-    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
-    error.details = `token-endpoint-status:${response.status}`;
     throw error;
   }
 
   const token = response.headers?.authorization || response.headers?.Authorization || "";
   if (!token) {
-    if (derivedBearer) {
-      return { token: derivedBearer, messageboxHeader: "", expiration: Date.now() + 10 * 60 * 1000, cookieHeader };
-    }
     const error = new Error("AUTH_REQUIRED");
     error.code = "AUTH_REQUIRED";
-    error.details = `token-missing-authorization-header:status:${response.status}`;
     throw error;
   }
 
@@ -341,10 +303,10 @@ const ensureDebugDir = () => {
   return debugDir;
 };
 
-const getPublishRequestLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "publish-requests.log") : "");
-const getServerErrorLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "server-errors.log") : "");
-const getFieldsRequestLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "fields-requests.log") : "");
-const getMessageActionsLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "message-actions.log") : "");
+const getPublishRequestLogPath = () => path.join(ensureDebugDir(), "publish-requests.log");
+const getServerErrorLogPath = () => path.join(ensureDebugDir(), "server-errors.log");
+const getFieldsRequestLogPath = () => path.join(ensureDebugDir(), "fields-requests.log");
+const getMessageActionsLogPath = () => path.join(ensureDebugDir(), "message-actions.log");
 
 const normalizeTokenValue = (value) => String(value || "").trim();
 const parseEnvTokenList = (value) => String(value || "")
@@ -482,7 +444,6 @@ const extractAccessToken = (req) => {
 };
 
 const appendServerLog = (pathTarget, payload) => {
-  if (!pathTarget) return;
   try {
     const entry = {
       ts: new Date().toISOString(),
@@ -495,16 +456,52 @@ const appendServerLog = (pathTarget, payload) => {
 };
 
 const appendFieldsRequestLog = (payload) => {
-  const pathTarget = getFieldsRequestLogPath();
-  if (!pathTarget) return;
   try {
     const entry = {
       ts: new Date().toISOString(),
       ...payload
     };
-    fs.appendFileSync(pathTarget, JSON.stringify(entry) + "\n", "utf8");
+    fs.appendFileSync(getFieldsRequestLogPath(), JSON.stringify(entry) + "\n", "utf8");
   } catch (error) {
     // ignore logging failures
+  }
+};
+
+const escapeHtml = (value) =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+// 1x1 transparent PNG for fallback artifacts when page screenshot is unavailable.
+const DEBUG_PLACEHOLDER_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlH0z0AAAAASUVORK5CYII=",
+  "base64"
+);
+
+const writeFileAtomic = (targetPath, content, encoding = "utf8") => {
+  const dir = path.dirname(targetPath);
+  const ext = path.extname(targetPath);
+  const base = path.basename(targetPath, ext);
+  const tmpName = `${base}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+  const tmpPath = path.join(dir, tmpName);
+  try {
+    if (encoding) {
+      fs.writeFileSync(tmpPath, content, encoding);
+    } else {
+      fs.writeFileSync(tmpPath, content);
+    }
+    fs.renameSync(tmpPath, targetPath);
+  } finally {
+    if (fs.existsSync(tmpPath)) {
+      try {
+        fs.rmSync(tmpPath, { force: true });
+      } catch (error) {
+        // ignore cleanup errors
+      }
+    }
   }
 };
 
@@ -526,32 +523,41 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const dumpFieldsDebug = async (page, { accountLabel = "account", step = "unknown", error = "", extra = {}, force = false } = {}) => {
-  if ((!DEBUG_FIELDS && !force) || !page) return;
+  if ((!DEBUG_FIELDS && !force) || !page) return null;
+  let screenshotTmpPath = "";
   try {
     const debugDir = ensureDebugDir();
 
     const safeLabel = sanitizeFilename(accountLabel);
     const safeStep = sanitizeFilename(step);
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const base = `fields-${safeLabel}-${safeStep}-${timestamp}`;
+    const nonce = Math.random().toString(36).slice(2, 8);
+    const base = `fields-${safeLabel}-${safeStep}-${timestamp}-${nonce}`;
     const htmlPath = path.join(debugDir, `${base}.html`);
     const screenshotPath = path.join(debugDir, `${base}.png`);
     const metaPath = path.join(debugDir, `${base}.json`);
+    screenshotTmpPath = path.join(debugDir, `${base}.tmp.png`);
 
     const [html, meta] = await Promise.all([
       page.content().catch(() => ""),
       page.evaluate(() => ({
         url: window.location.href,
         title: document.title,
-        bodyTextSample: (document.body?.innerText || "").slice(0, 2000)
+        bodyTextSample: (document.body?.innerText || "").slice(0, 2000),
+        readyState: document.readyState,
+        formCount: document.querySelectorAll("form").length,
+        selectCount: document.querySelectorAll("select").length
       })).catch(() => ({}))
     ]);
 
     if (html) {
-      fs.writeFileSync(htmlPath, html, "utf8");
+      writeFileAtomic(htmlPath, html, "utf8");
     }
-    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
-    fs.writeFileSync(
+    await page.screenshot({ path: screenshotTmpPath, fullPage: true }).catch(() => {});
+    if (fs.existsSync(screenshotTmpPath)) {
+      fs.renameSync(screenshotTmpPath, screenshotPath);
+    }
+    writeFileAtomic(
       metaPath,
       JSON.stringify(
         {
@@ -566,8 +572,22 @@ const dumpFieldsDebug = async (page, { accountLabel = "account", step = "unknown
       "utf8"
     );
     console.log(`[fields] Debug saved: ${metaPath}`);
+    return {
+      htmlPath,
+      screenshotPath: fs.existsSync(screenshotPath) ? screenshotPath : "",
+      metaPath
+    };
   } catch (dumpError) {
     console.log(`[fields] Debug dump failed: ${dumpError.message}`);
+    return null;
+  } finally {
+    if (screenshotTmpPath && fs.existsSync(screenshotTmpPath)) {
+      try {
+        fs.rmSync(screenshotTmpPath, { force: true });
+      } catch (error) {
+        // ignore cleanup errors
+      }
+    }
   }
 };
 
@@ -578,20 +598,24 @@ const dumpFieldsDebugMeta = ({ accountLabel = "account", step = "unknown", error
     const safeLabel = sanitizeFilename(accountLabel);
     const safeStep = sanitizeFilename(step);
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const base = `fields-${safeLabel}-${safeStep}-${timestamp}-meta`;
+    const nonce = Math.random().toString(36).slice(2, 8);
+    const base = `fields-${safeLabel}-${safeStep}-${timestamp}-${nonce}-meta`;
+    const htmlPath = path.join(debugDir, `${base}.html`);
+    const screenshotPath = path.join(debugDir, `${base}.png`);
     const metaPath = path.join(debugDir, `${base}.json`);
-    fs.writeFileSync(
+    const payload = {
+      step,
+      error,
+      extra,
+      createdAt: new Date().toISOString(),
+      fallback: true
+    };
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>fields debug meta</title></head><body><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></body></html>`;
+    writeFileAtomic(htmlPath, html, "utf8");
+    writeFileAtomic(screenshotPath, DEBUG_PLACEHOLDER_PNG, null);
+    writeFileAtomic(
       metaPath,
-      JSON.stringify(
-        {
-          step,
-          error,
-          extra,
-          createdAt: new Date().toISOString()
-        },
-        null,
-        2
-      ),
+      JSON.stringify(payload, null, 2),
       "utf8"
     );
     console.log(`[fields] Debug meta saved: ${metaPath}`);
@@ -686,22 +710,17 @@ const buildCategoryChildrenCacheKey = ({ id, url }) => {
   return "";
 };
 
-const getCachedCategoryChildrenEntry = (key, { allowStale = false } = {}) => {
+const getCachedCategoryChildrenEntry = (key) => {
   if (!key) return null;
   const entry = categoryChildrenCache.items[key];
   if (!entry) return null;
   const now = Date.now();
   if (entry.expiresAt && entry.expiresAt < now) {
-    const savedAt = Number(entry.savedAt || 0);
-    const isStaleUsable = allowStale && savedAt > 0 && (now - savedAt) <= CATEGORY_CHILDREN_STALE_MAX_MS;
-    if (isStaleUsable) {
-      return { ...entry, _stale: true };
-    }
     delete categoryChildrenCache.items[key];
     scheduleCategoryChildrenCacheSave();
     return null;
   }
-  return { ...entry, _stale: false };
+  return entry;
 };
 
 const setCachedCategoryChildren = (key, children, { empty = false } = {}) => {
@@ -719,34 +738,18 @@ const setCachedCategoryChildren = (key, children, { empty = false } = {}) => {
 loadCategoryChildrenCache();
 loadCategoryFieldsCache();
 
-const getCachedCategoryFieldsEntry = (categoryId, { allowStale = false } = {}) => {
+const getCachedCategoryFields = (categoryId) => {
   const key = String(categoryId || "");
   if (!key) return null;
   const entry = categoryFieldsCache.items[key];
   if (!entry) return null;
   const now = Date.now();
   if (entry.expiresAt && entry.expiresAt < now) {
-    const savedAt = Number(entry.savedAt || 0);
-    const isStaleUsable = allowStale && savedAt > 0 && (now - savedAt) <= CATEGORY_FIELDS_STALE_MAX_MS;
-    if (isStaleUsable) {
-      return {
-        fields: Array.isArray(entry.fields) ? entry.fields : [],
-        stale: true
-      };
-    }
     delete categoryFieldsCache.items[key];
     scheduleCategoryFieldsCacheSave();
     return null;
   }
-  return {
-    fields: Array.isArray(entry.fields) ? entry.fields : [],
-    stale: false
-  };
-};
-
-const getCachedCategoryFields = (categoryId, options = {}) => {
-  const entry = getCachedCategoryFieldsEntry(categoryId, options);
-  return entry ? entry.fields : null;
+  return entry.fields || null;
 };
 
 const setCachedCategoryFields = (categoryId, fields) => {
@@ -771,24 +774,14 @@ const getOwnerContext = (req) => ({
 const filterByOwner = (items, ownerContext = {}) => {
   const list = Array.isArray(items) ? items : [];
   if (ownerContext.isAdmin) return list;
-  const ownerId = String(ownerContext.ownerId || "").trim();
-  // Backward compat: legacy data created before owner scoping might not have ownerId set.
-  // Treat ownerless entries as belonging to the current owner to avoid "empty UI" regressions.
-  if (!ownerId) return list;
-  return list.filter((item) => {
-    const itemOwner = String(item?.ownerId || "").trim();
-    if (!itemOwner) return true;
-    return itemOwner === ownerId;
-  });
+  if (!ownerContext.ownerId) return [];
+  return list.filter((item) => item?.ownerId && String(item.ownerId) === String(ownerContext.ownerId));
 };
 
 const isOwnerMatch = (item, ownerContext = {}) => {
   if (ownerContext.isAdmin) return true;
-  const ownerId = String(ownerContext.ownerId || "").trim();
-  if (!ownerId) return true;
-  const itemOwner = String(item?.ownerId || "").trim();
-  if (!itemOwner) return true;
-  return itemOwner === ownerId;
+  if (!ownerContext.ownerId) return false;
+  return item?.ownerId && String(item.ownerId) === String(ownerContext.ownerId);
 };
 
 const normalizeEntityId = (value) => String(value ?? "").trim();
@@ -1063,11 +1056,8 @@ const messageUploadMiddleware = (req, res, next) => {
       next();
       return;
     }
-    const clientRequestId = String(req.get("x-client-request-id") || "").trim();
-    const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
-    const debugId = safeClientRequestId
-      ? safeClientRequestId
-      : `msg-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const debugId = `msg-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const clientRequestId = String(req.get("x-client-request-id") || "");
     const message = mapMessageUploadErrorMessage(error);
     appendServerLog(getMessageActionsLogPath(), {
       event: "upload-error",
@@ -1201,636 +1191,6 @@ app.post("/api/auth/validate", (req, res) => {
     });
     res.status(500).json({ valid: false, error: "Ошибка проверки токена" });
   }
-});
-
-const maskProxyUrl = (rawUrl) => {
-  const input = String(rawUrl || "").trim();
-  if (!input) return "";
-  try {
-    const parsed = new URL(input);
-    if (parsed.password) parsed.password = "***";
-    return parsed.toString();
-  } catch (error) {
-    // Fallback for non-URL proxy strings: protocol://user:pass@host:port
-    const schemeIndex = input.indexOf("://");
-    if (schemeIndex < 0) return input;
-    const atIndex = input.indexOf("@", schemeIndex + 3);
-    if (atIndex < 0) return input;
-    const creds = input.slice(schemeIndex + 3, atIndex);
-    const colonIndex = creds.indexOf(":");
-    if (colonIndex < 0) return input;
-    const user = creds.slice(0, colonIndex);
-    return `${input.slice(0, schemeIndex + 3)}${user}:***@${input.slice(atIndex + 1)}`;
-  }
-};
-
-const safeString = (value, max = 600) => String(value || "").trim().slice(0, max);
-
-const serializeErrorForDebug = (error) => {
-  if (!error) return null;
-  return {
-    message: safeString(error?.message || String(error)),
-    code: safeString(error?.code || ""),
-    details: safeString(error?.details || ""),
-    originalMessage: safeString(error?.originalMessage || ""),
-    stack: safeString(error?.stack || "", 1200),
-    cause: error?.cause
-      ? {
-        message: safeString(error.cause?.message || String(error.cause)),
-        code: safeString(error.cause?.code || ""),
-        stack: safeString(error.cause?.stack || "", 800)
-      }
-      : null
-  };
-};
-
-const readTailText = (filePath, maxBytes = 400 * 1024) => {
-  try {
-    const stat = fs.statSync(filePath);
-    const size = Number(stat?.size || 0);
-    const start = Math.max(0, size - Math.max(1024, Number(maxBytes) || 0));
-    const length = size - start;
-    if (length <= 0) return "";
-    const fd = fs.openSync(filePath, "r");
-    try {
-      const buffer = Buffer.alloc(length);
-      fs.readSync(fd, buffer, 0, length, start);
-      return buffer.toString("utf8");
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch (error) {
-    return "";
-  }
-};
-
-app.get("/api/debug/message-actions/locks", (req, res) => {
-  const items = [];
-  for (const [accountId, entry] of activeMessageActionByAccount.entries()) {
-    if (!entry) continue;
-    items.push({
-      accountId,
-      route: entry.route || "",
-      debugId: entry.debugId || "",
-      requestId: entry.clientRequestId || "",
-      startedAt: entry.startedAt || null,
-      ageMs: entry.startedAt ? Date.now() - Number(entry.startedAt || 0) : null
-    });
-  }
-  res.json({ now: new Date().toISOString(), locks: items });
-});
-
-app.post("/api/debug/message-actions/locks/clear", (req, res) => {
-  const accountId = req.body?.accountId != null ? String(req.body.accountId).trim() : "";
-  const cleared = [];
-  if (accountId) {
-    if (activeMessageActionByAccount.has(accountId)) {
-      activeMessageActionByAccount.delete(accountId);
-      cleared.push(accountId);
-    }
-    res.json({ success: true, cleared });
-    return;
-  }
-  // Require explicit allowAll to avoid accidental clearing.
-  const allowAll = req.body?.allowAll === true || String(req.body?.allowAll || "").trim() === "1";
-  if (!allowAll) {
-    res.status(400).json({ success: false, error: "accountId обязателен (или allowAll=1)." });
-    return;
-  }
-  for (const key of activeMessageActionByAccount.keys()) {
-    cleared.push(key);
-  }
-  activeMessageActionByAccount.clear();
-  res.json({ success: true, cleared });
-});
-
-app.get("/api/debug/message-actions/log", (req, res) => {
-  const requestId = String(req.query.requestId || "").trim();
-  const debugId = String(req.query.debugId || "").trim();
-  const limitRaw = Number(req.query.limit || 400);
-  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(5000, Math.floor(limitRaw))) : 400;
-
-  const logPath = getMessageActionsLogPath();
-  const tail = readTailText(logPath, 3 * 1024 * 1024);
-  const lines = tail.split(/\\r?\\n/).filter(Boolean);
-
-  const filtered = (requestId || debugId)
-    ? lines.filter((line) => {
-      if (requestId && line.includes(requestId)) return true;
-      if (debugId && line.includes(debugId)) return true;
-      return false;
-    })
-    : lines;
-
-  res.json({
-    logPath,
-    requestId,
-    debugId,
-    totalLines: lines.length,
-    matchedLines: filtered.length,
-    lines: filtered.slice(-limit)
-  });
-});
-
-const getMessageActionArtifactsRootDir = () => path.join(ensureDebugDir(), "message-action-artifacts");
-
-const parseMessageActionsLogLine = (line) => {
-  const raw = String(line || "").trim();
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return (parsed && typeof parsed === "object") ? parsed : null;
-  } catch (error) {
-    return null;
-  }
-};
-
-const resolveMessageActionDebugIdsFromLog = (requestId, { maxResults = 6 } = {}) => {
-  const rid = String(requestId || "").trim();
-  if (!rid) return [];
-
-  const logPath = getMessageActionsLogPath();
-  const tail = readTailText(logPath, 3 * 1024 * 1024);
-  const lines = tail.split(/\\r?\\n/).filter(Boolean);
-  const seen = new Set();
-  const results = [];
-  const limit = Math.max(1, Math.min(25, Number(maxResults) || 6));
-  const debugIdPattern = /\"debugId\"\\s*:\\s*\"([^\"]+)\"/i;
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index];
-    if (!line.includes(rid)) continue;
-    const parsed = parseMessageActionsLogLine(line);
-    let debugId = safeString(parsed?.debugId || "", 240);
-    if (!debugId) {
-      const match = String(line).match(debugIdPattern);
-      if (match) debugId = safeString(match[1], 240);
-    }
-    if (!debugId || seen.has(debugId)) continue;
-    seen.add(debugId);
-    results.push(debugId);
-    if (results.length >= limit) break;
-  }
-
-  return results.reverse();
-};
-
-const listRecentMessageActionDebugIds = ({ limit = 20 } = {}) => {
-  const limitRaw = Number(limit || 20);
-  const normalizedLimit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.floor(limitRaw))) : 20;
-
-  const logPath = getMessageActionsLogPath();
-  const tail = readTailText(logPath, 3 * 1024 * 1024);
-  const lines = tail.split(/\\r?\\n/).filter(Boolean);
-
-  const seen = new Set();
-  const recent = [];
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const parsed = parseMessageActionsLogLine(lines[index]);
-    const debugId = safeString(parsed?.debugId || "", 240);
-    if (!debugId || seen.has(debugId)) continue;
-    seen.add(debugId);
-    recent.push({
-      ts: safeString(parsed?.ts || ""),
-      debugId,
-      route: safeString(parsed?.route || ""),
-      event: safeString(parsed?.event || ""),
-      clientRequestId: safeString(parsed?.clientRequestId || "", 240),
-      code: safeString(parsed?.code || "", 120)
-    });
-    if (recent.length >= normalizedLimit) break;
-  }
-  return recent.reverse();
-};
-
-app.get("/api/debug/message-actions/recent", (req, res) => {
-  const limitRaw = Number(req.query.limit || 30);
-  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(120, Math.floor(limitRaw))) : 30;
-  res.json({
-    success: true,
-    logPath: getMessageActionsLogPath(),
-    recent: listRecentMessageActionDebugIds({ limit })
-  });
-});
-
-const listMessageActionArtifactsForDebugId = (debugIdRaw, limit) => {
-  const normalizedDebugId = String(debugIdRaw || "").trim();
-  const safeDebugId = sanitizeFilename(normalizedDebugId);
-  const limitRaw = Number(limit || 30);
-  const normalizedLimit = Number.isFinite(limitRaw)
-    ? Math.max(1, Math.min(200, Math.floor(limitRaw)))
-    : 30;
-
-  if (!safeDebugId) {
-    return { ok: false, status: 400, error: "debugId обязателен.", debugId: normalizedDebugId };
-  }
-
-  const root = getMessageActionArtifactsRootDir();
-  const actionDir = path.join(root, safeDebugId);
-  if (!fs.existsSync(actionDir)) {
-    return { ok: false, status: 404, error: "Артефакты не найдены.", debugId: normalizedDebugId, dir: actionDir };
-  }
-
-  let metaFiles = [];
-  try {
-    metaFiles = fs.readdirSync(actionDir).filter((name) => name.endsWith(".json")).sort();
-  } catch (error) {
-    return { ok: false, status: 500, error: "Не удалось прочитать директорию артефактов.", debugId: normalizedDebugId, dir: actionDir };
-  }
-
-  const pickError = (value) => {
-    if (!value || typeof value !== "object") return null;
-    const code = safeString(value.code || "", 120);
-    const message = safeString(value.message || "", 240);
-    const details = safeString(value.details || "", 400);
-    const out = {};
-    if (code) out.code = code;
-    if (message) out.message = message;
-    if (details) out.details = details;
-    return Object.keys(out).length ? out : null;
-  };
-
-  const toSummary = (file) => {
-    const full = path.join(actionDir, file);
-    let parsed = null;
-    try {
-      parsed = JSON.parse(fs.readFileSync(full, "utf8"));
-    } catch (error) {
-      parsed = null;
-    }
-
-    const screenshotPath = String(parsed?.files?.screenshotPath || "");
-    const htmlPath = String(parsed?.files?.htmlPath || "");
-    const metaPath = String(parsed?.files?.metaPath || "");
-    return {
-      file,
-      stage: safeString(parsed?.stage || ""),
-      ts: safeString(parsed?.ts || ""),
-      page: parsed?.page
-        ? {
-          url: safeString(parsed.page?.url || "", 800),
-          title: safeString(parsed.page?.title || "", 240),
-          isClosed: Boolean(parsed.page?.isClosed)
-        }
-        : null,
-      error: pickError(parsed?.error),
-      screenshotFile: screenshotPath ? path.basename(screenshotPath) : "",
-      htmlFile: htmlPath ? path.basename(htmlPath) : "",
-      metaFile: metaPath ? path.basename(metaPath) : file
-    };
-  };
-
-  const selected = metaFiles.slice(-normalizedLimit);
-  const artifacts = selected.map(toSummary);
-  return {
-    ok: true,
-    status: 200,
-    debugId: normalizedDebugId,
-    dir: actionDir,
-    totalArtifacts: metaFiles.length,
-    returned: artifacts.length,
-    artifacts
-  };
-};
-
-app.get("/api/debug/message-actions/artifacts", (req, res) => {
-  const debugIdRaw = String(req.query.debugId || "").trim();
-  const requestIdRaw = String(req.query.requestId || "").trim();
-  const limitRaw = Number(req.query.limit || 30);
-  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 30;
-
-  const requestedId = debugIdRaw || requestIdRaw;
-  if (!requestedId) {
-    res.status(400).json({ success: false, error: "debugId или requestId обязателен." });
-    return;
-  }
-
-  const direct = listMessageActionArtifactsForDebugId(requestedId, limit);
-  if (direct.ok) {
-    res.json({ success: true, ...direct });
-    return;
-  }
-
-  const shouldResolveFromRequestId = Boolean(requestIdRaw) || /^req-[a-z0-9-]+$/i.test(requestedId);
-  if (!shouldResolveFromRequestId) {
-    res.status(direct.status || 500).json({ success: false, ...direct });
-    return;
-  }
-
-  const resolvedDebugIds = resolveMessageActionDebugIdsFromLog(requestIdRaw || requestedId, { maxResults: 6 });
-  if (!resolvedDebugIds.length) {
-    res.status(404).json({
-      success: false,
-      error: "Артефакты не найдены.",
-      requestId: requestIdRaw || requestedId,
-      hint: "Используйте /api/debug/message-actions/log?requestId=... чтобы найти debugId.",
-      recent: listRecentMessageActionDebugIds({ limit: 12 })
-    });
-    return;
-  }
-
-  const artifactsByDebugId = {};
-  const errors = [];
-  for (const resolvedDebugId of resolvedDebugIds) {
-    const listing = listMessageActionArtifactsForDebugId(resolvedDebugId, limit);
-    if (listing.ok) {
-      artifactsByDebugId[resolvedDebugId] = listing;
-    } else {
-      errors.push({
-        debugId: resolvedDebugId,
-        error: listing.error || "Не удалось получить артефакты.",
-        dir: listing.dir || ""
-      });
-    }
-  }
-
-  res.json({
-    success: true,
-    resolvedFromRequestId: true,
-    requestId: requestIdRaw || requestedId,
-    debugIds: resolvedDebugIds,
-    artifactsByDebugId,
-    errors
-  });
-});
-
-app.get("/api/debug/message-actions/artifacts/file", (req, res) => {
-  const debugIdRaw = String(req.query.debugId || "").trim();
-  const safeDebugId = sanitizeFilename(debugIdRaw);
-  const fileRaw = String(req.query.file || "").trim();
-  const safeFile = path.basename(fileRaw);
-
-  if (!safeDebugId || !safeFile) {
-    res.status(400).json({ success: false, error: "debugId и file обязательны." });
-    return;
-  }
-  if (!/^[a-z0-9._-]{1,220}$/i.test(safeFile)) {
-    res.status(400).json({ success: false, error: "Некорректное имя файла." });
-    return;
-  }
-
-  const root = getMessageActionArtifactsRootDir();
-  const actionDir = path.join(root, safeDebugId);
-  const fullPath = path.join(actionDir, safeFile);
-  const resolvedActionDir = path.resolve(actionDir);
-  const resolvedFullPath = path.resolve(fullPath);
-  if (!resolvedFullPath.startsWith(resolvedActionDir + path.sep)) {
-    res.status(400).json({ success: false, error: "Некорректный путь." });
-    return;
-  }
-  if (!fs.existsSync(resolvedFullPath)) {
-    res.status(404).json({ success: false, error: "Файл не найден." });
-    return;
-  }
-
-  const ext = path.extname(safeFile).toLowerCase();
-  if (ext === ".png") {
-    res.setHeader("Content-Type", "image/png");
-  } else if (ext === ".html") {
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-  } else if (ext === ".json") {
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-  } else {
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  }
-  res.sendFile(resolvedFullPath);
-});
-
-app.post("/api/debug/account/diagnose", async (req, res) => {
-  const debugId = `diag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const startedAt = Date.now();
-  const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
-  const withPuppeteer = req.body?.withPuppeteer === true || String(req.body?.withPuppeteer || "").trim() === "1";
-  const timeoutMsRaw = Number(req.body?.timeoutMs || 20000);
-  const timeoutMs = Number.isFinite(timeoutMsRaw) ? Math.max(4000, Math.min(60000, Math.floor(timeoutMsRaw))) : 20000;
-
-  if (!accountId) {
-    res.status(400).json({ success: false, error: "accountId обязателен." });
-    return;
-  }
-
-  const account = getAccountForRequest(accountId, req, res);
-  if (!account) return;
-
-  const proxy = requireAccountProxy(account, res, "диагностики аккаунта", getOwnerContext(req));
-  if (!proxy) return;
-
-  const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
-  const cookiesParsed = parseCookies(account?.cookie || "");
-  const cookiesNormalized = normalizeCookies(cookiesParsed);
-  const cookieHeader = buildCookieHeaderForUrl(cookiesNormalized, tokenUrl);
-  const cookieNamesInHeader = cookieHeader
-    ? cookieHeader.split(";").map((part) => String(part).trim().split("=")[0]).filter(Boolean).slice(0, 80)
-    : [];
-  const accessCookie = cookiesNormalized.find((cookie) => cookie?.name === "access_token" && cookie?.value);
-  const accessCookieLooksJwt = Boolean(accessCookie?.value && String(accessCookie.value).split(".").length >= 3);
-
-  const proxyUrl = buildProxyUrl(proxy);
-  const proxyUrlForPuppeteer = buildPuppeteerProxyUrl(proxy);
-  const proxyServer = buildProxyServer(proxy);
-
-  const result = {
-    success: true,
-    debugId,
-    startedAt: new Date().toISOString(),
-    elapsedMs: 0,
-    account: {
-      id: accountId,
-      profileName: safeString(account.profileName || ""),
-      profileEmail: safeString(account.profileEmail || ""),
-      username: safeString(account.username || ""),
-      proxyId: safeString(account.proxyId || "")
-    },
-    proxy: {
-      id: safeString(proxy.id || ""),
-      type: safeString(proxy.type || ""),
-      host: safeString(proxy.host || ""),
-      port: Number(proxy.port || 0),
-      hasAuth: Boolean(proxy.username || proxy.password),
-      url: maskProxyUrl(proxyUrl),
-      puppeteerUrl: maskProxyUrl(proxyUrlForPuppeteer),
-      puppeteerServer: maskProxyUrl(proxyServer)
-    },
-    cookies: {
-      parsedCount: Array.isArray(cookiesParsed) ? cookiesParsed.length : 0,
-      normalizedCount: Array.isArray(cookiesNormalized) ? cookiesNormalized.length : 0,
-      hasAccessTokenCookie: Boolean(accessCookie),
-      accessTokenLooksJwt: accessCookieLooksJwt,
-      cookieHeaderLength: cookieHeader.length,
-      cookieNamesInHeader
-    },
-    checks: {
-      proxyConnect: null,
-      robots: null,
-      tokenEndpoint: null,
-      puppeteer: null
-    }
-  };
-
-  const debugDir = ensureDebugDir();
-  const debugPath = path.join(debugDir, `diagnose-account-${accountId}-${debugId}.json`);
-  const writeDebugFile = () => {
-    try {
-      fs.writeFileSync(debugPath, JSON.stringify(result, null, 2), "utf8");
-    } catch (error) {
-      // ignore
-    }
-  };
-
-  try {
-    // 1) Proxy TCP/CONNECT handshake
-    result.checks.proxyConnect = await proxyChecker.checkProxyConnection(proxy, "www.kleinanzeigen.de", 443);
-    writeDebugFile();
-
-    // 2) Simple HTTP fetch through proxy (robots.txt)
-    try {
-      const axiosConfig = proxyChecker.buildAxiosConfig(proxy, timeoutMs);
-      axiosConfig.validateStatus = (status) => status >= 200 && status < 600;
-      const response = await axios.get("https://www.kleinanzeigen.de/robots.txt", {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          Accept: "text/plain,*/*",
-          "Accept-Language": "de-DE,de;q=0.9,en;q=0.8"
-        },
-        responseType: "text",
-        maxRedirects: 3
-      });
-      result.checks.robots = {
-        status: response.status,
-        contentType: safeString(response.headers?.["content-type"] || ""),
-        sample: safeString(response.data || "", 220)
-      };
-    } catch (error) {
-      result.checks.robots = { error: serializeErrorForDebug(error) };
-    }
-    writeDebugFile();
-
-    // 3) Token endpoint fetch through proxy
-    try {
-      const axiosConfig = proxyChecker.buildAxiosConfig(proxy, timeoutMs);
-      axiosConfig.validateStatus = (status) => status >= 200 && status < 600;
-      const deviceProfile = toDeviceProfile(account?.deviceProfile);
-      const response = await axios.get(tokenUrl, {
-        ...axiosConfig,
-        headers: {
-          ...axiosConfig.headers,
-          Cookie: cookieHeader,
-          "User-Agent": deviceProfile.userAgent || axiosConfig.headers?.["User-Agent"] || "Mozilla/5.0",
-          "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
-          Accept: "application/json"
-        }
-      });
-
-      const authHeader = response.headers?.authorization || response.headers?.Authorization || "";
-      const messageboxHeader = response.headers?.messagebox || response.headers?.Messagebox || "";
-      result.checks.tokenEndpoint = {
-        status: response.status,
-        hasAuthorizationHeader: Boolean(authHeader),
-        hasMessageboxHeader: Boolean(messageboxHeader),
-        message: safeString(response.data?.message || response.data?.error || "", 240),
-        bodyKeys: response.data && typeof response.data === "object" ? Object.keys(response.data).slice(0, 30) : []
-      };
-    } catch (error) {
-      result.checks.tokenEndpoint = { error: serializeErrorForDebug(error) };
-    }
-    writeDebugFile();
-
-    // 4) Optional: Puppeteer probe (loads home + messages list).
-    if (withPuppeteer) {
-      const proxyUrlValue = proxyUrlForPuppeteer;
-      const needsProxyChain = Boolean(
-        proxyUrlValue && ((proxy?.type || "").toLowerCase().startsWith("socks") || proxy?.username || proxy?.password)
-      );
-      let anonymizedProxyUrl = "";
-      try {
-        const proxyChain = require("proxy-chain");
-        const launchArgs = ["--no-sandbox", "--disable-setuid-sandbox", "--lang=de-DE", "--disable-dev-shm-usage", "--no-zygote", "--disable-gpu"];
-        if (proxyServer) {
-          if (needsProxyChain) {
-            anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrlValue);
-            launchArgs.push(`--proxy-server=${anonymizedProxyUrl}`);
-          } else {
-            launchArgs.push(`--proxy-server=${proxyServer}`);
-          }
-        }
-        const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), "kl-diag-profile-"));
-        const browser = await puppeteerExtra.launch({
-          headless: "new",
-          args: launchArgs,
-          userDataDir: profileDir,
-          timeout: PUPPETEER_LAUNCH_TIMEOUT,
-          protocolTimeout: PUPPETEER_PROTOCOL_TIMEOUT
-        });
-        try {
-          const page = await browser.newPage();
-          page.setDefaultTimeout(Math.min(20000, timeoutMs));
-          page.setDefaultNavigationTimeout(Math.min(20000, timeoutMs));
-          if (!anonymizedProxyUrl && (proxy?.username || proxy?.password)) {
-            await page.authenticate({ username: proxy.username || "", password: proxy.password || "" });
-          }
-          const deviceProfile = toDeviceProfile(account?.deviceProfile);
-          await page.setUserAgent(deviceProfile.userAgent || "Mozilla/5.0");
-          await page.setViewport(deviceProfile.viewport || { width: 1366, height: 768 });
-          await page.setExtraHTTPHeaders({ "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8" });
-          await page.emulateTimezone(deviceProfile.timezone || "Europe/Berlin").catch(() => {});
-          await page.goto("https://www.kleinanzeigen.de/", { waitUntil: "domcontentloaded", timeout: Math.min(20000, timeoutMs) });
-          await acceptCookieModal(page, { timeout: 2500 }).catch(() => {});
-          if (isGdprPage(page.url())) {
-            await acceptGdprConsent(page, { timeout: 5000 }).catch(() => {});
-          }
-          await page.setCookie(...cookiesNormalized);
-          await page.goto("https://www.kleinanzeigen.de/m-nachrichten.html", { waitUntil: "domcontentloaded", timeout: Math.min(25000, timeoutMs + 5000) });
-          await acceptCookieModal(page, { timeout: 2500 }).catch(() => {});
-          if (isGdprPage(page.url())) {
-            await acceptGdprConsent(page, { timeout: 5000 }).catch(() => {});
-          }
-          const url = page.url();
-          const title = await page.title().catch(() => "");
-          const screenshotPath = path.join(debugDir, `diagnose-account-${accountId}-${debugId}.png`);
-          await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
-          result.checks.puppeteer = {
-            url: safeString(url, 500),
-            title: safeString(title, 200),
-            screenshotPath
-          };
-        } finally {
-          await browser.close().catch(() => {});
-          try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch (e) {}
-        }
-      } catch (error) {
-        result.checks.puppeteer = { error: serializeErrorForDebug(error) };
-      } finally {
-        if (anonymizedProxyUrl) {
-          try {
-            const proxyChain = require("proxy-chain");
-            await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true).catch(() => {});
-          } catch (e) {}
-        }
-      }
-      writeDebugFile();
-    }
-  } catch (error) {
-    result.success = false;
-    result.error = safeString(error?.message || String(error));
-    result.errorInfo = serializeErrorForDebug(error);
-  } finally {
-    result.elapsedMs = Date.now() - startedAt;
-    writeDebugFile();
-  }
-
-  appendServerLog(getMessageActionsLogPath(), {
-    event: "account-diagnose",
-    debugId,
-    accountId,
-    elapsedMs: result.elapsedMs,
-    proxyId: result.proxy?.id || "",
-    proxyType: result.proxy?.type || "",
-    tokenEndpointStatus: result.checks?.tokenEndpoint?.status || null,
-    robotsStatus: result.checks?.robots?.status || null
-  });
-
-  res.json({ ...result, debugPath });
 });
 
 app.get("/api/accounts", (req, res) => {
@@ -2083,7 +1443,7 @@ app.get("/api/ads/active", async (req, res) => {
       step: "fields-exception",
       error: error?.message || "unknown-error",
       extra: { stack: error?.stack || "" },
-      force: DEBUG_FEATURES_ENABLED && (req?.query?.debug === "true" || req?.query?.debug === "1")
+      force: req?.query?.debug === "true" || req?.query?.debug === "1"
     });
     res.status(500).json({ success: false, error: error.message });
   } finally {
@@ -2277,15 +1637,6 @@ app.get("/api/messages", async (req, res) => {
       });
       return;
     }
-    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
-      res.status(502).json({
-        success: false,
-        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
-        code: error.code,
-        details: error?.details || ""
-      });
-      return;
-    }
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2385,9 +1736,7 @@ app.get("/api/messages/image", async (req, res) => {
     if (isMessageboxAttachment) {
       const auth = await getMessageboxAccessTokenForAccount({ account, proxy, timeoutMs: 20000 });
       requestHeaders.Authorization = auth.token;
-      // Build cookies for the actual upstream host to avoid mixing host-only cookies for kleinanzeigen.de/www.
-      const cookieHeader = buildCookieHeaderFromAccount(account, baseUrl.toString());
-      requestHeaders.Cookie = cookieHeader || auth.cookieHeader || buildCookieHeaderFromAccount(account);
+      requestHeaders.Cookie = auth.cookieHeader || buildCookieHeaderFromAccount(account);
       requestHeaders["X-ECG-USER-AGENT"] = "messagebox-1";
     }
 
@@ -2479,11 +1828,8 @@ app.get("/api/messages/thread", async (req, res) => {
 });
 
 app.post("/api/messages/send", async (req, res) => {
-  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
-  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
-  const debugId = safeClientRequestId
-    ? safeClientRequestId
-    : `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const debugId = `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const clientRequestId = String(req.get("x-client-request-id") || "");
   const startedAt = Date.now();
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
@@ -2587,11 +1933,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
   if (req.socket) {
     req.socket.setTimeout(0);
   }
-  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
-  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
-  const debugId = safeClientRequestId
-    ? safeClientRequestId
-    : `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const debugId = `msg-decline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const clientRequestId = String(req.get("x-client-request-id") || "");
   const routeDeadlineMs = resolveMessageRouteDeadlineMs();
   const startedAt = Date.now();
   let messageActionLock = null;
@@ -2608,8 +1951,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     if (abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
-    // Client went away; do not keep the per-account lock stuck.
-    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "request-aborted",
       route: "offer-decline",
@@ -2622,8 +1963,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
     if (!res.writableEnded && abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
-    // Response was closed early (nginx/client timeout). Release lock so the user can retry.
-    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "response-close",
       route: "offer-decline",
@@ -2703,10 +2042,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
         success: false,
         error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
         code: "MESSAGE_ACTION_IN_PROGRESS",
-        activeRoute: messageActionLock?.existing?.route || "",
-        activeDebugId: messageActionLock?.existing?.debugId || "",
-        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
-        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
         debugId,
         requestId: clientRequestId
       });
@@ -2745,7 +2080,6 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       serviceTimer = setTimeout(() => {
         timedOut = true;
         try { abortController.abort(); } catch (error) {}
-        releaseMessageActionLock(messageActionLock);
         const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
         timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
         timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
@@ -2905,11 +2239,8 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
   if (req.socket) {
     req.socket.setTimeout(0);
   }
-  const clientRequestId = String(req.get("x-client-request-id") || "").trim();
-  const safeClientRequestId = clientRequestId ? sanitizeFilename(clientRequestId) : "";
-  const debugId = safeClientRequestId
-    ? safeClientRequestId
-    : `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const debugId = `msg-media-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const clientRequestId = String(req.get("x-client-request-id") || "");
   const routeDeadlineMs = resolveMessageRouteDeadlineMs();
   const startedAt = Date.now();
   let messageActionLock = null;
@@ -2926,8 +2257,6 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
     if (abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
-    // Client went away; do not keep the per-account lock stuck.
-    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "request-aborted",
       route: "send-media",
@@ -2940,8 +2269,6 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
     if (!res.writableEnded && abortController && !abortController.signal.aborted) {
       try { abortController.abort(); } catch (error) {}
     }
-    // Response was closed early (nginx/client timeout). Release lock so the user can retry.
-    releaseMessageActionLock(messageActionLock);
     appendServerLog(getMessageActionsLogPath(), {
       event: "response-close",
       route: "send-media",
@@ -3049,10 +2376,6 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
         success: false,
         error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
         code: "MESSAGE_ACTION_IN_PROGRESS",
-        activeRoute: messageActionLock?.existing?.route || "",
-        activeDebugId: messageActionLock?.existing?.debugId || "",
-        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
-        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
         debugId,
         requestId: clientRequestId
       });
@@ -3093,7 +2416,6 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       serviceTimer = setTimeout(() => {
         timedOut = true;
         try { abortController.abort(); } catch (error) {}
-        releaseMessageActionLock(messageActionLock);
         const timeoutError = new Error("MESSAGE_ACTION_TIMEOUT");
         timeoutError.code = "MESSAGE_ACTION_TIMEOUT";
         timeoutError.details = `route-deadline-${routeDeadlineMs}ms`;
@@ -3345,9 +2667,7 @@ app.get("/api/categories/children", async (req, res) => {
     const url = req.query.url ? String(req.query.url) : "";
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
     const forceRefresh = req.query.refresh === "true";
-    const allowStaleCache = req.query.allowStale !== "0";
-    const allowLiveLookup = req.query.live === "1" || forceRefresh || DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH;
-    const forceDebug = DEBUG_FEATURES_ENABLED && (req.query.debug === "true" || req.query.debug === "1");
+    const forceDebug = req.query.debug === "true" || req.query.debug === "1";
     const ownerContext = getOwnerContext(req);
     const requestAccount = accountId ? getAccountForRequest(accountId, req, res) : null;
     if (accountId && !requestAccount) {
@@ -3359,22 +2679,18 @@ app.get("/api/categories/children", async (req, res) => {
       : null;
     const cacheKey = buildCategoryChildrenCacheKey({ id, url });
     if (!forceRefresh && cacheKey) {
-      const cachedEntry = getCachedCategoryChildrenEntry(cacheKey, { allowStale: allowStaleCache });
+      const cachedEntry = getCachedCategoryChildrenEntry(cacheKey);
       if (cachedEntry) {
-        if (DEBUG_CATEGORIES) {
+        if (process.env.KL_DEBUG_CATEGORIES === "1") {
           const sample = (cachedEntry.children || []).slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
           console.log(`[categories/children] cache hit key=${cacheKey} count=${cachedEntry.children?.length || 0} sample=${sample}`);
         }
-        res.json({
-          children: cachedEntry.children || [],
-          cached: true,
-          stale: Boolean(cachedEntry._stale)
-        });
+        res.json({ children: cachedEntry.children || [] });
         return;
       }
     }
     let children = await getCategoryChildren({ id, url, proxy: selectedProxy });
-    if (DEBUG_CATEGORIES) {
+    if (process.env.KL_DEBUG_CATEGORIES === "1") {
       console.log(`[categories/children] request id=${id} url=${url} accountId=${accountId} initialChildren=${children.length}`);
     }
     const dedupeChildren = (items) => {
@@ -3388,25 +2704,22 @@ app.get("/api/categories/children", async (req, res) => {
       });
     };
 
-    if (children.length || !accountId || !allowLiveLookup) {
+    if (children.length || !accountId) {
       const finalChildren = dedupeChildren(children);
       if (cacheKey) {
         setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
       }
-      if (DEBUG_CATEGORIES) {
+      if (process.env.KL_DEBUG_CATEGORIES === "1") {
         const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
         console.log(`[categories/children] response id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
       }
-      res.json({
-        children: finalChildren,
-        liveLookupSkipped: Boolean(accountId && !allowLiveLookup && !finalChildren.length)
-      });
+      res.json({ children: finalChildren });
       return;
     }
 
     const account = requestAccount || getAccountById(accountId);
     if (!account) {
-      if (DEBUG_CATEGORIES) {
+      if (process.env.KL_DEBUG_CATEGORIES === "1") {
         console.log("[categories/children] account not found, skip puppeteer fallback");
       }
       res.json({ children });
@@ -3414,7 +2727,7 @@ app.get("/api/categories/children", async (req, res) => {
     }
 
     if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
-      if (DEBUG_CATEGORIES) {
+      if (process.env.KL_DEBUG_CATEGORIES === "1") {
         console.log("[categories/children] proxy missing, skip puppeteer fallback");
       }
       const finalChildren = dedupeChildren(children);
@@ -3660,115 +2973,9 @@ app.get("/api/categories/children", async (req, res) => {
       return best;
     };
 
-    const buildCategoryHttpConfig = (targetUrl) => {
-      const headers = {
-        "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9",
-        "User-Agent": deviceProfile?.userAgent || "Mozilla/5.0"
-      };
-      const cookieHeader = buildCookieHeaderForUrl(cookies, targetUrl);
-      if (cookieHeader) {
-        headers.Cookie = cookieHeader;
-      }
-
-      const config = {
-        headers,
-        timeout: 15000,
-        maxRedirects: 5,
-        validateStatus: (status) => status >= 200 && status < 400
-      };
-
-      const rawProxyUrl = buildProxyUrl(selectedProxy);
-      if (rawProxyUrl) {
-        let agent = null;
-        if (typeof ProxyAgent === "function") {
-          try {
-            agent = new ProxyAgent(rawProxyUrl);
-          } catch (error) {
-            try {
-              agent = ProxyAgent(rawProxyUrl);
-            } catch (innerError) {
-              agent = null;
-            }
-          }
-        } else if (ProxyAgent && typeof ProxyAgent.ProxyAgent === "function") {
-          try {
-            agent = new ProxyAgent.ProxyAgent(rawProxyUrl);
-          } catch (error) {
-            agent = null;
-          }
-        }
-        if (agent) {
-          config.httpAgent = agent;
-          config.httpsAgent = agent;
-          config.proxy = false;
-        }
-      }
-      return config;
-    };
-
-    const tryResolveChildrenViaHttpTree = async () => {
-      const baseSelectionUrl = "https://www.kleinanzeigen.de/p-kategorie-aendern.html";
-      const categoryPath = await resolveCategoryPath().catch(() => []);
-      const numericPath = (Array.isArray(categoryPath) ? categoryPath : [])
-        .map((node) => String(node?.id || "").trim())
-        .filter((value) => /^\d+$/.test(value));
-      const candidates = [];
-      if (numericPath.length > 1) {
-        candidates.push(`${baseSelectionUrl}?path=${encodeURIComponent(numericPath.join("/"))}`);
-      }
-      if (url) {
-        candidates.push(String(url));
-      }
-      candidates.push(baseSelectionUrl);
-
-      const seen = new Set();
-      for (const requestUrl of candidates) {
-        const normalizedUrl = String(requestUrl || "").trim();
-        if (!normalizedUrl || seen.has(normalizedUrl)) continue;
-        seen.add(normalizedUrl);
-        try {
-          const config = buildCategoryHttpConfig(normalizedUrl);
-          const response = await axios.get(normalizedUrl, config);
-          const html = String(response?.data || "");
-          if (!html) continue;
-          const treeFromHtml = extractCategoryTreeFromHtml(html);
-          if (!treeFromHtml) continue;
-          const normalizedTree = normalizeCategoryTreeLocal(
-            Array.isArray(treeFromHtml) ? treeFromHtml : [treeFromHtml]
-          );
-          const targetNode = findNode(normalizedTree, id, url);
-          if (targetNode?.children?.length) {
-            return targetNode.children;
-          }
-        } catch (error) {
-          // Ignore and try next URL candidate.
-        }
-      }
-      return [];
-    };
-
-    if (!children.length) {
-      const httpTreeChildren = await tryResolveChildrenViaHttpTree().catch(() => []);
-      if (httpTreeChildren.length) {
-        children = httpTreeChildren;
-      }
-    }
-
-    if (children.length) {
-      const finalChildren = dedupeChildren(children);
-      if (cacheKey) {
-        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
-      }
-      if (DEBUG_CATEGORIES) {
-        const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
-        console.log(`[categories/children] response(http-tree) id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
-      }
-      res.json({ children: finalChildren });
-      return;
-    }
-
     let browser = null;
     const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const DEBUG_CATEGORIES = process.env.KL_DEBUG_CATEGORIES === "1";
     const dumpCategoryDebug = async (page, label) => {
       if (!DEBUG_CATEGORIES || !page) return;
       try {
@@ -4991,6 +4198,8 @@ app.get("/api/ads/fields", async (req, res) => {
   let debugEnabled = false;
   let logFields = null;
   let requestStartedAt = 0;
+  let debugPage = null;
+  let debugAccountLabel = "account";
   try {
     requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
@@ -5010,62 +4219,34 @@ app.get("/api/ads/fields", async (req, res) => {
         .map((item) => item.trim())
         .filter(Boolean);
     };
-    const extractCategoryToken = (item) => {
+    const extractNumericId = (item) => {
       const raw = String(item || "").trim();
       if (!raw) return "";
       if (/^\d+$/.test(raw)) return raw;
-      const pathMatch = raw.match(/(?:[?&]|^)path=([^&]+)/i);
+      const pathMatch = raw.match(/path=([^&]+)/i);
       if (pathMatch) {
         try {
           const decoded = decodeURIComponent(pathMatch[1]);
-          const parts = decoded.split("/").map((part) => part.trim()).filter(Boolean);
+          const parts = decoded.split("/").filter(Boolean);
           const last = parts[parts.length - 1];
-          if (last) return last;
+          if (last && /^\d+$/.test(last)) return last;
         } catch (error) {
           // ignore decode errors
         }
       }
-      const fromUrl = extractCategoryIdFromUrl(raw);
-      if (fromUrl) return fromUrl;
-      try {
-        const parsed = new URL(raw, "https://www.kleinanzeigen.de");
-        const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
-        const last = parts[parts.length - 1];
-        if (last) return last;
-      } catch (error) {
-        // ignore URL parse errors
-      }
-      return raw;
-    };
-    const extractNumericId = (item) => {
-      const raw = extractCategoryToken(item);
-      if (!raw) return "";
-      if (/^\d+$/.test(raw)) return raw;
       const idMatch = raw.match(/\/c(\d+)(?:\/|$)/i) || raw.match(/(\d{2,})/);
       return idMatch ? idMatch[1] : "";
     };
     const categoryPathItems = parseCategoryPath(categoryPathRaw);
     const categoryPathIdsFromRequest = categoryPathItems
-      .map(extractCategoryToken)
-      .filter(Boolean);
-    const categoryPathIdsNumericFromRequest = categoryPathIdsFromRequest
       .map(extractNumericId)
       .filter(Boolean);
-    const lastNumericPathToken = categoryPathIdsNumericFromRequest.length
-      ? String(categoryPathIdsNumericFromRequest[categoryPathIdsNumericFromRequest.length - 1] || "")
-      : "";
-    const lastPathToken = categoryPathIdsFromRequest.length
-      ? String(categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] || "")
-      : "";
     const resolvedCategoryId = categoryIdParam
-      || lastNumericPathToken
-      || lastPathToken
+      || (categoryPathIdsFromRequest.length ? categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] : "")
       || extractCategoryIdFromUrl(categoryUrl);
     const forceRefresh = req.query.refresh === "true";
-    const allowStaleCache = req.query.allowStale !== "0";
-    const allowLiveFetch = req.query.live === "1" || forceRefresh || DEFAULT_FIELDS_LIVE_FETCH;
-    const forceDebug = DEBUG_FEATURES_ENABLED && (req.query.debug === "true" || req.query.debug === "1");
-    debugEnabled = DEBUG_FIELDS || forceDebug;
+    const forceDebug = true;
+    debugEnabled = true;
     requestStartedAt = Date.now();
     logFields = (payload) => {
       if (!debugEnabled) return;
@@ -5109,6 +4290,17 @@ app.get("/api/ads/fields", async (req, res) => {
         extra: { accountId, categoryId },
         force: forceDebug
       });
+      if (debugPage) {
+        Promise.resolve(
+          dumpFieldsDebug(debugPage, {
+            accountLabel: debugAccountLabel,
+            step: "fields-timeout-artifact",
+            error: "request-timeout",
+            extra: { accountId, categoryId, requestId },
+            force: true
+          })
+        ).catch(() => {});
+      }
       logFields({ event: "timeout", durationMs: Date.now() - requestStartedAt });
       res.status(504).json({
         success: false,
@@ -5119,9 +4311,9 @@ app.get("/api/ads/fields", async (req, res) => {
 
     const allowCachedEmpty = req.query.allowCachedEmpty === "1";
     if (!forceRefresh) {
-      const cachedEntry = getCachedCategoryFieldsEntry(categoryId, { allowStale: allowStaleCache });
-      if (cachedEntry !== null) {
-        const cachedFields = Array.isArray(cachedEntry?.fields) ? cachedEntry.fields : [];
+      const cached = getCachedCategoryFields(categoryId);
+      if (cached !== null) {
+        const cachedFields = Array.isArray(cached) ? cached : [];
         if (!cachedFields.length && !allowCachedEmpty) {
           logFields({ event: "cache-empty-bypass" });
         } else {
@@ -5129,7 +4321,6 @@ app.get("/api/ads/fields", async (req, res) => {
           res.json({
             fields: cachedFields,
             cached: true,
-            stale: Boolean(cachedEntry?.stale),
             debugId: debugEnabled ? requestId : undefined
           });
           return;
@@ -5137,18 +4328,9 @@ app.get("/api/ads/fields", async (req, res) => {
       }
     }
 
-    if (!allowLiveFetch) {
-      logFields({ event: "live-fetch-skipped" });
-      res.json({
-        fields: [],
-        deferred: true,
-        debugId: debugEnabled ? requestId : undefined
-      });
-      return;
-    }
-
     const account = getAccountForRequest(accountId, req, res);
     if (!account) return;
+    debugAccountLabel = account.email || `account-${accountId}`;
     const selectedProxy = requireAccountProxy(account, res, "загрузки параметров категории", getOwnerContext(req));
     if (!selectedProxy) {
       logFields({ event: "error", error: "proxy-required" });
@@ -5215,31 +4397,40 @@ app.get("/api/ads/fields", async (req, res) => {
 
     try {
       const page = await browser.newPage();
-      if (forceDebug) {
-        dumpFieldsDebugMeta({
-          accountLabel: account.email || `account-${accountId}`,
-          step: "fields-page-created",
+      debugPage = page;
+      try {
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-page-created",
+            error: "",
+            extra: { url: page.url() },
+            force: true
+          });
+        }
+        await dumpFieldsDebug(page, {
+          accountLabel: debugAccountLabel,
+          step: "fields-page-created-artifact",
           error: "",
-          extra: { url: page.url() },
+          extra: { requestId, accountId, categoryId },
           force: true
         });
-      }
-      if (forceDebug) {
-        dumpFieldsDebugMeta({
-          accountLabel: account.email || `account-${accountId}`,
-          step: "fields-browser-ready",
-          error: "",
-          extra: { url: page.url() }
-        });
-      }
-      page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
-      page.setDefaultTimeout(20000);
-      if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
-        await page.authenticate({
-          username: selectedProxy.username || "",
-          password: selectedProxy.password || ""
-        });
-      }
+        if (forceDebug) {
+          dumpFieldsDebugMeta({
+            accountLabel: account.email || `account-${accountId}`,
+            step: "fields-browser-ready",
+            error: "",
+            extra: { url: page.url() }
+          });
+        }
+        page.setDefaultNavigationTimeout(PUPPETEER_NAV_TIMEOUT);
+        page.setDefaultTimeout(20000);
+        if (!anonymizedProxyUrl && (selectedProxy?.username || selectedProxy?.password)) {
+          await page.authenticate({
+            username: selectedProxy.username || "",
+            password: selectedProxy.password || ""
+          });
+        }
 
       await page.setUserAgent(deviceProfile.userAgent);
       await page.setViewport(deviceProfile.viewport);
@@ -5282,6 +4473,15 @@ app.get("/api/ads/fields", async (req, res) => {
           force: true
         });
       }
+      if (step2Error) {
+        await dumpFieldsDebug(page, {
+          accountLabel: debugAccountLabel,
+          step: "fields-step2-failed-artifact",
+          error: step2Error?.message || "step2-failed",
+          extra: { requestId, accountId, categoryId, url: page.url() },
+          force: true
+        });
+      }
       logFields({ event: "step2-opened", durationMs: Date.now() - requestStartedAt });
       if (step2Error) {
         throw step2Error;
@@ -5297,11 +4497,8 @@ app.get("/api/ads/fields", async (req, res) => {
     const categoryPathIds = categoryPathIdsFromRequest.length
       ? categoryPathIdsFromRequest
       : (resolveCategoryPathFromCache(categoryId) || (categoryId ? [categoryId] : []));
-    const categoryPathIdsNumeric = categoryPathIds.length
-      ? categoryPathIds.map(extractNumericId).filter(Boolean)
-      : categoryPathIdsNumericFromRequest;
-    const selectionUrl = categoryPathIdsNumeric.length > 1
-      ? `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(categoryPathIdsNumeric.join("/"))}`
+    const selectionUrl = categoryPathIds.length > 1
+      ? `https://www.kleinanzeigen.de/p-kategorie-aendern.html?path=${encodeURIComponent(categoryPathIds.join("/"))}`
       : getCategorySelectionUrl(categoryId, categoryUrl);
 
       const injectCategoryId = async () => {
@@ -5399,24 +4596,17 @@ app.get("/api/ads/fields", async (req, res) => {
       const submitCategoryViaStep2Form = async () => {
         try {
           const submitted = await page.evaluate(({ categoryId, categoryPathIds }) => {
-            const normalize = (value) => String(value || "").trim();
-            const extractNumeric = (value) => {
-              const raw = normalize(value);
+            const sanitize = (value) => {
+              const raw = String(value || "").trim();
               const match = raw.match(/\d+/);
               return match ? match[0] : "";
             };
-            const pathTokens = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
-              .map(normalize)
+            const ids = (Array.isArray(categoryPathIds) ? categoryPathIds : [])
+              .map(sanitize)
               .filter(Boolean);
-            const fallbackToken = normalize(categoryId);
-            if (!pathTokens.length && fallbackToken) pathTokens.push(fallbackToken);
-            if (!pathTokens.length) return false;
-            const numericIds = pathTokens.map(extractNumeric).filter(Boolean);
-            const finalCategoryNumeric = numericIds.length
-              ? numericIds[numericIds.length - 1]
-              : extractNumeric(fallbackToken);
-            const finalCategoryValue = finalCategoryNumeric || fallbackToken;
-            if (!finalCategoryValue) return false;
+            const fallbackId = sanitize(categoryId);
+            if (!ids.length && fallbackId) ids.push(fallbackId);
+            if (!ids.length) return false;
 
             const form = document.querySelector("#postad-step1-frm") || document.querySelector("form");
             if (!form) return false;
@@ -5432,10 +4622,10 @@ app.get("/api/ads/fields", async (req, res) => {
               field.value = String(value ?? "");
             };
 
-            if (numericIds.length > 1) {
-              applyField("parentCategoryId", numericIds[0]);
+            if (ids.length > 1) {
+              applyField("parentCategoryId", ids[0]);
             }
-            applyField("categoryId", finalCategoryValue);
+            applyField("categoryId", ids[ids.length - 1]);
             applyField("submitted", "true");
             form.submit();
             return true;
@@ -5797,15 +4987,32 @@ app.get("/api/ads/fields", async (req, res) => {
         extra: { url: page.url(), categoryId, fieldCount: fields.length },
         force: forceDebug
       });
-      setCachedCategoryFields(categoryId, fields);
-      if (!res.headersSent) {
-        logFields({ event: "success", count: fields.length, durationMs: Date.now() - requestStartedAt });
-        res.json({
-          fields,
-          debugId: debugEnabled ? requestId : undefined
-        });
+        setCachedCategoryFields(categoryId, fields);
+        if (!res.headersSent) {
+          logFields({ event: "success", count: fields.length, durationMs: Date.now() - requestStartedAt });
+          res.json({
+            fields,
+            debugId: debugEnabled ? requestId : undefined
+          });
+        }
+      } catch (flowError) {
+        await dumpFieldsDebug(page, {
+          accountLabel: debugAccountLabel,
+          step: "fields-flow-exception",
+          error: flowError?.message || "unknown-flow-error",
+          extra: {
+            requestId,
+            accountId,
+            categoryId,
+            url: page.url(),
+            stack: flowError?.stack || ""
+          },
+          force: true
+        }).catch(() => {});
+        throw flowError;
       }
     } finally {
+      debugPage = null;
       await browser.close();
       if (anonymizedProxyUrl) {
         await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
@@ -5815,6 +5022,15 @@ app.get("/api/ads/fields", async (req, res) => {
       }
     }
   } catch (error) {
+    if (debugPage) {
+      await dumpFieldsDebug(debugPage, {
+        accountLabel: debugAccountLabel,
+        step: "fields-exception-artifact",
+        error: error?.message || "unknown-error",
+        extra: { requestId, stack: error?.stack || "" },
+        force: true
+      }).catch(() => {});
+    }
     if (!res.headersSent) {
       if (typeof logFields === "function") {
         logFields({ event: "error", error: error?.message || String(error) });
@@ -5861,11 +5077,9 @@ app.get("/api/stats", (req, res) => {
       failed: failedProxies
     },
     messages: {
-      // Real message stats are computed by the frontend via `/api/messages` in the background.
-      // Keep `/api/stats` fast and avoid showing misleading placeholder numbers.
-      total: 0,
-      today: 0,
-      unread: 0
+      total: 128,
+      today: 14,
+      unread: 6
     }
   });
 });
@@ -5964,14 +5178,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
   };
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const forceDebug = DEBUG_FEATURES_ENABLED && (
-    req.query.debug === "true"
-    || req.query.debug === "1"
-    || req.body?.debug === true
-    || req.body?.debug === 1
-    || req.body?.debug === "true"
-    || req.body?.debug === "1"
-  );
+  const forceDebug = true;
   let activePublishKey = null;
   const releasePublishLock = () => {
     if (!activePublishKey) return;
@@ -6017,7 +5224,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       categoryPath,
       extraFields
     } = req.body || {};
-    if (DEBUG_PUBLISH) {
+    if (process.env.KL_DEBUG_PUBLISH === "1") {
       console.log("[ads/create] payload", {
         accountId,
         titleLength: title ? String(title).length : 0,

@@ -1,0 +1,159 @@
+{
+  "step": "before-submit-click",
+  "error": "",
+  "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+  "title": "Anzeige aufgeben | kleinanzeigen.de",
+  "bodyTextSample": "Zum Inhalt springen\nangemeldet als: nilslol@freenet.de\nAusloggen \n9+\nInserieren\nMeins\nAnzeige aufgeben\nAnzeigendetails\nGebot / Gesuch\nIch biete\nIch suche\nTitel\n\nTipp: Mit einem aussagekräftigen Titel verkaufst du besser.\n\nEigenschaften und Versand\nKategorie\nWähle deine Kategorie\nPreis\n,00 EUR\nPreistyp\nFestpreis\nVB\nZu verschenken\nBeschreibung\nDu hast noch 3924 Zeichen übrig\nBilder (empfohlen)\n Verschieben, um die Reihenfolge zu ändern\nBild 963318ee7cb8a3f0da9a6d35026d4ae7.jpg erfolgreich hochgeladen\n\nTipp: Füge bis zu 20 Bilder (max. 12 MB) per Upload oder Drag & Drop hinzu. Für bessere Ergebnisse helfen dir unsere Fototipps.\n\nOrt\nPLZ\nStraße/Nr.\n Vollständige Adresse anzeigen\n\nTipp: Standardmäßig zeigen wir nur die Postleitzahl und den Ort an. Wenn du die vollständige Adresse anzeigen lassen möchtest, setze bitte einen Haken im Kasten.\n\nDeine Angaben\nName\n\nTipp: Du kannst deinen Profilnamen jederzeit in den Einstellungen ändern.\n\nHinweis: Du vermisst deine Telefonnummer? Wir haben diese Angabe zum Schutz deiner Privatsphäre entfernt. Weitere Informationen findest du in unserem Hilfebereich.\n\nVeröffentliche deine Anzeige\n\nEs gelten unsere Nutzungsbedingungen. Informationen zur Verarbeitung deiner Daten findest du in unserer Datenschutzerklärung.\n\nVorschau\nEntwurf speichern\n🎉Neu: Entwürfe speichern\n\nJetzt kannst du angefangene Anzeigen auf jedem Gerät später fortsetzen.\n\nAnzeige aufgeben\nKleinanzeigen\nÜber uns\nKarriere\nPresse\nKleinanzeigen Magazin\nEngagement\nMobile Apps\nInformationen\nHilfe\nTipps für deine Sicherheit\nSicherheitslücken melden\nKinder- und Jugendschutz\nBarrierefreiheitserklärung\nDatenschutzerklärung\nDatenschutzeinstellungen\nNutzungsbedingungen\nImpressum\nFür Unternehmen\nKleinanzeigen Immobilien\nPRO Infopoint\nPRO Pakete für Unternehmen\nWerben auf Kleinanzeigen\nSocial Media\nFacebook\nYouTube\nInstagram\nThreads\nPinterest\nTikTok\nAllgemein\nBeliebte Suchen\nAnzeigen Übersicht\nÜbersicht der Unternehmensseiten\nAutobewertung\n\nCopyright © 2005-2026 Marktplaats B.V. All",
+  "extra": {
+    "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+    "submitReady": true,
+    "submitCandidates": [
+      {
+        "contextType": "frame",
+        "contextUrl": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+        "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+        "title": "Anzeige aufgeben | kleinanzeigen.de",
+        "count": 1,
+        "items": [
+          {
+            "label": "Anzeige aufgeben",
+            "tag": "button",
+            "type": "submit",
+            "id": "pstad-submit",
+            "className": "button",
+            "disabled": false,
+            "ariaDisabled": false,
+            "visible": true,
+            "x": 523,
+            "y": 457,
+            "w": 152,
+            "h": 44,
+            "name": "",
+            "formAction": ""
+          }
+        ]
+      },
+      {
+        "contextType": "page",
+        "contextUrl": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+        "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+        "title": "Anzeige aufgeben | kleinanzeigen.de",
+        "count": 1,
+        "items": [
+          {
+            "label": "Anzeige aufgeben",
+            "tag": "button",
+            "type": "submit",
+            "id": "pstad-submit",
+            "className": "button",
+            "disabled": false,
+            "ariaDisabled": false,
+            "visible": true,
+            "x": 523,
+            "y": 457,
+            "w": 152,
+            "h": 44,
+            "name": "",
+            "formAction": ""
+          }
+        ]
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "about:blank",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://server.sgtm-legacy.kleinanzeigen.de/_/service_worker/61k0/sw_iframe.html?origin=https%3A%2F%2Fwww.kleinanzeigen.de&1p=1",
+        "url": "https://server.sgtm-legacy.kleinanzeigen.de/_/service_worker/61k0/sw_iframe.html?origin=https%3A%2F%2Fwww.kleinanzeigen.de&1p=1",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "about:blank",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "about:blank",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "about:blank",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+        "title": "Dising",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "about:blank",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://dfme.kleinanzeigen.de/Lxv4YOsAcXZ8sQ3M?361a11d7725fb217=OqSWUEVozsfCutmC8zr7YQgdVWw3XTbonaQcnzBUhQyePD3dQbc4r6AUBtcNwcZFJuStjRcbwsrxjDUmCQ86HMU4_TJjWFB-JXnm9w-1ksfhJfcyw2LLAkBzgBHGBAGEJFTmQ4CPBCatx-kOPbuScoSnQL4&hp=.co-operativebank.co.uk/CBIBSWeb/login.do.co-operativebank.co.uk/CBIBSWeb/start.do.de/portal/portal/x.entropay.com/basemenu/prot/x.facebook.comx.nationet.com/x.netbank.commbank.com.au/netbank/bankmainx.npbs.co.uk/netmastergoldbanking/x.nwolb.xlogin.aspx?refereridentx.rbsdigital.xAccountSummaryx.smile.co.uk/SmileWeb/login.do.smile.co.uk/SmileWeb/start.do.yandex.rux/CapitalOne_Consumer/x/easypay.by/x/sbank.ru/x53.com/servlet/efsonlinex://online.wellsfargo.com/x://secure.assist.ru/assistid/protected/main.doxabbeynational.co.uk/EBAN_ENS/BtoChannelDriverxalliance-leicesterxaltergold.com/login.phpxamericanexpress.com/myca/intl/acctsumm/emea/accountSummaryxbancaintesa.it/xbankcardservices.co.ukxbankofamerica.com/xbanquepopulaire.fr/xbnpparibas.net/xcahoot.comxcapitaloneonline.co.uk/CapitalOne_Consumer/Transactionsxcbonline.co.uk/ralu/reglm-web/setupSecurityQuestionPagexcibc.comxPreSignOnxcibc.comxSignOnxcitibank.ru/xclient.uralsibbank.ruxco-operativebank.co.uk/CBIBSWeb/loginSpixcommerceonlinebanking.comxcoventrybuildingsociety.co.ukxdeutsche-bank.dexdiscovercard.com/cardmembersvcs/strongauth/app/sa_mainxebanking.bawag.comxebc_ebc1961xegg.com/customer/movemoneyxegg.com/customer/yourmoneyxfacebook.com/xhalifax-online.co.ukxMyAccountsxhalifax-online.co.uk/x/Mhalifax-online.co.uk/personalxhsbc.co.uk/1/2/personal/internet-banking/xhsbc.comxhttps://banking.postbank.de/app/finanzstatus.init.do;jsessionidxib.fineco.it/FinecoWeb/BonificiServletxib.fineco.it/FinecoWeb/jsp/Main/HBFineco.jspxib.fineco.it/FinecoWeb/jsp/Main/Principale.jspxibank.alfabank.ruxin-biz.it/xipko.plxlibertyreserve.com/x/historylibertyreserve.com/x/loginwww.libertyreserve.com/x/Core.jswww.libertyreserve.com/x/transfer.libertyreserve.com/x/commonscript.jslloydstsb.co.uk/personal/a/account_overview/xmbna.co.ukxmenyala.ruxmoney.yandex.ruxmoneybookers.com/app/login.plxmoneymail.ruxmy.ebay.co.uk/ws/eBayISAPI.dll?MyEbayxmy.ebay.com/ws/eBayISAPI.dll?MyEbayxmy.ebay.fr/ws/eBayISAPI.dll?MyEbayxmybusinessbank.co.ukxnationet.com/AppServices/SignOn/SignOnProcess/RcaSignOnxnpbs.co.ukxnwolb.com/AccountSummaryxnwolb.com/Statementsxnwolb.com/TransfersLandingPagexoltx.fidelity.com/x/x/ofsummary/summaryxonline.lloydstsb.co.ukxonlinebanking.mandtbank.com/summary/AccountSummaryxpassport.yandex.ruxpaypal.com/x/cgi-bin/webscr?cmd=_accountxpaypal.com/x/cgi-bin/webscr?cmd=_login-done&login_access=xpaypal.com/us/cgi-bin/webscr?cmd=_login-done&login_access=xposte.it/xpsk.co.at/xsecure.lloydstsb.co.uk/personal/a/account_overviewxsmile.co.uk/SmileWeb/passcodexusaa.com/xusbank.com/internetBanking/RequestRouter?requestCmdId=Gxwachovia.comxybonline.co.uk/ralu/reglm-web/setupSecurityQuestionPagex.amazon.fr/xhistory/orders/view.htmlx.banquepopulaire.frxShowPortal.dox.bnpparibasfortis.bexHome_Logon.aspx.cdiscount.com/Account/Home.aspxx.cmb.frxaccueil.jspx.credit-agricole.frxentreeBam?sessionSAGx.labanquepostale.fr/xreleveCPP-releve_ccp.eax.secure.bnpparibas.net/NSFR?Actionx.secure.lcl.frxAccueilxcredem.it/OneToOne/ebank/functionsxmijn.ing.nl/xonline.ybs.co.ukxwww.discover.com/xorder.cdiscount.comxCustomer.aspxxsealinfo.verisign.com/splash?form_filexvos-comptes.credit-du-nord.fr/CDC_TableauDeBord_0.asp?xvoscomptesenligne.labanquepostale.frxwww.x.caisse-epargne.fr/Portail.aspxxwww.exabanque.netxonglet.phpxdeutsche-bank.de/xnorisbank.de/xpostbank.de/xtargobank.de/x.x.de/portal/x.bankofamerica.com/x/commonscript.js.bmo.com/OLB?id=x.bmo.com/RMC?id=x.chase.com/x.aspxx.chase.com/js/Reporting.jsx.koodomobile.com/account/selfserve/x/xaccountId=x.payment.ru/x.scotiabank.com/portal/index.jsp?xbancopopular.es/empresasxcreval.it/login2007/loginSiciliano.aspxfirst-direct.com/xipko.plxmybusinessbank.co.ukxsanpaoloimi.com/xulsterbankanytimebanking.x/login.aspxx",
+        "url": "https://dfme.kleinanzeigen.de/Lxv4YOsAcXZ8sQ3M?361a11d7725fb217=OqSWUEVozsfCutmC8zr7YQgdVWw3XTbonaQcnzBUhQyePD3dQbc4r6AUBtcNwcZFJuStjRcbwsrxjDUmCQ86HMU4_TJjWFB-JXnm9w-1ksfhJfcyw2LLAkBzgBHGBAGEJFTmQ4CPBCatx-kOPbuScoSnQL4&hp=.co-operativebank.co.uk/CBIBSWeb/login.do.co-operativebank.co.uk/CBIBSWeb/start.do.de/portal/portal/x.entropay.com/basemenu/prot/x.facebook.comx.nationet.com/x.netbank.commbank.com.au/netbank/bankmainx.npbs.co.uk/netmastergoldbanking/x.nwolb.xlogin.aspx?refereridentx.rbsdigital.xAccountSummaryx.smile.co.uk/SmileWeb/login.do.smile.co.uk/SmileWeb/start.do.yandex.rux/CapitalOne_Consumer/x/easypay.by/x/sbank.ru/x53.com/servlet/efsonlinex://online.wellsfargo.com/x://secure.assist.ru/assistid/protected/main.doxabbeynational.co.uk/EBAN_ENS/BtoChannelDriverxalliance-leicesterxaltergold.com/login.phpxamericanexpress.com/myca/intl/acctsumm/emea/accountSummaryxbancaintesa.it/xbankcardservices.co.ukxbankofamerica.com/xbanquepopulaire.fr/xbnpparibas.net/xcahoot.comxcapitaloneonline.co.uk/CapitalOne_Consumer/Transactionsxcbonline.co.uk/ralu/reglm-web/setupSecurityQuestionPagexcibc.comxPreSignOnxcibc.comxSignOnxcitibank.ru/xclient.uralsibbank.ruxco-operativebank.co.uk/CBIBSWeb/loginSpixcommerceonlinebanking.comxcoventrybuildingsociety.co.ukxdeutsche-bank.dexdiscovercard.com/cardmembersvcs/strongauth/app/sa_mainxebanking.bawag.comxebc_ebc1961xegg.com/customer/movemoneyxegg.com/customer/yourmoneyxfacebook.com/xhalifax-online.co.ukxMyAccountsxhalifax-online.co.uk/x/Mhalifax-online.co.uk/personalxhsbc.co.uk/1/2/personal/internet-banking/xhsbc.comxhttps://banking.postbank.de/app/finanzstatus.init.do;jsessionidxib.fineco.it/FinecoWeb/BonificiServletxib.fineco.it/FinecoWeb/jsp/Main/HBFineco.jspxib.fineco.it/FinecoWeb/jsp/Main/Principale.jspxibank.alfabank.ruxin-biz.it/xipko.plxlibertyreserve.com/x/historylibertyreserve.com/x/loginwww.libertyreserve.com/x/Core.jswww.libertyreserve.com/x/transfer.libertyreserve.com/x/commonscript.jslloydstsb.co.uk/personal/a/account_overview/xmbna.co.ukxmenyala.ruxmoney.yandex.ruxmoneybookers.com/app/login.plxmoneymail.ruxmy.ebay.co.uk/ws/eBayISAPI.dll?MyEbayxmy.ebay.com/ws/eBayISAPI.dll?MyEbayxmy.ebay.fr/ws/eBayISAPI.dll?MyEbayxmybusinessbank.co.ukxnationet.com/AppServices/SignOn/SignOnProcess/RcaSignOnxnpbs.co.ukxnwolb.com/AccountSummaryxnwolb.com/Statementsxnwolb.com/TransfersLandingPagexoltx.fidelity.com/x/x/ofsummary/summaryxonline.lloydstsb.co.ukxonlinebanking.mandtbank.com/summary/AccountSummaryxpassport.yandex.ruxpaypal.com/x/cgi-bin/webscr?cmd=_accountxpaypal.com/x/cgi-bin/webscr?cmd=_login-done&login_access=xpaypal.com/us/cgi-bin/webscr?cmd=_login-done&login_access=xposte.it/xpsk.co.at/xsecure.lloydstsb.co.uk/personal/a/account_overviewxsmile.co.uk/SmileWeb/passcodexusaa.com/xusbank.com/internetBanking/RequestRouter?requestCmdId=Gxwachovia.comxybonline.co.uk/ralu/reglm-web/setupSecurityQuestionPagex.amazon.fr/xhistory/orders/view.htmlx.banquepopulaire.frxShowPortal.dox.bnpparibasfortis.bexHome_Logon.aspx.cdiscount.com/Account/Home.aspxx.cmb.frxaccueil.jspx.credit-agricole.frxentreeBam?sessionSAGx.labanquepostale.fr/xreleveCPP-releve_ccp.eax.secure.bnpparibas.net/NSFR?Actionx.secure.lcl.frxAccueilxcredem.it/OneToOne/ebank/functionsxmijn.ing.nl/xonline.ybs.co.ukxwww.discover.com/xorder.cdiscount.comxCustomer.aspxxsealinfo.verisign.com/splash?form_filexvos-comptes.credit-du-nord.fr/CDC_TableauDeBord_0.asp?xvoscomptesenligne.labanquepostale.frxwww.x.caisse-epargne.fr/Portail.aspxxwww.exabanque.netxonglet.phpxdeutsche-bank.de/xnorisbank.de/xpostbank.de/xtargobank.de/x.x.de/portal/x.bankofamerica.com/x/commonscript.js.bmo.com/OLB?id=x.bmo.com/RMC?id=x.chase.com/x.aspxx.chase.com/js/Reporting.jsx.koodomobile.com/account/selfserve/x/xaccountId=x.payment.ru/x.scotiabank.com/portal/index.jsp?xbancopopular.es/empresasxcreval.it/login2007/loginSiciliano.aspxfirst-direct.com/xipko.plxmybusinessbank.co.ukxsanpaoloimi.com/xulsterbankanytimebanking.x/login.aspxx",
+        "title": "empty",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://dfme.kleinanzeigen.de/hrkScP3cIY8X1L9B?f59a110a4dfe0186=vjyDqfN47ZIGVG5ojKE83DjqNMcv2sUv26aUYQinvZE-CKbTc7MPO-utL0nEZaxUNmrXyQFmQi-jb5QsDerN6GqIU0aYwcH2wcC0mdFqC2kAZHu_Qjt69ccVuGzcf8yLFKkZCy1Id813fv7MZ6Lr5ABESUTD9PF9zGGbnRhRlLNojq-Fiawp5tm_ns0weetvL7ojg66_09aModXiff8",
+        "url": "https://dfme.kleinanzeigen.de/hrkScP3cIY8X1L9B?f59a110a4dfe0186=vjyDqfN47ZIGVG5ojKE83DjqNMcv2sUv26aUYQinvZE-CKbTc7MPO-utL0nEZaxUNmrXyQFmQi-jb5QsDerN6GqIU0aYwcH2wcC0mdFqC2kAZHu_Qjt69ccVuGzcf8yLFKkZCy1Id813fv7MZ6Lr5ABESUTD9PF9zGGbnRhRlLNojq-Fiawp5tm_ns0weetvL7ojg66_09aModXiff8",
+        "title": "empty",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://h.online-metrix.net/LRNJz3GVD9f7ebc4?5fb2c933533faf5b=Hi-lgJ2cJFv-7IygDOnlmvxBRpyhS4ip-bXaTzbGON5FGAV_pk-vZrZ-ZVyA1pqzJwqV2UAqkPs5y7qcXoLlmgYL6Ro4wOH_O14poGuoGXnXePS0S_nMeBSdKmtbEi03K_-orNI-Xcy_L1p0_Do9n6lo5HD8kTqjF6Y2hW4EqL5_94XJe_37M7j56FyYZ7JpVTk2bQT7qRmwEKGJ7oKw",
+        "url": "https://h.online-metrix.net/LRNJz3GVD9f7ebc4?5fb2c933533faf5b=Hi-lgJ2cJFv-7IygDOnlmvxBRpyhS4ip-bXaTzbGON5FGAV_pk-vZrZ-ZVyA1pqzJwqV2UAqkPs5y7qcXoLlmgYL6Ro4wOH_O14poGuoGXnXePS0S_nMeBSdKmtbEi03K_-orNI-Xcy_L1p0_Do9n6lo5HD8kTqjF6Y2hW4EqL5_94XJe_37M7j56FyYZ7JpVTk2bQT7qRmwEKGJ7oKw",
+        "title": "empty",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://dfme.kleinanzeigen.de/kvaZj040XqkustUB?ab33e3e23b85aa5f=GmkvoidK4NRNO6AqKrNfI4MEoIyZ4g_R9r5ImwjFDGMrs7Y2oatTOLJhFCxX19ADB_dQjB4sUcRFPZRzlUlxCM1pMGXaBsan566nk_H2-sCQ6sJlGHdWDYAu6YCW7AFxolV2vzOV2Ip9shtVZSow5MVOKdK-sEnk0gTzHwrm5Q8RpiI-GjQ4eD-4Vf5Tu812vy2ZWWWri-9zzUvDo6e6",
+        "url": "https://dfme.kleinanzeigen.de/kvaZj040XqkustUB?ab33e3e23b85aa5f=GmkvoidK4NRNO6AqKrNfI4MEoIyZ4g_R9r5ImwjFDGMrs7Y2oatTOLJhFCxX19ADB_dQjB4sUcRFPZRzlUlxCM1pMGXaBsan566nk_H2-sCQ6sJlGHdWDYAu6YCW7AFxolV2vzOV2Ip9shtVZSow5MVOKdK-sEnk0gTzHwrm5Q8RpiI-GjQ4eD-4Vf5Tu812vy2ZWWWri-9zzUvDo6e6",
+        "title": "empty",
+        "count": 0,
+        "items": []
+      }
+    ]
+  }
+}

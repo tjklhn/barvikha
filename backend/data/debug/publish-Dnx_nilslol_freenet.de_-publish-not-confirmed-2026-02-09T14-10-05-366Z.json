@@ -1,0 +1,106 @@
+{
+  "step": "publish-not-confirmed",
+  "error": "publish-not-confirmed",
+  "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-bestaetigung.html?adId=3322166246&uuid=1577b2fc-a954-4eef-b61b-37bc1d16cd95&trackingId=3d92a127-3d41-4535-859c-a58d0c8e346f",
+  "title": "Deine Anzeige geht bald online | kleinanzeigen.de",
+  "bodyTextSample": "",
+  "extra": {
+    "publishState": "form",
+    "errors": [
+      "Bitte gib einen Wert ein."
+    ],
+    "inferred": {
+      "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-bestaetigung.html?adId=3322166246&uuid=1577b2fc-a954-4eef-b61b-37bc1d16cd95&trackingId=3d92a127-3d41-4535-859c-a58d0c8e346f",
+      "isKnownForm": true,
+      "isPreview": false,
+      "hasSubmit": false,
+      "hasSuccessText": false,
+      "hasShadowSuccessText": false,
+      "hasAdLink": false
+    },
+    "fallbackVerification": null,
+    "progressDetected": true,
+    "submitCandidatesFinal": [
+      {
+        "contextType": "frame",
+        "contextUrl": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html#ankerErrmsg",
+        "url": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html#ankerErrmsg",
+        "title": "Anzeige aufgeben | kleinanzeigen.de",
+        "count": 1,
+        "items": [
+          {
+            "label": "Anzeige aufgeben",
+            "tag": "button",
+            "type": "submit",
+            "id": "pstad-submit",
+            "className": "button",
+            "disabled": true,
+            "ariaDisabled": false,
+            "visible": true,
+            "x": 523,
+            "y": 457,
+            "w": 152,
+            "h": 44,
+            "name": "",
+            "formAction": ""
+          }
+        ]
+      },
+      {
+        "contextType": "page",
+        "contextUrl": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-bestaetigung.html?adId=3322166246&uuid=1577b2fc-a954-4eef-b61b-37bc1d16cd95&trackingId=3d92a127-3d41-4535-859c-a58d0c8e346f",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Execution context was destroyed, most likely because of a navigation."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://gum.criteo.com/syncframe?topUrl=www.kleinanzeigen.de&origin=onetag#{%22bundle%22:{%22identifierExtractor%22:{%22origin%22:3},%22value%22:%22sVSqDF9OcVQwRlgzWXYxZWRRUlhKOWxkeWgyMFhieTR1bGFzSkM3SDJPMGF5azl4cFNyZ2FmS2Q5WHkzMXJQSjlGaXZTRXBVQ0MwRmN4SUx3TjYxclo2Wm55dEVYeUhyYjNLRmlKTWtBTDZRd1NhRzJUYzRvSlZMaXZrMyUyRjJhUkRFMW00Z0JmeG9qclJSVCUyRnloa3BLJTJGa1ZFYVElM0QlM0Q%22},%22cw%22:true,%22optout%22:{%22identifierExtractor%22:{%22origin%22:0},%22value%22:null},%22origin%22:%22onetag%22,%22tld%22:%22kleinanzeigen.de%22,%22topUrl%22:%22www.kleinanzeigen.de%22,%22version%22:%225_45_0%22,%22ifa%22:{%22identifierExtractor%22:{%22origin%22:0},%22value%22:null},%22lsw%22:true,%22pm%22:0,%22requestId%22:%22e4d09309-f93a-4289-a091-6346f9533be3%22}",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame '5E6838ADB8FFC24EA1B38C51171AF951'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame 'A6A7230CDDB5B061CCFB513893BC03EC'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://server.sgtm-legacy.kleinanzeigen.de/_/service_worker/61k0/sw_iframe.html?origin=https%3A%2F%2Fwww.kleinanzeigen.de&1p=1",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame 'A1D6E255481340C0CF3C7E6306AFDE92'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame '9B848CF81E62904C7B64A67288952405'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://www.facebook.com/tr/",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame 'BDA0786689877EE81D9366392C58BFE5'."
+      }
+    ],
+    "url": "https://www.kleinanzeigen.de/p-anzeige-aufgeben-bestaetigung.html?adId=3322166246&uuid=1577b2fc-a954-4eef-b61b-37bc1d16cd95&trackingId=3d92a127-3d41-4535-859c-a58d0c8e346f"
+  }
+}

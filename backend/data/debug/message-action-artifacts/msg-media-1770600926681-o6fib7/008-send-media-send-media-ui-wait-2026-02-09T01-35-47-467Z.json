@@ -1,0 +1,80 @@
+{
+  "ts": "2026-02-09T01:35:47.595Z",
+  "route": "send-media",
+  "debugId": "msg-media-1770600926681-o6fib7",
+  "clientRequestId": "req-mlei2qpv-ymg5u7",
+  "stage": "send-media-ui-wait",
+  "accountId": 21,
+  "conversationId": "7zjp:1mnv64t:2nxqrr9jd",
+  "conversationUrl": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+  "page": {
+    "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+    "title": "Kleinanzeigen | Meine Nachrichten",
+    "isClosed": false
+  },
+  "extra": {
+    "attempt": 2,
+    "elapsedMs": 7898,
+    "uiState": {
+      "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+      "title": "Kleinanzeigen | Meine Nachrichten",
+      "hasReplyBox": false,
+      "hasFileInput": false,
+      "hasUploadButton": false,
+      "hasSendButton": false,
+      "hasPaymentBox": false,
+      "hasDeclineButton": false,
+      "hasMessageContent": false,
+      "hasLoadingSkeleton": true,
+      "hasConversationLinks": false,
+      "hasMatchingConversationLink": false,
+      "hasCookieOverlayText": false,
+      "isLoadingBlocking": true
+    },
+    "bootstrapState": {
+      "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+      "title": "Kleinanzeigen | Meine Nachrichten",
+      "hasMessageboxContainer": true,
+      "hasSpinner": true,
+      "spinnerVisible": true,
+      "hasEkMessageboxWeb": false,
+      "hasRenderMessageboxFn": true,
+      "hasMessageboxRenderProps": true,
+      "bundleScriptCount": 2,
+      "bundleScripts": [
+        {
+          "src": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js?kl_reload=1770600940882",
+          "async": true,
+          "defer": false
+        },
+        {
+          "src": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js",
+          "async": true,
+          "defer": false
+        }
+      ],
+      "recentBundleResources": [
+        {
+          "name": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js",
+          "duration": 9353.300000011921,
+          "transferSize": 79816,
+          "encodedBodySize": 79516
+        },
+        {
+          "name": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js?kl_reload=1770600940882",
+          "duration": 4627.399999976158,
+          "transferSize": 79816,
+          "encodedBodySize": 79516
+        }
+      ],
+      "consentBannerVisible": false,
+      "consentManagementVisible": false
+    }
+  },
+  "error": null,
+  "files": {
+    "htmlPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-1770600926681-o6fib7/008-send-media-send-media-ui-wait-2026-02-09T01-35-47-467Z.html",
+    "screenshotPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-1770600926681-o6fib7/008-send-media-send-media-ui-wait-2026-02-09T01-35-47-467Z.png",
+    "metaPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-1770600926681-o6fib7/008-send-media-send-media-ui-wait-2026-02-09T01-35-47-467Z.json"
+  }
+}

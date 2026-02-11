@@ -1,0 +1,15 @@
+{"ts":"2026-02-09T13:26:46.764Z","event":"start","requestId":"1770643606763-w24ssv","ip":"::1","files":1,"debug":true}
+{"ts":"2026-02-09T13:26:46.764Z","event":"payload","requestId":"1770643606763-w24ssv","accountId":"22","titleLength":75,"descriptionLength":76,"price":"5","postalCode":"75175","categoryId":"224","categoryUrl":"https://www.kleinanzeigen.de/s-beauty-gesundheit/c224","categoryPath":"[\"153\",\"224\",\"make_up\"]","images":1,"debug":true}
+{"ts":"2026-02-09T13:30:24.112Z","event":"publish-result","requestId":"1770643606763-w24ssv","success":false,"error":"Публикация не подтверждена (страница осталась на форме)"}
+{"ts":"2026-02-09T13:30:24.113Z","event":"response-sent","requestId":"1770643606763-w24ssv","success":false}
+{"ts":"2026-02-09T13:30:24.113Z","event":"close","requestId":"1770643606763-w24ssv","headersSent":true,"statusCode":200,"writableEnded":true}
+{"ts":"2026-02-09T14:08:41.129Z","event":"start","requestId":"1770646121128-46kejg","ip":"::1","files":1,"debug":true}
+{"ts":"2026-02-09T14:08:41.130Z","event":"payload","requestId":"1770646121128-46kejg","accountId":"23","titleLength":75,"descriptionLength":76,"price":"5","postalCode":"75175","categoryId":"224","categoryUrl":"https://www.kleinanzeigen.de/s-beauty-gesundheit/c224","categoryPath":"[\"153\",\"224\",\"make_up\"]","images":1,"debug":true}
+{"ts":"2026-02-09T14:10:05.534Z","event":"publish-result","requestId":"1770646121128-46kejg","success":false,"error":"Публикация не подтверждена (страница осталась на форме): Bitte gib einen Wert ein."}
+{"ts":"2026-02-09T14:10:05.535Z","event":"response-sent","requestId":"1770646121128-46kejg","success":false}
+{"ts":"2026-02-09T14:10:05.535Z","event":"close","requestId":"1770646121128-46kejg","headersSent":true,"statusCode":200,"writableEnded":true}
+{"ts":"2026-02-09T14:29:48.057Z","event":"start","requestId":"1770647388056-4l789w","ip":"::1","files":1,"debug":true}
+{"ts":"2026-02-09T14:29:48.058Z","event":"payload","requestId":"1770647388056-4l789w","accountId":"23","titleLength":75,"descriptionLength":76,"price":"5","postalCode":"75175","categoryId":"224","categoryUrl":"https://www.kleinanzeigen.de/s-beauty-gesundheit/c224","categoryPath":"[\"153\",\"224\",\"make_up\"]","images":1,"debug":true}
+{"ts":"2026-02-09T14:33:30.435Z","event":"publish-result","requestId":"1770647388056-4l789w","success":true,"error":""}
+{"ts":"2026-02-09T14:33:30.436Z","event":"response-sent","requestId":"1770647388056-4l789w","success":true}
+{"ts":"2026-02-09T14:33:30.436Z","event":"close","requestId":"1770647388056-4l789w","headersSent":true,"statusCode":200,"writableEnded":true}

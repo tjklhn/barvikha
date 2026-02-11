@@ -1,0 +1,841 @@
+{
+  "ts": "2026-02-09T02:23:40.700Z",
+  "route": "send-media",
+  "debugId": "msg-media-localtest-1770603545375",
+  "clientRequestId": "",
+  "stage": "send-media-ui-ready",
+  "accountId": 21,
+  "conversationId": "7zjp:1mnv64t:2nxqrr9jd",
+  "conversationUrl": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+  "page": {
+    "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+    "title": "Kleinanzeigen | Meine Nachrichten",
+    "isClosed": false
+  },
+  "extra": {
+    "attempt": 1,
+    "uiState": {
+      "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+      "title": "Kleinanzeigen | Meine Nachrichten",
+      "hasReplyBox": true,
+      "hasFileInput": true,
+      "hasUploadButton": true,
+      "hasSendButton": true,
+      "hasPaymentBox": false,
+      "hasDeclineButton": false,
+      "hasMessageContent": true,
+      "hasLoadingSkeleton": false,
+      "hasConversationLinks": true,
+      "hasMatchingConversationLink": true,
+      "hasCookieOverlayText": false,
+      "isLoadingBlocking": false
+    },
+    "pageEvents": {
+      "console": [
+        {
+          "ts": "2026-02-09T02:19:27.286Z",
+          "type": "error",
+          "text": "%cgdpr-banner display: inline-block; color: #fff; background: #ff0000; padding: 1px 4px; border-radius: 3px; ERR: [KA frontend-logging ConsoleLogger] JSHandle@error",
+          "location": {
+            "url": "https://www.kleinanzeigen.de/gdpr/gdpr-consent-management-platform/es/main-Khh9uQNr.min.js",
+            "lineNumber": 3845,
+            "columnNumber": 4
+          }
+        },
+        {
+          "ts": "2026-02-09T02:22:06.754Z",
+          "type": "error",
+          "text": "Permissions policy violation: accelerometer is not allowed in this document.",
+          "location": {
+            "url": "https://server.sgtm-legacy.kleinanzeigen.de/NJ278B/Ba1g/ZkE/DTT/0R_1NEFDx58/EiuhrJfLhS0DfVYi/bgAfAQ/Lz/gDDlZsCykB",
+            "lineNumber": 0,
+            "columnNumber": 0
+          }
+        },
+        {
+          "ts": "2026-02-09T02:22:06.754Z",
+          "type": "error",
+          "text": "Permissions policy violation: accelerometer is not allowed in this document.",
+          "location": {
+            "url": "https://server.sgtm-legacy.kleinanzeigen.de/NJ278B/Ba1g/ZkE/DTT/0R_1NEFDx58/EiuhrJfLhS0DfVYi/bgAfAQ/Lz/gDDlZsCykB",
+            "lineNumber": 0,
+            "columnNumber": 0
+          }
+        }
+      ],
+      "pageErrors": [],
+      "requestFailed": [
+        {
+          "ts": "2026-02-09T02:19:27.287Z",
+          "url": "https://www.kleinanzeigen.de/m-access-token.json",
+          "method": "GET",
+          "resourceType": "fetch",
+          "errorText": "net::ERR_ABORTED"
+        },
+        {
+          "ts": "2026-02-09T02:19:29.609Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/frontend-metrics/error",
+          "method": "POST",
+          "resourceType": "fetch",
+          "errorText": "net::ERR_ABORTED"
+        },
+        {
+          "ts": "2026-02-09T02:19:29.967Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/frontend-metrics/init",
+          "method": "POST",
+          "resourceType": "fetch",
+          "errorText": "net::ERR_ABORTED"
+        },
+        {
+          "ts": "2026-02-09T02:21:56.074Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/interaction",
+          "method": "POST",
+          "resourceType": "fetch",
+          "errorText": "net::ERR_ABORTED"
+        }
+      ],
+      "responses": [
+        {
+          "ts": "2026-02-09T02:19:18.795Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/defaultString/v2",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:25.364Z",
+          "url": "https://www.kleinanzeigen.de/m-access-token.json",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json;charset=UTF-8"
+        },
+        {
+          "ts": "2026-02-09T02:19:27.486Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/bundle.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:29.323Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/frontend-metrics/error",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:29.324Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/defaultString/v2",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:19:29.458Z",
+          "url": "https://www.kleinanzeigen.de/m-access-token.json",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json;charset=UTF-8"
+        },
+        {
+          "ts": "2026-02-09T02:19:29.593Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/frontend-metrics/init",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:29.609Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/frontend-metrics/error",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:29.717Z",
+          "url": "https://gateway.kleinanzeigen.de/user-trust/users/current/verifications/phone/required?action=POST_MESSAGE&source=DESKTOP",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:29.966Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/frontend-metrics/init",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:30.042Z",
+          "url": "https://gateway.kleinanzeigen.de/user-trust/users/current/verifications/phone/required?action=POST_MESSAGE&source=DESKTOP",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:19:30.297Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/2748.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:30.297Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/8599.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:30.392Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/2475.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:30.418Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/8610.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:31.341Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4384.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:31.358Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4164.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:31.358Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/74.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:31.371Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/573.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:32.866Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4482.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:32.968Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4848.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:32.974Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/5848.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:33.592Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/257.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:33.592Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/105.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.210Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/707.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.214Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/1518.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.262Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/1600.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.262Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/1046.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.290Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/3790.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.295Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/5423.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.301Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/2404.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.414Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/1161.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.564Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4054.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.565Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/3528.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:34.566Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/6051.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:39.069Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/3294.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:39.644Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/5893.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:41.955Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/9368.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.583Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/5675.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.764Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/8085.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.771Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/477.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.773Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/1396.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.773Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/3028.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.774Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/404.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:42.785Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/5651.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:43.836Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4447.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:44.449Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/7087.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.599Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/7834.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.632Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/2467.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.632Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/8147.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.850Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/7310.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.850Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/7948.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.851Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/7572.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:45.856Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/8396.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:46.341Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/4642.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:47.537Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/9316.js",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/javascript"
+        },
+        {
+          "ts": "2026-02-09T02:19:51.710Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/75d8c148b322350ab512.svg",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "image/svg+xml"
+        },
+        {
+          "ts": "2026-02-09T02:19:53.283Z",
+          "url": "https://www.kleinanzeigen.de/m-access-token.json",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json;charset=UTF-8"
+        },
+        {
+          "ts": "2026-02-09T02:19:53.599Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?page=0&size=10",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:55.073Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?page=0&size=10",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:19:55.667Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations/7zjp:1mnv64t:2nxqrr9jd?contentWarnings=true",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:55.946Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations/7zjp:1mnv64t:2nxqrr9jd?contentWarnings=true",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:19:58.918Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversation-attachments?messageId=31013751-0558-11f1-bf20-8bbfdab2778f&filename=ek-yams-b7f8a2d330bc4827afe66ee0fcc36903-attachment-0-1770601194748.jpg",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:19:59.911Z",
+          "url": "https://www.kleinanzeigen.de/m-access-token.json",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json;charset=UTF-8"
+        },
+        {
+          "ts": "2026-02-09T02:19:59.915Z",
+          "url": "https://www.kleinanzeigen.de/bffstatic/messagebox-web/590062cd299d719b0440.svg",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "image/svg+xml"
+        },
+        {
+          "ts": "2026-02-09T02:20:00.470Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:20:01.131Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversation-attachments?messageId=31013751-0558-11f1-bf20-8bbfdab2778f&filename=ek-yams-b7f8a2d330bc4827afe66ee0fcc36903-attachment-0-1770601194748.jpg",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "image/jpeg"
+        },
+        {
+          "ts": "2026-02-09T02:20:02.575Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:20:05.608Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:20:07.559Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:20:12.422Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:20:19.069Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:20:27.812Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:20:42.789Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:05.960Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:37.825Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:43.093Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:44.601Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/vendors/list/v3",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:21:46.550Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:46.557Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/vendors/list/v3",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:48.958Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/get-consent-storage-data/v2",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:21:51.206Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/get-consent-storage-data/v2",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:51.534Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:21:53.658Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/interaction",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:21:56.074Z",
+          "url": "https://gateway.kleinanzeigen.de/gdpr/api/consent-v2/interaction",
+          "status": 202,
+          "ok": true,
+          "fromCache": false,
+          "contentType": ""
+        },
+        {
+          "ts": "2026-02-09T02:22:03.958Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:22:07.610Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:22:26.542Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:22:52.241Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        },
+        {
+          "ts": "2026-02-09T02:23:25.354Z",
+          "url": "https://gateway.kleinanzeigen.de/messagebox/api/users/159816453/conversations?include=_meta",
+          "status": 200,
+          "ok": true,
+          "fromCache": false,
+          "contentType": "application/json"
+        }
+      ],
+      "navigations": [
+        {
+          "ts": "2026-02-09T02:19:09.305Z",
+          "url": "https://www.kleinanzeigen.de/"
+        },
+        {
+          "ts": "2026-02-09T02:19:19.566Z",
+          "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd"
+        },
+        {
+          "ts": "2026-02-09T02:19:51.051Z",
+          "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd"
+        }
+      ]
+    }
+  },
+  "error": null,
+  "files": {
+    "htmlPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-localtest-1770603545375/003-send-media-send-media-ui-ready-2026-02-09T02-23-40-120Z.html",
+    "screenshotPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-localtest-1770603545375/003-send-media-send-media-ui-ready-2026-02-09T02-23-40-120Z.png",
+    "metaPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-localtest-1770603545375/003-send-media-send-media-ui-ready-2026-02-09T02-23-40-120Z.json"
+  }
+}

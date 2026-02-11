@@ -1,0 +1,31 @@
+{
+  "ts": "2026-02-09T01:38:24.762Z",
+  "route": "offer-decline",
+  "debugId": "msg-decline-1770601049492-nggpwk",
+  "clientRequestId": "req-mlei5dhc-eqre1t",
+  "stage": "offer-decline-ui-recovery-goto-error",
+  "accountId": 21,
+  "conversationId": "7rnj:5rbfs11:2nxqmqdp3",
+  "conversationUrl": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7rnj%3A5rbfs11%3A2nxqmqdp3",
+  "page": {
+    "url": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7rnj%3A5rbfs11%3A2nxqmqdp3",
+    "title": "",
+    "isClosed": false
+  },
+  "extra": {
+    "attempt": 2,
+    "recoveryCount": 2,
+    "targetConversationUrl": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7rnj%3A5rbfs11%3A2nxqmqdp3"
+  },
+  "error": {
+    "code": "",
+    "message": "Navigation timeout of 5242 ms exceeded",
+    "details": "",
+    "stack": "TimeoutError: Navigation timeout of 5242 ms exceeded\n    at new Deferred (/Users/eurocare/Downloads/barvihaluxury-main/backend/node_modules/puppeteer-core/lib/cjs/puppeteer/util/Deferred.js:60:34)\n    at Deferred.create (/Users/eurocare/Downloads/barvihaluxury-main/backend/node_modules/puppeteer-core/lib/cjs/puppeteer/util/Deferred.js:21:16)\n    at new LifecycleWatcher (/Users/eurocare/Downloads/barvihaluxury-main/backend/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/LifecycleWatcher.js:73:60)\n    at CdpFrame.goto (/Users/eurocare/Downloads/barvihaluxury-main/backend/node_modules/puppeteer-core/lib/cjs/puppeteer/cdp/Frame.js:149:29)\n    at CdpFrame.<anonymous> (/Users/eurocare/Downloads/barvihaluxury-main/backend/node_modules/puppeteer-core/lib/cjs/puppeteer/util/decorators.js:109:27)\n    at CdpPage.goto (/Users/eurocare/Downloads/barvihaluxury-main/backend/node_modules/puppeteer-core/lib/cjs/puppeteer/api/Page.js:580:43)\n    at gotoWithProxyHandling (/Users/eurocare/Downloads/barvihaluxury-main/backend/src/messageService.js:2052:23)\n    at waitForConversationUiReady (/Users/eurocare/Downloads/barvihaluxury-main/backend/src/messageService.js:2696:15)\n    at async declineConversationOffer (/Users/eurocare/Downloads/barvihaluxury-main/backend/src/messageService.js:5233:5)\n    at async /Users/eurocare/Downloads/barvihaluxury-main/backend/src/index.js:1823:16"
+  },
+  "files": {
+    "htmlPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-decline-1770601049492-nggpwk/010-offer-decline-offer-decline-ui-recovery-goto-error-2026-02-09T01-38-09-210Z.html",
+    "screenshotPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-decline-1770601049492-nggpwk/010-offer-decline-offer-decline-ui-recovery-goto-error-2026-02-09T01-38-09-210Z.png",
+    "metaPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-decline-1770601049492-nggpwk/010-offer-decline-offer-decline-ui-recovery-goto-error-2026-02-09T01-38-09-210Z.json"
+  }
+}

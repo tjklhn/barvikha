@@ -1,0 +1,29 @@
+{
+  "ts": "2026-02-09T01:38:25.005Z",
+  "route": "offer-decline",
+  "debugId": "msg-decline-1770601049492-nggpwk",
+  "clientRequestId": "req-mlei5dhc-eqre1t",
+  "stage": "decline-error",
+  "accountId": 21,
+  "conversationId": "7rnj:5rbfs11:2nxqmqdp3",
+  "conversationUrl": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7rnj%3A5rbfs11%3A2nxqmqdp3",
+  "page": {
+    "url": "",
+    "title": "",
+    "isClosed": true
+  },
+  "extra": {
+    "actionDeadlineMs": 45000
+  },
+  "error": {
+    "code": "CONVERSATION_NOT_READY",
+    "message": "CONVERSATION_NOT_READY",
+    "details": "mode=offer-decline;state={\"url\":\"https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7rnj%3A5rbfs11%3A2nxqmqdp3\",\"title\":\"Kleinanzeigen | Meine Nachrichten\",\"hasReplyBox\":false,\"hasFileInput\":false,\"hasUploadButton\":false,\"hasSendButton\":false,\"hasPaymentBox\":false,\"hasDeclineButton\":false,\"hasMessageContent\":false,\"hasLoadingSkeleton\":true,\"hasConversationLinks\":false,\"hasMatchingConversationLink\":false,\"hasCookieOverlayText\":false,\"isLoadingBlocking\":true};bootstrap={}",
+    "stack": "Error: CONVERSATION_NOT_READY\n    at waitForConversationUiReady (/Users/eurocare/Downloads/barvihaluxury-main/backend/src/messageService.js:2750:25)\n    at async declineConversationOffer (/Users/eurocare/Downloads/barvihaluxury-main/backend/src/messageService.js:5233:5)"
+  },
+  "files": {
+    "htmlPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-decline-1770601049492-nggpwk/013-offer-decline-decline-error-2026-02-09T01-38-25-004Z.html",
+    "screenshotPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-decline-1770601049492-nggpwk/013-offer-decline-decline-error-2026-02-09T01-38-25-004Z.png",
+    "metaPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-decline-1770601049492-nggpwk/013-offer-decline-decline-error-2026-02-09T01-38-25-004Z.json"
+  }
+}

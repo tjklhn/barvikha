@@ -106,6 +106,8 @@ html {
   -webkit-tap-highlight-color: transparent;
   width: 100%;
   max-width: 100%;
+  min-height: 100%;
+  background-color: #070b14;
   overflow-x: hidden;
 }
 
@@ -116,10 +118,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background: var(--bg-gradient);
   background-attachment: fixed;
+  background-color: #070b14;
   color: var(--neutral-200);
   line-height: 1.6;
   min-height: 100vh;
-  overflow-y: scroll; /* Prevent scrollbar flickering */
+  min-height: 100dvh;
+  overflow-y: auto;
   overflow-x: hidden;
   width: 100%;
   max-width: 100%;
@@ -129,6 +133,8 @@ body {
 .app-root {
   width: 100%;
   max-width: 100%;
+  min-height: 100%;
+  background-color: #070b14;
   overflow-x: hidden;
 }
 
@@ -1282,7 +1288,24 @@ tr:hover td {
   align-items: center !important;
   gap: 8px !important;
   justify-content: flex-start !important;
-  overflow: visible !important;
+  overflow: hidden !important;
+}
+
+@media (max-width: 900px) {
+  html,
+  body,
+  #root,
+  .app-root,
+  .app-root.phone-view {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+    background-color: #070b14;
+  }
+
+  body {
+    background-attachment: scroll;
+  }
 }
 
 .app-root.phone-view .mobile-nav-toggle {

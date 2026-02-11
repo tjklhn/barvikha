@@ -1,0 +1,27 @@
+{
+  "ts": "2026-02-09T02:19:05.382Z",
+  "route": "send-media",
+  "debugId": "msg-media-localtest-1770603545375",
+  "clientRequestId": "",
+  "stage": "start",
+  "accountId": 21,
+  "conversationId": "7zjp:1mnv64t:2nxqrr9jd",
+  "conversationUrl": "https://www.kleinanzeigen.de/m-nachrichten.html?conversationId=7zjp%3A1mnv64t%3A2nxqrr9jd",
+  "page": {
+    "url": "",
+    "title": "",
+    "isClosed": false
+  },
+  "extra": {
+    "filesPreparedCount": 0,
+    "textLength": 0,
+    "actionDeadlineMs": 45000,
+    "pageEvents": null
+  },
+  "error": null,
+  "files": {
+    "htmlPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-localtest-1770603545375/001-send-media-start-2026-02-09T02-19-05-377Z.html",
+    "screenshotPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-localtest-1770603545375/001-send-media-start-2026-02-09T02-19-05-377Z.png",
+    "metaPath": "/Users/eurocare/Downloads/barvihaluxury-main/backend/data/debug/message-action-artifacts/msg-media-localtest-1770603545375/001-send-media-start-2026-02-09T02-19-05-377Z.json"
+  }
+}

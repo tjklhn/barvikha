@@ -1,0 +1,99 @@
+{
+  "step": "publish-not-confirmed",
+  "error": "publish-not-confirmed",
+  "url": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html#ankerErrmsg",
+  "title": "Anzeige aufgeben | kleinanzeigen.de",
+  "bodyTextSample": "Zum Inhalt springen\nangemeldet als: nilslol@freenet.de\nAusloggen \n9+\nInserieren\nMeins\nAnzeige aufgeben\nAnzeigendetails\nGebot / Gesuch\nIch biete\nIch suche\nTitel\n\nTipp: Mit einem aussagekräftigen Titel verkaufst du besser.\n\nEigenschaften und Versand\nKategorie\nMode & Beauty > Beauty & Gesundheit\nKategorie ändern\nArt\nBitte wählen\nMake-Up & Gesichtspflege\nHaarpflege\nKörperpflege\nHand- & Nagelpflege\nGesundheit\nWeiteres Beauty & Gesundheit\nBitte gib einen Wert ein.\n\nVersand\n\nVersand möglich\nNur Abholung\n\nVersandmethoden\n\nVersandmethoden auswählen\nDHL Paket 2 kg\nab 6,19 €\nHermes Päckchen\nab 4,89 €\nHermes S-Paket\nab 5,49 €\nPreis\n,00 EUR\nPreistyp\nFestpreis\nVB\nZu verschenken\n\nDirekt kaufen\nJa, ich möchte die Vorteile von “Direkt kaufen”\nkostenlos nutzen\n\nDieser Artikel kann mit der neuen “Direkt Kaufen”-Funktion bezahlt werden. Mehr erfahren\n\nKein Verhandeln - dein Preis gilt.\n\nUnser Käuferschutz sichert ab, schafft Vertrauen und erhöht deine Verkaufschancen.\n\nNein, “Direkt kaufen” nicht nutzen\n\nEs gelten die Bedingungen der Kleinanzeigen Bezahlfunktion sowie die Datenschutzhinweise unserer Zahlungsdienstleister Adyen und OPP.\n\nBeschreibung\nDu hast noch 3924 Zeichen übrig\nBilder (empfohlen)\n Verschieben, um die Reihenfolge zu ändern\n\nTipp: Füge bis zu 20 Bilder (max. 12 MB) per Upload oder Drag & Drop hinzu. Für bessere Ergebnisse helfen dir unsere Fototipps.\n\nOrt\nPLZ\nStraße/Nr.\n Vollständige Adresse anzeigen\n\nTipp: Standardmäßig zeigen wir nur die Postleitzahl und den Ort an. Wenn du die vollständige Adresse anzeigen lassen möchtest, setze bitte einen Haken im Kasten.\n\nDeine Angaben\nName\n\nTipp: Du kannst deinen Profilnamen jederzeit in den Einstellungen ändern.\n\nHinweis: Du vermisst deine Telefonnummer? Wir haben diese Angabe zum Schutz deiner Privatsphäre entfernt. Weitere Informationen findest du in unserem Hilfebereich.\n\nVerkaufschance erhöhen: Anzeige hervorheben\n\tHighlight\nBis zu 2x mehr Sichtbarkeit! Deine Anzeige wird farbig hervorgehoben. \n\t6,99 €\n\tWiederholtes Hochsc",
+  "extra": {
+    "publishState": "form",
+    "errors": [],
+    "inferred": {
+      "url": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html",
+      "isKnownForm": true,
+      "isPreview": false,
+      "hasSubmit": false,
+      "hasSuccessText": false,
+      "hasShadowSuccessText": false,
+      "hasAdLink": false
+    },
+    "fallbackVerification": {
+      "verified": false,
+      "reason": "not-found"
+    },
+    "progressDetected": true,
+    "submitCandidatesFinal": [
+      {
+        "contextType": "frame",
+        "contextUrl": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Execution context was destroyed, most likely because of a navigation."
+      },
+      {
+        "contextType": "page",
+        "contextUrl": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html",
+        "url": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html",
+        "title": "",
+        "count": 0,
+        "items": []
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame 'E0039BC7D9CD06D63850A8EA9EE797CC'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://server.sgtm-legacy.kleinanzeigen.de/_/service_worker/61k0/sw_iframe.html?origin=https%3A%2F%2Fwww.kleinanzeigen.de&1p=1",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame '71A7D89AB61AC8A121DB79BD2953EEA1'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame 'C8719566DF79AE6D2D3B939A34234A94'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame '545E97B8AF4DEE651FA699A422AD2425'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "about:blank",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame '344CCA9A3C828CAD5BCE12F3D3F9B493'."
+      },
+      {
+        "contextType": "frame",
+        "contextUrl": "https://www.facebook.com/tr/",
+        "url": "",
+        "title": "",
+        "count": 0,
+        "items": [],
+        "error": "Attempted to use detached Frame '9DBC97E70D51B98F21D52DFEBE64175B'."
+      }
+    ],
+    "url": "https://www.kleinanzeigen.de/p-anzeige-abschicken.html#ankerErrmsg"
+  }
+}

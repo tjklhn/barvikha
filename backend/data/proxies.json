@@ -1,39 +1,312 @@
 [
   {
-    "id": 1770324887210,
-    "name": "dfg",
+    "id": 1770654788492,
+    "name": "fsdgf",
     "type": "socks5",
-    "host": "185.186.76.222",
-    "port": 10929,
-    "username": "JYpmnl2ZXjaA80Ov",
-    "password": "JYpmnl2ZXjaA80Ov",
-    "ownerId": "224009eefb76f769",
+    "host": "107.174.114.18",
+    "port": 12358,
+    "username": "iMc9IekboqOSq6Cm",
+    "password": "iMc9IekboqOSq6Cm",
+    "ownerId": "40a2e3ba568c9f65",
     "status": "active",
-    "lastChecked": "2026-02-06T21:43:44.375Z",
+    "lastChecked": "2026-02-09T16:33:08.492Z",
     "checkResult": {
       "success": true,
-      "ip": "80.187.96.133",
+      "ip": "194.140.114.243",
       "location": {
         "country": "DE",
-        "city": "Stuttgart",
+        "city": "Rot an der Rot",
+        "region": "BW",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS41998 NetCom BW GmbH",
+      "responseTime": 1129,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-09T16:33:08.492Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "194.140.114.243",
+        "city": "Rot an der Rot",
+        "region": "Baden-Wurttemberg",
+        "country": "DE",
+        "loc": "48.0129,10.0303",
+        "org": "AS41998 NetCom BW GmbH",
+        "postal": "88430",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 2,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770654658226,
+    "name": "iMc9IekboqOSq6Cm",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 12358,
+    "username": "iMc9IekboqOSq6Cm",
+    "password": "iMc9IekboqOSq6Cm",
+    "ownerId": "40a2e3ba568c9f65",
+    "status": "active",
+    "lastChecked": "2026-02-09T16:32:43.280Z",
+    "checkResult": {
+      "proxyId": 1770654658226,
+      "success": true,
+      "ip": "194.140.114.243",
+      "location": {
+        "country": "DE",
+        "city": "Rot an der Rot",
+        "region": "BW",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS41998 NetCom BW GmbH",
+      "responseTime": 1243,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-09T16:32:24.638Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "194.140.114.243",
+        "city": "Rot an der Rot",
+        "region": "Baden-Wurttemberg",
+        "country": "DE",
+        "loc": "48.0129,10.0303",
+        "org": "AS41998 NetCom BW GmbH",
+        "postal": "88430",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 2,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770654476163,
+    "name": "lgio",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 12358,
+    "username": "iMc9IekboqOSq6Cm",
+    "password": "iMc9IekboqOSq6Cm",
+    "ownerId": "40a2e3ba568c9f65",
+    "status": "active",
+    "lastChecked": "2026-02-09T16:32:43.280Z",
+    "checkResult": {
+      "proxyId": 1770654476163,
+      "success": true,
+      "ip": "194.140.114.243",
+      "location": {
+        "country": "DE",
+        "city": "Rot an der Rot",
+        "region": "BW",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS41998 NetCom BW GmbH",
+      "responseTime": 1094,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-09T16:32:28.294Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "194.140.114.243",
+        "city": "Rot an der Rot",
+        "region": "Baden-Wurttemberg",
+        "country": "DE",
+        "loc": "48.0129,10.0303",
+        "org": "AS41998 NetCom BW GmbH",
+        "postal": "88430",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 0,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770654263785,
+    "name": "iMc9IekboqOSq6Cm",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 12358,
+    "username": "iMc9IekboqOSq6Cm",
+    "password": "iMc9IekboqOSq6Cm",
+    "ownerId": "40a2e3ba568c9f65",
+    "status": "active",
+    "lastChecked": "2026-02-11T02:46:51.981Z",
+    "checkResult": {
+      "success": true,
+      "ip": "94.126.38.50",
+      "location": {
+        "country": "DE",
+        "city": "Buchholz in der Nordheide",
+        "region": "NI",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS208988 Buchholz Digital GmbH",
+      "responseTime": 1210,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-11T02:46:51.981Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "94.126.38.50",
+        "hostname": "94-126-38-50.dyn.ip-net.buchholz-digital.de",
+        "city": "Buchholz in der Nordheide",
+        "region": "Lower Saxony",
+        "country": "DE",
+        "loc": "53.3304,9.8660",
+        "org": "AS208988 Buchholz Digital GmbH",
+        "postal": "21244",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 2,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770654130209,
+    "name": "iMc9IekboqOSq6Cm",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 12358,
+    "username": "iMc9IekboqOSq6Cm",
+    "password": "iMc9IekboqOSq6Cm",
+    "ownerId": "40a2e3ba568c9f65",
+    "status": "active",
+    "lastChecked": "2026-02-09T16:32:43.280Z",
+    "checkResult": {
+      "proxyId": 1770654130209,
+      "success": true,
+      "ip": "194.140.114.243",
+      "location": {
+        "country": "DE",
+        "city": "Rot an der Rot",
+        "region": "BW",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS41998 NetCom BW GmbH",
+      "responseTime": 1314,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-09T16:32:36.539Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "194.140.114.243",
+        "city": "Rot an der Rot",
+        "region": "Baden-Wurttemberg",
+        "country": "DE",
+        "loc": "48.0129,10.0303",
+        "org": "AS41998 NetCom BW GmbH",
+        "postal": "88430",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 28,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770650932337,
+    "name": "xerp4SzE98frIkd3",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 12920,
+    "username": "xerp4SzE98frIkd3",
+    "password": "xerp4SzE98frIkd3",
+    "ownerId": "40a2e3ba568c9f65",
+    "status": "active",
+    "lastChecked": "2026-02-09T16:32:43.280Z",
+    "checkResult": {
+      "proxyId": 1770650932337,
+      "success": true,
+      "ip": "45.86.202.67",
+      "location": {
+        "country": "DE",
+        "city": "Frankfurt am Main",
         "region": "HE",
         "timezone": "Europe/Berlin"
       },
-      "isp": "AS3320 Deutsche Telekom AG",
-      "responseTime": 4018,
+      "isp": "AS206092 F.N.S. HOLDINGS LIMITED",
+      "responseTime": 2577,
       "ping": null,
       "serviceUsed": "https://ipinfo.io/json",
-      "timestamp": "2026-02-06T21:43:44.375Z",
+      "timestamp": "2026-02-09T16:32:42.280Z",
       "proxyType": "socks5",
       "rawData": {
-        "ip": "80.187.96.133",
-        "hostname": "tmo-096-133.customers.d1-online.com",
-        "city": "Stuttgart",
-        "region": "Baden-Wurttemberg",
+        "ip": "45.86.202.67",
+        "city": "Frankfurt am Main",
+        "region": "Hesse",
         "country": "DE",
-        "loc": "48.7823,9.1770",
+        "loc": "50.1155,8.6842",
+        "org": "AS206092 F.N.S. HOLDINGS LIMITED",
+        "postal": "60306",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 10,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770599242242,
+    "name": "jshvf",
+    "type": "socks5",
+    "host": "185.148.146.218",
+    "port": 14078,
+    "ownerId": "224009eefb76f769",
+    "status": "active",
+    "lastChecked": "2026-02-09T01:07:22.242Z",
+    "checkResult": {
+      "success": true,
+      "ip": "87.159.36.24",
+      "location": {
+        "country": "DE",
+        "city": "Lohne",
+        "region": "NI",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS3320 Deutsche Telekom AG",
+      "responseTime": 1339,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-09T01:07:22.242Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "87.159.36.24",
+        "hostname": "p579f2418.dip0.t-ipconnect.de",
+        "city": "Lohne",
+        "region": "Lower Saxony",
+        "country": "DE",
+        "loc": "52.6662,8.2375",
         "org": "AS3320 Deutsche Telekom AG",
-        "postal": "70173",
+        "postal": "49374",
         "timezone": "Europe/Berlin",
         "readme": "https://ipinfo.io/missingauth"
       },
@@ -41,6 +314,51 @@
         "ok": true,
         "tcpConnected": true,
         "connectTime": 1,
+        "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
+      }
+    }
+  },
+  {
+    "id": 1770593210803,
+    "name": "xerp4SzE98frIkd3",
+    "type": "socks5",
+    "host": "107.174.114.18",
+    "port": 12920,
+    "username": "xerp4SzE98frIkd3",
+    "password": "xerp4SzE98frIkd3",
+    "ownerId": "224009eefb76f769",
+    "status": "active",
+    "lastChecked": "2026-02-09T00:57:05.293Z",
+    "checkResult": {
+      "success": true,
+      "ip": "181.214.173.70",
+      "location": {
+        "country": "DE",
+        "city": "Berlin",
+        "region": "BE",
+        "timezone": "Europe/Berlin"
+      },
+      "isp": "AS174 Cogent Communications, LLC",
+      "responseTime": 1555,
+      "ping": null,
+      "serviceUsed": "https://ipinfo.io/json",
+      "timestamp": "2026-02-09T00:57:05.293Z",
+      "proxyType": "socks5",
+      "rawData": {
+        "ip": "181.214.173.70",
+        "city": "Berlin",
+        "region": "State of Berlin",
+        "country": "DE",
+        "loc": "52.5244,13.4105",
+        "org": "AS174 Cogent Communications, LLC",
+        "postal": "10119",
+        "timezone": "Europe/Berlin",
+        "readme": "https://ipinfo.io/missingauth"
+      },
+      "connectionCheck": {
+        "ok": true,
+        "tcpConnected": true,
+        "connectTime": 2,
         "note": "SOCKS прокси: проверено только TCP-соединение (без handshake)"
       }
     }
