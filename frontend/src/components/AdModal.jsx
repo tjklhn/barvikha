@@ -16,7 +16,6 @@ const AdModal = ({
   setExtraFieldValues,
   loadingExtraFields,
   extraFieldsError,
-  extraFieldsDeferred,
   newAd,
   setNewAd,
   adImages,
@@ -65,6 +64,16 @@ const AdModal = ({
     borderBottom: "1px solid rgba(125, 211, 252, 0.95)",
     paddingBottom: "1px"
   };
+  const missingRequiredExtraFields = (Array.isArray(extraFields) ? extraFields : [])
+    .filter((field) => field?.required)
+    .filter((field) => {
+      const key = field.name || field.label;
+      const value = key ? extraFieldValues?.[key] : "";
+      return !String(value ?? "").trim();
+    });
+  const hasSelectedCategory = Boolean(newAd?.categoryId || newAd?.categoryUrl);
+  const submitBlockedByFields =
+    hasSelectedCategory && (loadingExtraFields || Boolean(extraFieldsError) || missingRequiredExtraFields.length > 0);
 
   const formatAccountLabel = (account) => {
     const name = account.profileName || account.username || "Аккаунт";
@@ -1007,13 +1016,7 @@ const AdModal = ({
             </div>
           )}
 
-          {!loadingExtraFields && !extraFieldsError && extraFieldsDeferred && (
-            <div style={{ color: "#94a3b8", fontSize: "12px" }}>
-              Параметры категории будут определены на этапе публикации. Можно продолжить заполнение объявления.
-            </div>
-          )}
-
-          {!loadingExtraFields && !extraFieldsError && !extraFieldsDeferred && (newAd.categoryId || newAd.categoryUrl) && (!extraFields || extraFields.length === 0) && (
+          {!loadingExtraFields && !extraFieldsError && (newAd.categoryId || newAd.categoryUrl) && (!extraFields || extraFields.length === 0) && (
             <div style={{ color: "#94a3b8", fontSize: "12px" }}>
               Для выбранной категории нет дополнительных параметров.
             </div>
@@ -1050,6 +1053,11 @@ const AdModal = ({
                   );
                 })}
               </div>
+              {missingRequiredExtraFields.length > 0 && (
+                <div style={{ marginTop: "10px", color: "#fbbf24", fontSize: "12px" }}>
+                  Заполните обязательные параметры, отмеченные звездочкой (*).
+                </div>
+              )}
             </div>
           )}
 
@@ -1262,13 +1270,13 @@ const AdModal = ({
               type="button"
               onClick={onSubmit}
               className="primary-button"
-              disabled={publishing}
+              disabled={publishing || submitBlockedByFields}
               style={{
                 padding: "12px 28px",
                 color: "white",
                 border: "none",
-                cursor: publishing ? "not-allowed" : "pointer",
-                opacity: publishing ? 0.7 : 1,
+                cursor: (publishing || submitBlockedByFields) ? "not-allowed" : "pointer",
+                opacity: (publishing || submitBlockedByFields) ? 0.7 : 1,
                 borderRadius: "14px",
                 fontSize: "14px",
                 fontWeight: "600",

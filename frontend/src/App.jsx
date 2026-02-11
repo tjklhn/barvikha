@@ -60,7 +60,6 @@ function App() {
   const [extraFieldValues, setExtraFieldValues] = useState({});
   const [loadingExtraFields, setLoadingExtraFields] = useState(false);
   const [extraFieldsError, setExtraFieldsError] = useState("");
-  const [extraFieldsDeferred, setExtraFieldsDeferred] = useState(false);
   const [categories, setCategories] = useState([]);
   const [categoriesUpdatedAt, setCategoriesUpdatedAt] = useState(null);
   const [loadingCategories, setLoadingCategories] = useState(false);
@@ -550,7 +549,6 @@ function App() {
       }));
       setExtraFields([]);
       setExtraFieldValues({});
-      setExtraFieldsDeferred(false);
       loadCategories(false);
     }
   }, [showAdModal]);
@@ -566,15 +564,13 @@ function App() {
         setExtraFields([]);
         setExtraFieldValues({});
         setExtraFieldsError("");
-        setExtraFieldsDeferred(false);
         return;
       }
 
       setLoadingExtraFields(true);
       setExtraFieldsError("");
-      setExtraFieldsDeferred(false);
       try {
-        const buildFieldsRequestUrl = ({ forceRefresh = false, includeCategoryPath = true } = {}) => {
+        const buildFieldsRequestUrl = ({ forceRefresh = false, includeCategoryPath = true, live = false } = {}) => {
           const params = new URLSearchParams();
           params.set("accountId", newAd.accountId);
           if (newAd.categoryId) params.set("categoryId", newAd.categoryId);
@@ -585,6 +581,9 @@ function App() {
           if (forceRefresh) {
             params.set("refresh", "true");
           }
+          if (live) {
+            params.set("live", "1");
+          }
           if (debugFieldsEnabled) {
             params.set("debug", "1");
           }
@@ -593,8 +592,8 @@ function App() {
 
         const requestOptions = {
           signal: controller.signal,
-          timeoutMs: 45000,
-          retry: true,
+          timeoutMs: 120000,
+          retry: false,
           allowBaseFallback: true
         };
 
@@ -604,10 +603,10 @@ function App() {
             String(error?.message || "")
           );
 
-        const requestFields = async ({ forceRefresh = false } = {}) => {
+        const requestFields = async ({ forceRefresh = false, live = false } = {}) => {
           try {
             return await apiFetchJson(
-              buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: true }),
+              buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: true, live }),
               requestOptions
             );
           } catch (error) {
@@ -615,37 +614,37 @@ function App() {
             // Fallback to a lean query without categoryPath.
             if (!hasCategoryPath || !isNetworkFetchError(error)) throw error;
             return apiFetchJson(
-              buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: false }),
+              buildFieldsRequestUrl({ forceRefresh, includeCategoryPath: false, live }),
               requestOptions
             );
           }
         };
 
-        let data = await requestFields({ forceRefresh: false });
+        let data = await requestFields({ forceRefresh: false, live: false });
         if (cancelled) return;
         if (data?.success === false) {
           const errorMessage = data?.error || "Ошибка загрузки параметров категории";
           setExtraFields([]);
           setExtraFieldValues({});
           setExtraFieldsError(errorMessage);
-          setExtraFieldsDeferred(false);
           return;
         }
         let fields = Array.isArray(data?.fields) ? data.fields : [];
         const deferred = Boolean(data?.deferred);
 
-        // Avoid aggressive live refresh for every empty response; it can overload backend scraping.
-        // Keep forced refresh only in explicit debug mode.
-        if (fields.length === 0 && debugFieldsEnabled) {
-          try {
-            const refreshed = await requestFields({ forceRefresh: true });
-            if (!cancelled && refreshed?.success !== false) {
-              data = refreshed;
-              fields = Array.isArray(refreshed?.fields) ? refreshed.fields : [];
-            }
-          } catch (refreshError) {
-            // Keep the initial result if refresh fallback fails.
+        // Always perform a live fetch when cache doesn't provide fields.
+        if (!cancelled && (deferred || fields.length === 0)) {
+          const refreshed = await requestFields({ forceRefresh: true, live: true });
+          if (cancelled) return;
+          if (refreshed?.success === false) {
+            const errorMessage = refreshed?.error || "Ошибка загрузки параметров категории";
+            setExtraFields([]);
+            setExtraFieldValues({});
+            setExtraFieldsError(errorMessage);
+            return;
           }
+          data = refreshed;
+          fields = Array.isArray(refreshed?.fields) ? refreshed.fields : [];
         }
 
         if (data?.debugId) {
@@ -661,7 +660,6 @@ function App() {
 
         setExtraFields(fields);
         setExtraFieldsError("");
-        setExtraFieldsDeferred(deferred && fields.length === 0);
         const nextValues = {};
         fields.forEach((field) => {
           const key = field.name || field.label;
@@ -678,7 +676,6 @@ function App() {
         const debugId = error?.data?.debugId ? ` [debugId: ${error.data.debugId}]` : "";
         const errorMessage = (error?.message || "Ошибка загрузки параметров категории") + debugId;
         setExtraFieldsError(errorMessage);
-        setExtraFieldsDeferred(false);
       } finally {
         if (cancelled) return;
         setLoadingExtraFields(false);
@@ -710,6 +707,28 @@ function App() {
     }
     if (!newAd.categoryId && !newAd.categoryUrl) {
       alert("Выберите категорию");
+      return;
+    }
+    if (loadingExtraFields) {
+      alert("Дождитесь загрузки параметров категории");
+      return;
+    }
+    if (extraFieldsError) {
+      alert("Не удалось загрузить параметры категории. Публикация недоступна, пока параметры не будут загружены.");
+      return;
+    }
+    const missingRequiredFields = (Array.isArray(extraFields) ? extraFields : [])
+      .filter((field) => field?.required)
+      .filter((field) => {
+        const key = field.name || field.label;
+        const value = key ? extraFieldValues?.[key] : "";
+        return !String(value ?? "").trim();
+      });
+    if (missingRequiredFields.length > 0) {
+      const labels = missingRequiredFields
+        .slice(0, 4)
+        .map((field) => field.label || field.name || "параметр");
+      alert(`Заполните обязательные параметры категории: ${labels.join(", ")}`);
       return;
     }
 
@@ -780,7 +799,6 @@ function App() {
         setAdImages([]);
         setExtraFields([]);
         setExtraFieldValues({});
-        setExtraFieldsDeferred(false);
       } else {
         console.error("[handleCreateAd] Ошибка:", result?.error);
         alert("Ошибка: " + (result?.error || "Не удалось опубликовать объявление"));
@@ -2169,7 +2187,6 @@ function App() {
           setExtraFieldValues={setExtraFieldValues}
           loadingExtraFields={loadingExtraFields}
           extraFieldsError={extraFieldsError}
-          extraFieldsDeferred={extraFieldsDeferred}
           newAd={newAd}
           setNewAd={setNewAd}
           adImages={adImages}
