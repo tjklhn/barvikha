@@ -10,7 +10,7 @@ const { pickDeviceProfile } = require("./cookieValidator");
 puppeteer.use(StealthPlugin());
 
 const CREATE_AD_URL = "https://www.kleinanzeigen.de/p-anzeige-aufgeben-schritt2.html";
-const DEBUG_PUBLISH = process.env.KL_ENABLE_DEBUG === "1" && process.env.KL_DEBUG_PUBLISH === "1";
+const DEBUG_PUBLISH = false;
 let publishDebugOverride = false;
 const isPublishDebugEnabled = () => DEBUG_PUBLISH || publishDebugOverride;
 const CATEGORY_SELECTION_NEW_PAGE = process.env.KL_CATEGORY_SELECTION_NEW_PAGE === "1";

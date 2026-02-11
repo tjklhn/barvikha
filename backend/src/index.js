@@ -62,7 +62,10 @@ const categoryChildrenCache = { items: {} };
 let categoryChildrenCacheSaveTimer = null;
 const categoryFieldsCache = { items: {} };
 let categoryFieldsCacheSaveTimer = null;
-const DEBUG_FIELDS = process.env.KL_DEBUG_FIELDS === "1";
+const DEBUG_FIELDS = false;
+const DEBUG_CATEGORIES = false;
+const DEBUG_PUBLISH = false;
+const DEBUG_SERVER_LOGS = false;
 let puppeteerStealthReady = false;
 const subscriptionTokens = { items: [] };
 const activePublishByAccount = new Map();
@@ -444,6 +447,7 @@ const extractAccessToken = (req) => {
 };
 
 const appendServerLog = (pathTarget, payload) => {
+  if (!DEBUG_SERVER_LOGS) return;
   try {
     const entry = {
       ts: new Date().toISOString(),
@@ -456,6 +460,7 @@ const appendServerLog = (pathTarget, payload) => {
 };
 
 const appendFieldsRequestLog = (payload) => {
+  if (!DEBUG_SERVER_LOGS) return;
   try {
     const entry = {
       ts: new Date().toISOString(),
@@ -523,7 +528,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const dumpFieldsDebug = async (page, { accountLabel = "account", step = "unknown", error = "", extra = {}, force = false } = {}) => {
-  if ((!DEBUG_FIELDS && !force) || !page) return null;
+  if (!DEBUG_FIELDS || !page) return null;
   let screenshotTmpPath = "";
   try {
     const debugDir = ensureDebugDir();
@@ -592,7 +597,7 @@ const dumpFieldsDebug = async (page, { accountLabel = "account", step = "unknown
 };
 
 const dumpFieldsDebugMeta = ({ accountLabel = "account", step = "unknown", error = "", extra = {}, force = false } = {}) => {
-  if (!DEBUG_FIELDS && !force) return;
+  if (!DEBUG_FIELDS) return;
   try {
     const debugDir = ensureDebugDir();
     const safeLabel = sanitizeFilename(accountLabel);
@@ -2667,7 +2672,7 @@ app.get("/api/categories/children", async (req, res) => {
     const url = req.query.url ? String(req.query.url) : "";
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
     const forceRefresh = req.query.refresh === "true";
-    const forceDebug = req.query.debug === "true" || req.query.debug === "1";
+    const forceDebug = false;
     const ownerContext = getOwnerContext(req);
     const requestAccount = accountId ? getAccountForRequest(accountId, req, res) : null;
     if (accountId && !requestAccount) {
@@ -2681,7 +2686,7 @@ app.get("/api/categories/children", async (req, res) => {
     if (!forceRefresh && cacheKey) {
       const cachedEntry = getCachedCategoryChildrenEntry(cacheKey);
       if (cachedEntry) {
-        if (process.env.KL_DEBUG_CATEGORIES === "1") {
+        if (DEBUG_CATEGORIES) {
           const sample = (cachedEntry.children || []).slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
           console.log(`[categories/children] cache hit key=${cacheKey} count=${cachedEntry.children?.length || 0} sample=${sample}`);
         }
@@ -2690,7 +2695,7 @@ app.get("/api/categories/children", async (req, res) => {
       }
     }
     let children = await getCategoryChildren({ id, url, proxy: selectedProxy });
-    if (process.env.KL_DEBUG_CATEGORIES === "1") {
+    if (DEBUG_CATEGORIES) {
       console.log(`[categories/children] request id=${id} url=${url} accountId=${accountId} initialChildren=${children.length}`);
     }
     const dedupeChildren = (items) => {
@@ -2709,7 +2714,7 @@ app.get("/api/categories/children", async (req, res) => {
       if (cacheKey) {
         setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
       }
-      if (process.env.KL_DEBUG_CATEGORIES === "1") {
+      if (DEBUG_CATEGORIES) {
         const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
         console.log(`[categories/children] response id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
       }
@@ -2719,7 +2724,7 @@ app.get("/api/categories/children", async (req, res) => {
 
     const account = requestAccount || getAccountById(accountId);
     if (!account) {
-      if (process.env.KL_DEBUG_CATEGORIES === "1") {
+      if (DEBUG_CATEGORIES) {
         console.log("[categories/children] account not found, skip puppeteer fallback");
       }
       res.json({ children });
@@ -2727,7 +2732,7 @@ app.get("/api/categories/children", async (req, res) => {
     }
 
     if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
-      if (process.env.KL_DEBUG_CATEGORIES === "1") {
+      if (DEBUG_CATEGORIES) {
         console.log("[categories/children] proxy missing, skip puppeteer fallback");
       }
       const finalChildren = dedupeChildren(children);
@@ -2975,7 +2980,6 @@ app.get("/api/categories/children", async (req, res) => {
 
     let browser = null;
     const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const DEBUG_CATEGORIES = process.env.KL_DEBUG_CATEGORIES === "1";
     const dumpCategoryDebug = async (page, label) => {
       if (!DEBUG_CATEGORIES || !page) return;
       try {
@@ -4245,8 +4249,8 @@ app.get("/api/ads/fields", async (req, res) => {
       || (categoryPathIdsFromRequest.length ? categoryPathIdsFromRequest[categoryPathIdsFromRequest.length - 1] : "")
       || extractCategoryIdFromUrl(categoryUrl);
     const forceRefresh = req.query.refresh === "true";
-    const forceDebug = true;
-    debugEnabled = true;
+    const forceDebug = false;
+    debugEnabled = forceDebug;
     requestStartedAt = Date.now();
     logFields = (payload) => {
       if (!debugEnabled) return;
@@ -5178,7 +5182,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
   };
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const forceDebug = true;
+  const forceDebug = false;
   let activePublishKey = null;
   const releasePublishLock = () => {
     if (!activePublishKey) return;
@@ -5224,7 +5228,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       categoryPath,
       extraFields
     } = req.body || {};
-    if (process.env.KL_DEBUG_PUBLISH === "1") {
+    if (DEBUG_PUBLISH) {
       console.log("[ads/create] payload", {
         accountId,
         titleLength: title ? String(title).length : 0,

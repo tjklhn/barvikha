@@ -33,7 +33,7 @@ const FALLBACK_CATEGORY_NAMES = [
   "Nachbarschaftshilfe"
 ];
 
-const DEBUG_CATEGORIES = process.env.KL_ENABLE_DEBUG === "1" && process.env.KL_DEBUG_CATEGORIES === "1";
+const DEBUG_CATEGORIES = false;
 const PUPPETEER_PROTOCOL_TIMEOUT = Number(process.env.PUPPETEER_PROTOCOL_TIMEOUT || 120000);
 const PUPPETEER_LAUNCH_TIMEOUT = Number(process.env.PUPPETEER_LAUNCH_TIMEOUT || 120000);
 const PUPPETEER_NAV_TIMEOUT = Number(process.env.PUPPETEER_NAV_TIMEOUT || 60000);
