@@ -197,6 +197,76 @@ function App() {
   }, [isPhoneView, isMobileNavOpen]);
 
   useEffect(() => {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    const body = document.body;
+    if (!root || !body) return;
+
+    if (isPhoneView) {
+      root.classList.add("phone-view-lock");
+      body.classList.add("phone-view-lock");
+    } else {
+      root.classList.remove("phone-view-lock");
+      body.classList.remove("phone-view-lock");
+    }
+
+    return () => {
+      root.classList.remove("phone-view-lock");
+      body.classList.remove("phone-view-lock");
+    };
+  }, [isPhoneView]);
+
+  useEffect(() => {
+    if (!isPhoneView || typeof document === "undefined") return;
+
+    let startX = 0;
+    let startY = 0;
+
+    const hasHorizontalScrollParent = (node) => {
+      let current = node;
+      while (current && current !== document.body) {
+        if (!(current instanceof HTMLElement)) {
+          current = current.parentElement;
+          continue;
+        }
+        const style = window.getComputedStyle(current);
+        const overflowX = style.overflowX;
+        const canScrollX = (overflowX === "auto" || overflowX === "scroll") && current.scrollWidth > current.clientWidth + 1;
+        if (canScrollX) return true;
+        current = current.parentElement;
+      }
+      return false;
+    };
+
+    const onTouchStart = (event) => {
+      if (!event.touches || event.touches.length !== 1) return;
+      startX = event.touches[0].clientX;
+      startY = event.touches[0].clientY;
+    };
+
+    const onTouchMove = (event) => {
+      if (!event.touches || event.touches.length !== 1) return;
+
+      const dx = event.touches[0].clientX - startX;
+      const dy = event.touches[0].clientY - startY;
+      if (Math.abs(dx) <= Math.abs(dy) + 4) return;
+
+      const target = event.target instanceof Element ? event.target : null;
+      if (target && hasHorizontalScrollParent(target)) return;
+
+      event.preventDefault();
+    };
+
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+
+    return () => {
+      document.removeEventListener("touchstart", onTouchStart);
+      document.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [isPhoneView]);
+
+  useEffect(() => {
     if (!accessToken) {
       setTokenStatus({ state: "missing", message: "Токен не задан", expiresAt: null });
       return;
