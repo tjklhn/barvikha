@@ -44,6 +44,8 @@ function App() {
   const [showAddAccountModal, setShowAddAccountModal] = useState(false);
   const [showAddProxyModal, setShowAddProxyModal] = useState(false);
   const [showAdModal, setShowAdModal] = useState(false);
+  const [proxyPickerAccount, setProxyPickerAccount] = useState(null);
+  const [updatingAccountProxyId, setUpdatingAccountProxyId] = useState("");
   const [accessToken, setAccessTokenState] = useState(() => getAccessToken());
   const [accessTokenDraft, setAccessTokenDraft] = useState(() => getAccessToken());
   const [tokenStatus, setTokenStatus] = useState({ state: "unknown", message: "", expiresAt: null });
@@ -84,6 +86,84 @@ function App() {
       : (account.username || "Аккаунт");
     const email = account.profileEmail || "";
     return email ? `${name} (${email})` : name;
+  };
+
+  const resolveAccountEmailForCard = (account) => {
+    const profileEmail = String(account?.profileEmail || "").trim();
+    if (profileEmail) return profileEmail;
+    const username = String(account?.username || "").trim();
+    return username.includes("@") ? username : "—";
+  };
+
+  const resolveAccountProfileUrl = (account) => {
+    const profileUserId = String(account?.profileUserId || "").trim();
+    if (/^\d{4,}$/.test(profileUserId)) {
+      return `https://www.kleinanzeigen.de/s-bestandsliste.html?userId=${encodeURIComponent(profileUserId)}`;
+    }
+    const direct = String(account?.profileUrl || "").trim();
+    if (!direct) return "";
+    try {
+      const parsed = new URL(direct, "https://www.kleinanzeigen.de/");
+      const hostname = String(parsed.hostname || "").toLowerCase();
+      if (!(hostname === "kleinanzeigen.de" || hostname.endsWith(".kleinanzeigen.de"))) {
+        return "";
+      }
+      const urlUserId = String(parsed.searchParams.get("userId") || "").trim();
+      if (!/^\d{4,}$/.test(urlUserId)) {
+        return "";
+      }
+      return `https://www.kleinanzeigen.de/s-bestandsliste.html?userId=${encodeURIComponent(urlUserId)}`;
+    } catch (error) {
+      return "";
+    }
+  };
+
+  const normalizeSatisfactionBadge = (value) => {
+    const normalized = String(value || "").trim().toUpperCase();
+    if (["TOP", "OK", "NAJA", "MIX"].includes(normalized)) return normalized;
+    return "MIX";
+  };
+
+  const getSatisfactionBadgeStyle = (badge) => {
+    const baseStyle = {
+      padding: "3px 10px",
+      borderRadius: "6px",
+      fontSize: "10px",
+      fontWeight: "700",
+      textTransform: "uppercase",
+      letterSpacing: "0.7px"
+    };
+
+    if (badge === "TOP") {
+      return {
+        ...baseStyle,
+        background: "linear-gradient(135deg, rgba(168,85,247,0.24), rgba(124,58,237,0.22))",
+        color: "#e9d5ff",
+        border: "1px solid rgba(196,181,253,0.5)"
+      };
+    }
+    if (badge === "OK") {
+      return {
+        ...baseStyle,
+        background: "linear-gradient(135deg, rgba(37,99,235,0.2), rgba(59,130,246,0.18))",
+        color: "#bfdbfe",
+        border: "1px solid rgba(147,197,253,0.42)"
+      };
+    }
+    if (badge === "NAJA") {
+      return {
+        ...baseStyle,
+        background: "linear-gradient(135deg, rgba(180,83,9,0.22), rgba(217,119,6,0.2))",
+        color: "#fde68a",
+        border: "1px solid rgba(251,191,36,0.45)"
+      };
+    }
+    return {
+      ...baseStyle,
+      background: "linear-gradient(135deg, rgba(71,85,105,0.22), rgba(51,65,85,0.24))",
+      color: "#cbd5e1",
+      border: "1px solid rgba(148,163,184,0.38)"
+    };
   };
 
   const cardStyle = {
@@ -287,6 +367,9 @@ function App() {
       if (event.key === "Escape") {
         setShowProfilePanel(false);
         setOpenAccountMenuId(null);
+        if (!updatingAccountProxyId) {
+          setProxyPickerAccount(null);
+        }
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
@@ -295,7 +378,7 @@ function App() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, []);
+  }, [updatingAccountProxyId]);
 
   const handleAuthError = (error) => {
     if (error?.status === 401) {
@@ -536,6 +619,65 @@ function App() {
     } catch (error) {
       handleAuthError(error);
       alert(error?.message || "Не удалось обновить аккаунт");
+    }
+  };
+
+  const closeProxyPicker = () => {
+    if (updatingAccountProxyId) return;
+    setProxyPickerAccount(null);
+  };
+
+  const handleChangeAccountProxy = (account) => {
+    if (!account?.id) return;
+    setOpenAccountMenuId(null);
+
+    const availableProxies = Array.isArray(proxies) ? proxies : [];
+    if (!availableProxies.length) {
+      alert("Нет добавленных прокси. Сначала добавьте прокси в разделе «Прокси».");
+      return;
+    }
+
+    setProxyPickerAccount(account);
+  };
+
+  const handleSelectAccountProxy = async (proxy) => {
+    const account = proxyPickerAccount;
+    if (!account?.id || !proxy?.id) return;
+
+    const selectedProxyId = String(proxy.id || "").trim();
+    if (!selectedProxyId) return;
+
+    const currentProxyId = String(account.proxyId || "").trim();
+    if (currentProxyId && currentProxyId === selectedProxyId) {
+      setProxyPickerAccount(null);
+      return;
+    }
+
+    setUpdatingAccountProxyId(selectedProxyId);
+    try {
+      const result = await apiFetchJson(`/api/accounts/${account.id}/proxy`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proxyId: selectedProxyId }),
+        timeoutMs: 30000
+      });
+      if (!result?.success) {
+        alert(result?.error || "Не удалось сменить прокси аккаунта");
+        return;
+      }
+
+      if (result?.account) {
+        setAccounts((prev) => prev.map((item) => (item.id === account.id ? { ...item, ...result.account } : item)));
+      } else {
+        await loadAccountMetrics();
+      }
+      setProxyPickerAccount(null);
+      alert(result?.changed === false ? "Прокси уже привязан к этому аккаунту." : "Прокси аккаунта обновлен.");
+    } catch (error) {
+      handleAuthError(error);
+      alert(error?.data?.error || error?.message || "Не удалось сменить прокси аккаунта");
+    } finally {
+      setUpdatingAccountProxyId("");
     }
   };
 
@@ -1357,6 +1499,7 @@ function App() {
           const displayName = rawName && !/mein(e)? anzeigen|mein profil|meine anzeigen|profil und meine anzeigen/i.test(rawName)
             ? rawName
             : (account.username || "Аккаунт");
+          const satisfactionBadge = normalizeSatisfactionBadge(account.satisfactionBadge);
           return (
             <div
               key={account.id}
@@ -1399,21 +1542,12 @@ function App() {
                   <h3 style={{ margin: 0, fontSize: "16px", fontWeight: "700", color: textTitle }}>
                     {displayName}
                   </h3>
-                  <span style={{
-                    padding: "3px 10px",
-                    borderRadius: "6px",
-                    fontSize: "10px",
-                    fontWeight: "600",
-                    textTransform: "uppercase",
-                    background: account.status === "active" ? "rgba(16, 185, 129, 0.15)" : account.status === "checking" ? "rgba(245, 158, 11, 0.15)" : "rgba(239, 68, 68, 0.15)",
-                    color: account.status === "active" ? "#34d399" : account.status === "checking" ? "#fbbf24" : "#f87171",
-                    border: `1px solid ${account.status === "active" ? "rgba(16, 185, 129, 0.3)" : account.status === "checking" ? "rgba(245, 158, 11, 0.3)" : "rgba(239, 68, 68, 0.3)"}`
-                  }}>
-                    {account.status === "active" ? "Mix" : account.status === "checking" ? "new" : "Top"}
+                  <span style={getSatisfactionBadgeStyle(satisfactionBadge)}>
+                    {satisfactionBadge}
                   </span>
                 </div>
                 <div style={{ fontSize: "13px", color: textMuted, marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {account.profileEmail || account.username || "—"}
+                  {resolveAccountEmailForCard(account)}
                 </div>
               </div>
               <div style={{ position: "relative" }}>
@@ -1460,6 +1594,21 @@ function App() {
                       boxShadow: "0 10px 30px rgba(0,0,0,0.45)"
                     }}
                   >
+                    <button
+                      onClick={() => handleChangeAccountProxy(account)}
+                      style={{
+                        background: "transparent",
+                        border: "1px solid rgba(34,211,238,0.28)",
+                        color: "#67e8f9",
+                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        cursor: "pointer",
+                        fontSize: "13px",
+                        fontWeight: "600"
+                      }}
+                    >
+                      Сменить прокси
+                    </button>
                     <button
                       onClick={() => handleRefreshAccount(account.id)}
                       style={{
@@ -1560,7 +1709,11 @@ function App() {
             {/* Open button */}
             <button
               onClick={() => {
-                const url = account.profileUrl || "https://www.kleinanzeigen.de/m-meine-anzeigen.html";
+                const url = resolveAccountProfileUrl(account);
+                if (!url) {
+                  alert("Ссылка профиля не найдена. Нажмите «Обновить» у аккаунта, чтобы подтянуть profile URL.");
+                  return;
+                }
                 window.open(url, "_blank", "noopener,noreferrer");
               }}
               style={{
@@ -2227,6 +2380,159 @@ function App() {
       </div>
 
       {/* Модальные окна */}
+      {proxyPickerAccount && (
+        <div
+          onClick={closeProxyPicker}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "radial-gradient(circle at top, rgba(15,23,42,0.82), rgba(2,6,23,0.9))",
+            backdropFilter: "blur(8px)",
+            zIndex: 2600,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: isPhoneView ? "14px" : "24px"
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "720px",
+              maxHeight: "85dvh",
+              overflow: "hidden",
+              background: "linear-gradient(145deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.98) 100%)",
+              borderRadius: "18px",
+              border: "1px solid rgba(148,163,184,0.22)",
+              boxShadow: "0 30px 60px rgba(2,6,23,0.62), 0 0 35px rgba(56,189,248,0.08)",
+              display: "flex",
+              flexDirection: "column"
+            }}
+          >
+            <div style={{
+              padding: isPhoneView ? "14px 14px 10px" : "18px 20px 12px",
+              borderBottom: "1px solid rgba(148,163,184,0.18)",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "10px"
+            }}>
+              <div>
+                <h3 style={{ margin: 0, color: textTitle, fontSize: "18px", fontWeight: "700" }}>
+                  Смена прокси аккаунта
+                </h3>
+                <div style={{ marginTop: "4px", fontSize: "13px", color: textMuted }}>
+                  {formatAccountLabel(proxyPickerAccount)}
+                </div>
+              </div>
+              <button
+                onClick={closeProxyPicker}
+                disabled={Boolean(updatingAccountProxyId)}
+                style={{
+                  width: "34px",
+                  height: "34px",
+                  borderRadius: "10px",
+                  border: "1px solid rgba(148,163,184,0.28)",
+                  background: "rgba(15,23,42,0.72)",
+                  color: "#cbd5e1",
+                  cursor: updatingAccountProxyId ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center"
+                }}
+                aria-label="Закрыть"
+              >
+                <XIcon size={16} />
+              </button>
+            </div>
+
+            <div style={{ padding: isPhoneView ? "12px 14px" : "14px 20px 8px", color: textMuted, fontSize: "13px" }}>
+              Выберите прокси кликом. Для текущего прокси выбор отключен.
+            </div>
+
+            <div style={{
+              padding: isPhoneView ? "0 10px 10px" : "0 14px 14px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              overflowY: "auto"
+            }}>
+              {proxies.map((proxy) => {
+                const proxyId = String(proxy.id || "").trim();
+                const isCurrent = proxyId && String(proxyPickerAccount.proxyId || "").trim() === proxyId;
+                const isBusy = updatingAccountProxyId && updatingAccountProxyId === proxyId;
+                const isUpdating = Boolean(updatingAccountProxyId);
+                const disabled = isCurrent || isUpdating;
+                const status = String(proxy.status || "").toLowerCase();
+                const statusLabel = status === "active"
+                  ? "Работает"
+                  : (status === "failed" ? "Ошибка" : "Не проверен");
+                const statusColor = status === "active"
+                  ? "#34d399"
+                  : (status === "failed" ? "#f87171" : "#fbbf24");
+
+                return (
+                  <button
+                    key={proxy.id}
+                    onClick={() => handleSelectAccountProxy(proxy)}
+                    disabled={disabled}
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      border: isCurrent ? "1px solid rgba(52,211,153,0.45)" : "1px solid rgba(148,163,184,0.22)",
+                      background: isCurrent
+                        ? "linear-gradient(145deg, rgba(6,95,70,0.28), rgba(15,23,42,0.7))"
+                        : "linear-gradient(145deg, rgba(30, 41, 59, 0.76), rgba(15, 23, 42, 0.8))",
+                      color: "#e2e8f0",
+                      borderRadius: "12px",
+                      padding: isPhoneView ? "11px 12px" : "12px 14px",
+                      cursor: disabled ? "default" : "pointer",
+                      transition: "all 0.2s ease",
+                      opacity: isUpdating && !isBusy ? 0.6 : 1
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: "14px", fontWeight: "700", color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {proxy.name || "Proxy"}
+                        </div>
+                        <div style={{ marginTop: "2px", fontSize: "12px", color: "#94a3b8" }}>
+                          {proxy.host}:{proxy.port}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                        <span style={{ fontSize: "11px", color: statusColor, fontWeight: "600" }}>
+                          {statusLabel}
+                        </span>
+                        {isBusy && (
+                          <span style={{ fontSize: "11px", color: "#7dd3fc", fontWeight: "700" }}>
+                            Применение...
+                          </span>
+                        )}
+                        {isCurrent && (
+                          <span style={{
+                            padding: "3px 8px",
+                            borderRadius: "999px",
+                            fontSize: "10px",
+                            fontWeight: "700",
+                            color: "#86efac",
+                            border: "1px solid rgba(52,211,153,0.45)",
+                            background: "rgba(6,95,70,0.28)"
+                          }}>
+                            Текущий
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showAddAccountModal && (
         <AddAccountModal
           isOpen={showAddAccountModal}

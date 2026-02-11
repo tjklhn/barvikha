@@ -90,6 +90,16 @@ const findProxyById = (proxyList, proxyId) => {
   return list.find((proxy) => isSameEntityId(proxy?.id, proxyId)) || null;
 };
 
+const ensureProxyProvided = (proxy, context = "") => {
+  if (proxy) return;
+  const error = new Error("PROXY_REQUIRED");
+  error.code = "PROXY_REQUIRED";
+  if (context) {
+    error.details = `proxy-required:${context}`;
+  }
+  throw error;
+};
+
 const matchesAnyPattern = (value, patterns = []) => {
   const source = String(value || "");
   if (!source) return false;
@@ -4842,6 +4852,8 @@ const sendConversationMessage = async ({
     throw error;
   }
 
+  ensureProxyProvided(proxy, "send-conversation-message");
+
   const deviceProfile = getDeviceProfile(account);
   const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
@@ -5243,6 +5255,8 @@ const sendConversationMessage = async ({
 };
 
 const fetchAccountConversations = async ({ account, proxy, accountLabel, options = {} }) => {
+  ensureProxyProvided(proxy, "fetch-account-conversations");
+
   const deviceProfile = getDeviceProfile(account);
   const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) return { conversations: [] };
@@ -5622,6 +5636,8 @@ const fetchThreadMessages = async ({
     throw error;
   }
 
+  ensureProxyProvided(proxy, "fetch-thread-messages");
+
   const deviceProfile = getDeviceProfile(account);
   const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
@@ -5828,6 +5844,8 @@ const fetchConversationSnapshotViaApi = async ({
   conversationUrl,
   requestTimeoutMs = 20000
 }) => {
+  ensureProxyProvided(proxy, "fetch-conversation-snapshot");
+
   const deviceProfile = getDeviceProfile(account);
   const cookies = normalizeCookies(parseCookies(account.cookie));
   if (!cookies.length) {
@@ -6104,6 +6122,8 @@ const declineConversationOffer = async ({
     error.code = "CONVERSATION_ID_REQUIRED";
     throw error;
   }
+
+  ensureProxyProvided(proxy, "offer-decline");
 
   const deviceProfile = getDeviceProfile(account);
   const cookies = normalizeCookies(parseCookies(account.cookie));
@@ -6814,6 +6834,8 @@ const sendConversationMedia = async ({
     error.code = "CONVERSATION_ID_REQUIRED";
     throw error;
   }
+
+  ensureProxyProvided(proxy, "send-media");
 
   const trimmedText = String(text || "").trim();
   const fileList = Array.isArray(files) ? files : [];

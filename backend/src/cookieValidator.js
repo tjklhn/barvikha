@@ -144,15 +144,182 @@ const buildCookieHeader = (cookies) =>
 
 const extractProfileFromCookies = (cookies) => {
   const accessToken = (cookies || []).find((cookie) => cookie?.name === "access_token" && cookie?.value);
-  if (!accessToken?.value) return { profileName: "", profileEmail: "" };
+  if (!accessToken?.value) return { profileName: "", profileEmail: "", profileUserId: "", profileUrl: "" };
   const payload = decodeJwtPayload(accessToken.value);
-  if (!payload) return { profileName: "", profileEmail: "" };
+  if (!payload) return { profileName: "", profileEmail: "", profileUserId: "", profileUrl: "" };
   const name = payload?.name || payload?.preferred_username || "";
   const email = payload?.email || "";
+  const profileUserId = pickUserIdCandidate(
+    payload?.userId,
+    payload?.user_id,
+    payload?.uid
+  );
   return {
     profileName: sanitizeProfileName(name),
-    profileEmail: String(email || "").trim()
+    profileEmail: String(email || "").trim(),
+    profileUserId,
+    profileUrl: buildProfileUrlByUserId(profileUserId)
   };
+};
+
+const EMAIL_PATTERN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+
+const pickEmailCandidate = (...values) => {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (!text) continue;
+    const matched = text.match(EMAIL_PATTERN);
+    if (matched?.[0]) return matched[0].toLowerCase();
+  }
+  return "";
+};
+
+const pickUserIdCandidate = (...values) => {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      const numeric = String(Math.trunc(value));
+      if (/^\d{4,}$/.test(numeric)) return numeric;
+      continue;
+    }
+    if (typeof value === "bigint" && value > 0n) {
+      const bigintValue = String(value);
+      if (/^\d{4,}$/.test(bigintValue)) return bigintValue;
+      continue;
+    }
+    const normalized = String(value ?? "").trim();
+    if (!normalized) continue;
+    if (/^\d{4,}$/.test(normalized)) return normalized;
+    const queryMatch = normalized.match(/(?:^|[?&#])userId=(\d{4,})(?:[&#]|$)/i);
+    if (queryMatch?.[1]) return queryMatch[1];
+  }
+  return "";
+};
+
+const buildProfileUrlByUserId = (userId) => {
+  const normalizedId = pickUserIdCandidate(userId);
+  if (!normalizedId) return "";
+  return `https://www.kleinanzeigen.de/s-bestandsliste.html?userId=${encodeURIComponent(normalizedId)}`;
+};
+
+const toAbsoluteKleinanzeigenUrl = (value, base = "https://www.kleinanzeigen.de/") => {
+  const input = String(value || "").trim();
+  if (!input) return "";
+  try {
+    const resolved = new URL(input, base);
+    const host = String(resolved.hostname || "").toLowerCase();
+    if (host === "kleinanzeigen.de" || host.endsWith(".kleinanzeigen.de")) {
+      return resolved.href;
+    }
+    return "";
+  } catch (error) {
+    return "";
+  }
+};
+
+const extractProfileFromHomepageHtml = (html) => {
+  const source = String(html || "");
+  if (!source) return { profileName: "", profileEmail: "", profileUserId: "", profileUrl: "" };
+
+  let profileEmail = "";
+  let profileName = "";
+  let profileUserId = "";
+  let profileUrl = "";
+
+  try {
+    const scriptMatch = source.match(/<script[^>]*id=["']astroSharedData["'][^>]*>([\s\S]*?)<\/script>/i);
+    const jsonText = scriptMatch?.[1] ? String(scriptMatch[1]).trim() : "";
+    if (jsonText) {
+      const data = JSON.parse(jsonText);
+      profileEmail = pickEmailCandidate(
+        data?.user?.email,
+        data?.userProfile?.email
+      );
+      profileUserId = pickUserIdCandidate(
+        data?.user?.userId,
+        data?.userProfile?.userId
+      );
+      profileName = sanitizeProfileName(
+        data?.user?.contactName
+        || data?.userProfile?.contactName
+        || ""
+      );
+    }
+  } catch (error) {
+    // ignore JSON parse issues and continue with text fallbacks
+  }
+
+  if (!profileEmail) {
+    const labelMatch = source.match(/angemeldet\s+als\s*:\s*([^<\n]+)/i);
+    profileEmail = pickEmailCandidate(labelMatch?.[1] || "");
+  }
+
+  if (!profileEmail) {
+    const jsonEmailMatch = source.match(/"(?:email|userEmail)"\s*:\s*"([^"]+)"/i);
+    profileEmail = pickEmailCandidate(jsonEmailMatch?.[1] || "");
+  }
+
+  if (!profileUserId) {
+    const userScopedMatch = source.match(/"(?:user|userProfile)"\s*:\s*\{[\s\S]{0,500}?"userId"\s*:\s*"?(\d{4,})"?/i);
+    const userIdMatch = userScopedMatch || source.match(/(?:\?|&|\\u0026)userId=(\d{4,})/i);
+    profileUserId = pickUserIdCandidate(userIdMatch?.[1] || "");
+  }
+
+  const profileLinkMatch = source.match(/href=["']([^"']*s-bestandsliste\.html\?userId=\d+[^"']*)["']/i);
+  const profileLink = toAbsoluteKleinanzeigenUrl(profileLinkMatch?.[1] || "");
+  const profileLinkUserId = pickUserIdCandidate(profileLink);
+  if (!profileUserId && profileLinkUserId) {
+    profileUserId = profileLinkUserId;
+  }
+  if (profileLink && (!profileUserId || profileLinkUserId === profileUserId)) {
+    profileUrl = profileLink;
+  }
+  if (!profileUrl) {
+    profileUrl = buildProfileUrlByUserId(profileUserId);
+  }
+
+  return {
+    profileName: sanitizeProfileName(profileName),
+    profileEmail,
+    profileUserId,
+    profileUrl
+  };
+};
+
+const mergeProfileData = (primary = {}, fallback = {}) => {
+  const candidateUrl = toAbsoluteKleinanzeigenUrl(primary?.profileUrl || fallback?.profileUrl || "");
+  const profileUserId = pickUserIdCandidate(
+    primary?.profileUserId,
+    fallback?.profileUserId,
+    candidateUrl
+  );
+  return {
+    profileName: sanitizeProfileName(primary?.profileName || fallback?.profileName || ""),
+    profileEmail: pickEmailCandidate(primary?.profileEmail, fallback?.profileEmail),
+    profileUserId,
+    profileUrl: buildProfileUrlByUserId(profileUserId) || candidateUrl
+  };
+};
+
+const fetchProfileFromHomepageViaHttp = async ({ cookies, proxy, deviceProfile, timeoutMs = 20000 } = {}) => {
+  const cookieHeader = buildCookieHeaderForUrl(cookies, "https://www.kleinanzeigen.de/");
+  if (!cookieHeader) {
+    return { profileName: "", profileEmail: "", profileUserId: "", profileUrl: "" };
+  }
+  const axiosConfig = proxyChecker.buildAxiosConfig(proxy, Math.max(4000, Number(timeoutMs) || 20000));
+  axiosConfig.headers = {
+    ...axiosConfig.headers,
+    Cookie: cookieHeader,
+    "User-Agent": deviceProfile?.userAgent || axiosConfig.headers?.["User-Agent"] || "Mozilla/5.0",
+    "Accept-Language": deviceProfile?.locale || "de-DE,de;q=0.9,en;q=0.8",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+  };
+  axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
+
+  const response = await axios.get("https://www.kleinanzeigen.de/", axiosConfig);
+  if (response.status >= 400) {
+    return { profileName: "", profileEmail: "", profileUserId: "", profileUrl: "" };
+  }
+  return extractProfileFromHomepageHtml(response.data);
 };
 
 const validateCookiesViaAccessToken = async ({ cookieHeader, proxy, deviceProfile, timeoutMs = 20000 } = {}) => {
@@ -240,13 +407,28 @@ const validateCookies = async (rawCookieText, options = {}) => {
       timeoutMs: 20000
     });
     if (tokenCheck.ok) {
-      const profile = extractProfileFromCookies(cookies);
+      const profileFromCookies = extractProfileFromCookies(cookies);
+      let profile = profileFromCookies;
+      try {
+        const profileFromHomepage = await fetchProfileFromHomepageViaHttp({
+          cookies,
+          proxy: options.proxy,
+          deviceProfile,
+          timeoutMs: 20000
+        });
+        // Homepage profile data is more trustworthy for own profile URL/userId than JWT payload fields.
+        profile = mergeProfileData(profileFromHomepage, profileFromCookies);
+      } catch (error) {
+        // ignore homepage fallback errors
+      }
       return {
         valid: true,
         reason: null,
         deviceProfile,
         profileName: profile.profileName || "",
-        profileEmail: profile.profileEmail || ""
+        profileEmail: profile.profileEmail || "",
+        profileUserId: profile.profileUserId || "",
+        profileUrl: buildProfileUrlByUserId(profile.profileUserId) || profile.profileUrl || ""
       };
     }
   } catch (error) {
@@ -332,29 +514,51 @@ const validateCookies = async (rawCookieText, options = {}) => {
         !currentUrl.includes("m-einloggen") &&
         (/Abmelden/i.test(content) || /Mein Konto/i.test(content) || /Nachrichten/i.test(content));
 
-      let profileName = "";
-      let profileEmail = "";
+      const homeProfile = extractProfileFromHomepageHtml(content);
+      let profileName = homeProfile.profileName || "";
+      let profileEmail = homeProfile.profileEmail || "";
+      let profileUserId = homeProfile.profileUserId || "";
+      let profileUrl = homeProfile.profileUrl || "";
       if (loggedIn) {
         try {
-          await gotoWithRetries(page, "https://www.kleinanzeigen.de/m-meine-anzeigen.html");
-          await page.waitForSelector("[data-testid='ownprofile-header'] h2, h2.text-title2", { timeout: 15000 }).catch(() => {});
-          await humanPause(160, 280);
-          const profileData = await page.evaluate(() => {
-            const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
-            const header = document.querySelector("[data-testid='ownprofile-header']") || document.querySelector(".ownprofile-header");
-            const heading = header ? header.querySelector("h2") : Array.from(document.querySelectorAll("h2")).find((node) => {
-              const srOnly = node.querySelector("span.sr-only");
-              return srOnly && /profil von/i.test(srOnly.textContent || "");
+          if (!profileEmail || !profileUrl) {
+            await gotoWithRetries(page, "https://www.kleinanzeigen.de/");
+            await humanPause(140, 240);
+            const homepageHtml = await page.content();
+            const homepageProfile = extractProfileFromHomepageHtml(homepageHtml);
+            profileName = profileName || homepageProfile.profileName || "";
+            profileEmail = profileEmail || homepageProfile.profileEmail || "";
+            profileUserId = profileUserId || homepageProfile.profileUserId || "";
+            profileUrl = profileUrl || homepageProfile.profileUrl || "";
+          }
+          if (!profileEmail || !profileUrl) {
+            await gotoWithRetries(page, "https://www.kleinanzeigen.de/m-meine-anzeigen.html");
+            await page.waitForSelector("[data-testid='ownprofile-header'] h2, h2.text-title2", { timeout: 15000 }).catch(() => {});
+            await humanPause(160, 280);
+            const profileData = await page.evaluate(() => {
+              const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+              const header = document.querySelector("[data-testid='ownprofile-header']") || document.querySelector(".ownprofile-header");
+              const heading = header ? header.querySelector("h2") : Array.from(document.querySelectorAll("h2")).find((node) => {
+                const srOnly = node.querySelector("span.sr-only");
+                return srOnly && /profil von/i.test(srOnly.textContent || "");
+              });
+              const emailSpan = document.querySelector("#user-email");
+              const rawName = heading ? normalize(heading.textContent) : "";
+              const name = rawName.replace(/profil von/i, "").trim();
+              const emailRaw = emailSpan ? normalize(emailSpan.textContent) : "";
+              const email = emailRaw.replace(/angemeldet als:\s*/i, "").trim();
+              const ownProfileLink = Array.from(document.querySelectorAll("a[href*='s-bestandsliste'], a[href*='userId=']"))
+                .map((node) => String(node.getAttribute("href") || "").trim())
+                .find((href) => /userId=\d+/i.test(href) || /s-bestandsliste/i.test(href));
+              const userIdMatch = ownProfileLink ? String(ownProfileLink).match(/userId=(\d+)/i) : null;
+              const profileUserId = userIdMatch?.[1] || "";
+              return { name, email, ownProfileLink: ownProfileLink || "", profileUserId };
             });
-            const emailSpan = document.querySelector("#user-email");
-            const rawName = heading ? normalize(heading.textContent) : "";
-            const name = rawName.replace(/profil von/i, "").trim();
-            const emailRaw = emailSpan ? normalize(emailSpan.textContent) : "";
-            const email = emailRaw.replace(/angemeldet als:\s*/i, "").trim();
-            return { name, email };
-          });
-          profileName = sanitizeProfileName(profileData.name);
-          profileEmail = profileData.email;
+            profileName = sanitizeProfileName(profileData.name || profileName);
+            profileEmail = pickEmailCandidate(profileData.email, profileEmail);
+            profileUserId = pickUserIdCandidate(profileData.profileUserId, profileUserId);
+            profileUrl = toAbsoluteKleinanzeigenUrl(profileData.ownProfileLink, page.url()) || profileUrl;
+          }
         } catch (error) {
           // ignore profile parse errors
         }
@@ -373,7 +577,9 @@ const validateCookies = async (rawCookieText, options = {}) => {
           ),
         deviceProfile,
         profileName,
-        profileEmail
+        profileEmail,
+        profileUserId,
+        profileUrl: buildProfileUrlByUserId(profileUserId) || profileUrl || ""
       };
     } finally {
       if (browser) {

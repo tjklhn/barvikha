@@ -116,15 +116,39 @@ const ACCOUNT_COOLDOWN_MAX_MS = Math.max(
   60 * 1000,
   Number(process.env.KL_ACCOUNT_COOLDOWN_MAX_MS || 20 * 60 * 1000)
 );
+const ACCOUNT_ACTION_PAUSE_MIN_MS = Math.max(
+  0,
+  Number(process.env.KL_ACCOUNT_ACTION_PAUSE_MIN_MS || 120)
+);
+const ACCOUNT_ACTION_PAUSE_MAX_MS = Math.max(
+  ACCOUNT_ACTION_PAUSE_MIN_MS,
+  Number(process.env.KL_ACCOUNT_ACTION_PAUSE_MAX_MS || 380)
+);
 const ACCOUNT_ACTION_PACE_MS = Object.freeze({
   "send-message": Math.max(0, Number(process.env.KL_PACE_SEND_MESSAGE_MS || 2500)),
   "offer-decline": Math.max(0, Number(process.env.KL_PACE_OFFER_DECLINE_MS || 5000)),
   "send-media": Math.max(0, Number(process.env.KL_PACE_SEND_MEDIA_MS || 5000)),
-  "ads-create": Math.max(0, Number(process.env.KL_PACE_ADS_CREATE_MS || 12000))
+  "ads-create": Math.max(0, Number(process.env.KL_PACE_ADS_CREATE_MS || 12000)),
+  "ads-reserve": Math.max(0, Number(process.env.KL_PACE_ADS_RESERVE_MS || 5000)),
+  "ads-activate": Math.max(0, Number(process.env.KL_PACE_ADS_ACTIVATE_MS || 5000)),
+  "ads-delete": Math.max(0, Number(process.env.KL_PACE_ADS_DELETE_MS || 7000))
 });
 const accountLastActionByAccount = new Map();
 const accountCooldownByAccount = new Map();
 const accountProxyBindingByAccount = new Map();
+const ACCOUNT_SESSION_PREFLIGHT_TIMEOUT_MS = Math.max(
+  2500,
+  Number(process.env.KL_ACCOUNT_SESSION_PREFLIGHT_TIMEOUT_MS || 7000)
+);
+const ACCOUNT_SESSION_VALID_TTL_MS = Math.max(
+  10 * 1000,
+  Number(process.env.KL_ACCOUNT_SESSION_VALID_TTL_MS || 90 * 1000)
+);
+const ACCOUNT_SESSION_INVALID_TTL_MS = Math.max(
+  30 * 1000,
+  Number(process.env.KL_ACCOUNT_SESSION_INVALID_TTL_MS || 5 * 60 * 1000)
+);
+const accountSessionPreflightByAccount = new Map();
 
 const resolveMessageRouteDeadlineMs = () => {
   const configured = Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || MESSAGE_ROUTE_DEADLINE_DEFAULT_MS);
@@ -207,6 +231,11 @@ const pruneAccountSafetyState = () => {
   for (const [key, entry] of accountProxyBindingByAccount.entries()) {
     if (!entry || (now - Number(entry.lastSeenAt || 0)) > ACCOUNT_SAFETY_STATE_TTL_MS) {
       accountProxyBindingByAccount.delete(key);
+    }
+  }
+  for (const [key, entry] of accountSessionPreflightByAccount.entries()) {
+    if (!entry || Number(entry.until || 0) <= now) {
+      accountSessionPreflightByAccount.delete(key);
     }
   }
 };
@@ -390,6 +419,17 @@ const detectAccountRiskCooldown = ({ error, statusCode } = {}) => {
   }
 
   if (
+    code === "SESSION_CHALLENGE"
+    || code === "CHALLENGE_REQUIRED"
+    || combined.includes("captcha")
+    || combined.includes("challenge")
+    || combined.includes("verify you are human")
+    || combined.includes("security check")
+  ) {
+    return { cooldownMs: 20 * 60 * 1000, reason: "challenge", code: "RISK_CHALLENGE" };
+  }
+
+  if (
     code === "AUTH_REQUIRED"
     || status === 401
     || status === 403
@@ -538,6 +578,263 @@ const deriveMessageboxBearerFromAccount = (account) => {
   return raw;
 };
 
+const SESSION_PREFLIGHT_URL = "https://www.kleinanzeigen.de/m-access-token.json";
+const SESSION_CHALLENGE_PATTERN = /captcha|challenge|security check|verify (you )?are human|cf-chl|bot check|robot/i;
+const PROXY_TUNNEL_PATTERN = /tunnel_connection_failed|proxy_connection_failed|no_supported_proxies|proxyconnect|socks connection failed|proxy authentication required/i;
+
+const readCachedSessionPreflight = (accountId, now = Date.now()) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key) return null;
+  const entry = accountSessionPreflightByAccount.get(key);
+  if (!entry) return null;
+  const until = Number(entry.until || 0);
+  if (!until || until <= now) {
+    accountSessionPreflightByAccount.delete(key);
+    return null;
+  }
+  return {
+    ...entry,
+    retryAfterMs: toRetryAfterMs(until - now)
+  };
+};
+
+const cacheAccountSessionPreflight = ({
+  accountId,
+  valid,
+  code = "",
+  reason = "",
+  details = "",
+  status = 0,
+  ttlMs
+} = {}) => {
+  const key = toAccountSafetyKey(accountId);
+  if (!key) return null;
+  const now = Date.now();
+  const desiredTtl = Number(ttlMs);
+  const normalizedTtl = Math.max(
+    1000,
+    (Number.isFinite(desiredTtl) && desiredTtl > 0 ? desiredTtl : 0)
+      || Number(valid ? ACCOUNT_SESSION_VALID_TTL_MS : ACCOUNT_SESSION_INVALID_TTL_MS)
+      || 1000
+  );
+  const until = now + normalizedTtl;
+  const entry = {
+    valid: Boolean(valid),
+    code: String(code || "").trim().toUpperCase(),
+    reason: String(reason || "").slice(0, 180),
+    details: String(details || "").slice(0, 500),
+    status: Number(status || 0),
+    updatedAt: now,
+    until
+  };
+  accountSessionPreflightByAccount.set(key, entry);
+  return {
+    ...entry,
+    retryAfterMs: normalizedTtl
+  };
+};
+
+const throwSessionPreflightError = ({
+  code = "AUTH_REQUIRED",
+  message = "Сессия аккаунта невалидна.",
+  details = "",
+  status = 401,
+  retryAfterMs = 0
+} = {}) => {
+  const error = new Error(String(message || "SESSION_PREFLIGHT_FAILED"));
+  error.code = String(code || "SESSION_PREFLIGHT_FAILED").trim().toUpperCase();
+  error.details = String(details || "").slice(0, 500);
+  error.status = Number(status || 0);
+  if (retryAfterMs) {
+    error.retryAfterMs = toRetryAfterMs(retryAfterMs);
+  }
+  throw error;
+};
+
+const isChallengeLikeText = (value) => SESSION_CHALLENGE_PATTERN.test(String(value || "").toLowerCase());
+
+const extractPreflightBodyText = (body) => {
+  if (body === undefined || body === null) return "";
+  if (typeof body === "string") return body.slice(0, 500);
+  try {
+    return JSON.stringify(body).slice(0, 500);
+  } catch (error) {
+    return String(body).slice(0, 500);
+  }
+};
+
+const ensureAccountSessionReady = async ({
+  account,
+  proxy,
+  accountId,
+  route = ""
+} = {}) => {
+  const key = toAccountSafetyKey(accountId || account?.id);
+  if (!key) return { ok: true };
+  if (!proxy) {
+    const error = new Error("PROXY_REQUIRED");
+    error.code = "PROXY_REQUIRED";
+    error.details = `session-preflight-missing-proxy:${route}`;
+    throw error;
+  }
+
+  const cached = readCachedSessionPreflight(key);
+  if (cached) {
+    if (cached.valid) return { ok: true, cached: true };
+    throwSessionPreflightError({
+      code: cached.code || "AUTH_REQUIRED",
+      message: cached.reason || "Сессия аккаунта невалидна.",
+      details: cached.details || "session-preflight-cached-invalid",
+      status: cached.status || 401,
+      retryAfterMs: cached.retryAfterMs
+    });
+  }
+
+  const cookieHeader = buildCookieHeaderFromAccount(account, SESSION_PREFLIGHT_URL);
+  if (!cookieHeader) {
+    cacheAccountSessionPreflight({
+      accountId: key,
+      valid: false,
+      code: "AUTH_REQUIRED",
+      reason: "Сессия аккаунта не содержит валидных cookies.",
+      details: `session-preflight-empty-cookie-header:${route}`,
+      status: 401
+    });
+    throwSessionPreflightError({
+      code: "AUTH_REQUIRED",
+      message: "Сессия аккаунта невалидна. Обновите cookies.",
+      details: `session-preflight-empty-cookie-header:${route}`,
+      status: 401
+    });
+  }
+
+  const derivedBearer = deriveMessageboxBearerFromAccount(account);
+  const deviceProfile = toDeviceProfile(account?.deviceProfile);
+  const axiosConfig = proxyChecker.buildAxiosConfig(proxy, ACCOUNT_SESSION_PREFLIGHT_TIMEOUT_MS);
+  axiosConfig.headers = {
+    ...axiosConfig.headers,
+    Cookie: cookieHeader,
+    "User-Agent": deviceProfile.userAgent || "Mozilla/5.0",
+    "Accept-Language": deviceProfile.locale || "de-DE,de;q=0.9,en;q=0.8",
+    Accept: "application/json"
+  };
+  axiosConfig.validateStatus = (status) => status >= 200 && status < 500;
+
+  let response;
+  try {
+    response = await axios.get(SESSION_PREFLIGHT_URL, axiosConfig);
+  } catch (error) {
+    const code = String(error?.code || "").trim().toUpperCase();
+    const message = String(error?.message || "SESSION_PREFLIGHT_FAILED").trim();
+    if (
+      PROXY_TUNNEL_PATTERN.test(message.toLowerCase())
+      || ["ERR_TUNNEL_CONNECTION_FAILED", "ERR_PROXY_CONNECTION_FAILED", "ERR_NO_SUPPORTED_PROXIES"].includes(code)
+    ) {
+      throwSessionPreflightError({
+        code: "PROXY_TUNNEL_CONNECTION_FAILED",
+        message: "Прокси аккаунта не может подключиться к Kleinanzeigen.",
+        details: `session-preflight-proxy:${message.slice(0, 280)}`,
+        status: 502
+      });
+    }
+    throwSessionPreflightError({
+      code: code || "SESSION_PREFLIGHT_FAILED",
+      message: `Не удалось проверить сессию аккаунта: ${message}`,
+      details: `session-preflight-network:${route}`,
+      status: 503
+    });
+  }
+
+  const status = Number(response?.status || 0);
+  const authorization = String(response?.headers?.authorization || response?.headers?.Authorization || "").trim();
+  const bodyText = extractPreflightBodyText(response?.data);
+  const details = `status:${status};route:${route};body:${bodyText}`.slice(0, 500);
+  const hasChallenge = isChallengeLikeText(bodyText);
+
+  if (status === 429) {
+    cacheAccountSessionPreflight({
+      accountId: key,
+      valid: false,
+      code: "TOO_MANY_REQUESTS",
+      reason: "Аккаунт временно ограничен (429).",
+      details,
+      status: 429
+    });
+    throwSessionPreflightError({
+      code: "TOO_MANY_REQUESTS",
+      message: "Kleinanzeigen временно ограничил запросы для аккаунта.",
+      details,
+      status: 429,
+      retryAfterMs: 60 * 1000
+    });
+  }
+
+  if (hasChallenge || status === 403) {
+    if (hasChallenge) {
+      cacheAccountSessionPreflight({
+        accountId: key,
+        valid: false,
+        code: "SESSION_CHALLENGE",
+        reason: "Обнаружен captcha/challenge для аккаунта.",
+        details,
+        status: 429
+      });
+      throwSessionPreflightError({
+        code: "SESSION_CHALLENGE",
+        message: "Kleinanzeigen запросил captcha/challenge. Аккаунт временно поставлен на паузу.",
+        details,
+        status: 429,
+        retryAfterMs: 15 * 60 * 1000
+      });
+    }
+
+    if (!authorization && !derivedBearer) {
+      cacheAccountSessionPreflight({
+        accountId: key,
+        valid: false,
+        code: "AUTH_REQUIRED",
+        reason: "Сессия аккаунта невалидна (403).",
+        details,
+        status: 401
+      });
+      throwSessionPreflightError({
+        code: "AUTH_REQUIRED",
+        message: "Сессия аккаунта невалидна. Обновите cookies.",
+        details,
+        status: 401
+      });
+    }
+  }
+
+  if (status === 401 || (!authorization && !derivedBearer)) {
+    cacheAccountSessionPreflight({
+      accountId: key,
+      valid: false,
+      code: "AUTH_REQUIRED",
+      reason: "Сессия аккаунта невалидна (401).",
+      details,
+      status: 401
+    });
+    throwSessionPreflightError({
+      code: "AUTH_REQUIRED",
+      message: "Сессия аккаунта невалидна. Обновите cookies.",
+      details,
+      status: 401
+    });
+  }
+
+  cacheAccountSessionPreflight({
+    accountId: key,
+    valid: true,
+    code: "SESSION_OK",
+    reason: "session-preflight-ok",
+    details: details.slice(0, 240),
+    status: status || 200,
+    ttlMs: derivedBearer && !authorization ? Math.min(ACCOUNT_SESSION_VALID_TTL_MS, 30 * 1000) : ACCOUNT_SESSION_VALID_TTL_MS
+  });
+  return { ok: true };
+};
+
 const fetchMessageboxAccessTokenForAccount = async ({ account, proxy, timeoutMs = 20000 } = {}) => {
   const tokenUrl = "https://www.kleinanzeigen.de/m-access-token.json";
   const cookieHeader = buildCookieHeaderFromAccount(account, tokenUrl);
@@ -669,6 +966,15 @@ const cleanupRecentSuccessfulPublishes = () => {
 };
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const humanPause = async (min = ACCOUNT_ACTION_PAUSE_MIN_MS, max = ACCOUNT_ACTION_PAUSE_MAX_MS) => {
+  const safeMin = Math.max(0, Number(min) || 0);
+  const safeMax = Math.max(safeMin, Number(max) || 0);
+  if (!safeMax) return;
+  const span = safeMax - safeMin;
+  const jitter = span > 0 ? safeMin + Math.random() * span : safeMin;
+  if (jitter <= 0) return;
+  await delay(Math.floor(jitter));
+};
 
 const withTimeout = (promise, timeoutMs, label = "timeout") => {
   let timeoutId;
@@ -2641,6 +2947,8 @@ app.post("/api/accounts/:id/refresh", async (req, res) => {
       error: validation.valid ? null : (validation.reason || "Куки невалидны"),
       profileName: safeName || account.profileName || "",
       profileEmail: validation.profileEmail || account.profileEmail || "",
+      profileUserId: validation.profileUserId || account.profileUserId || "",
+      profileUrl: validation.profileUrl || account.profileUrl || "",
       deviceProfile: account.deviceProfile || JSON.stringify(validation.deviceProfile || deviceProfile || pickDeviceProfile())
     };
 
@@ -2656,6 +2964,104 @@ app.post("/api/accounts/:id/refresh", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.patch("/api/accounts/:id/proxy", (req, res) => {
+  try {
+    const account = getAccountForRequest(req.params.id, req, res);
+    if (!account) return;
+    const ownerContext = getOwnerContext(req);
+
+    const nextProxyId = String(req.body?.proxyId || "").trim();
+    if (!nextProxyId) {
+      res.status(400).json({ success: false, error: "Выберите прокси для аккаунта." });
+      return;
+    }
+
+    const selectedProxy = findProxyById(nextProxyId);
+    if (!selectedProxy || !isOwnerMatch(selectedProxy, ownerContext)) {
+      res.status(404).json({ success: false, error: "Прокси не найден" });
+      return;
+    }
+
+    if (!buildProxyUrl(selectedProxy)) {
+      res.status(400).json({
+        success: false,
+        error: "Прокси настроен некорректно (host/port). Смена прокси остановлена."
+      });
+      return;
+    }
+
+    const accountKey = toAccountSafetyKey(account.id);
+    if (accountKey) {
+      const currentAction = activeMessageActionByAccount.get(accountKey);
+      if (currentAction && Date.now() - Number(currentAction.startedAt || 0) > MESSAGE_ACTION_LOCK_STALE_MS) {
+        activeMessageActionByAccount.delete(accountKey);
+      }
+      const activeAction = activeMessageActionByAccount.get(accountKey);
+      if (activeAction) {
+        res.status(409).json({
+          success: false,
+          error: "Нельзя сменить прокси, пока действие аккаунта выполняется. Дождитесь завершения.",
+          code: "ACCOUNT_ACTION_IN_PROGRESS",
+          activeRoute: activeAction.route || "",
+          activeDebugId: activeAction.debugId || "",
+          activeRequestId: activeAction.clientRequestId || "",
+          activeSinceMs: activeAction.startedAt ? (Date.now() - Number(activeAction.startedAt || 0)) : null
+        });
+        return;
+      }
+    }
+
+    const currentProxyId = String(account.proxyId || "").trim();
+    if (currentProxyId && isSameEntityId(currentProxyId, selectedProxy.id)) {
+      res.json({
+        success: true,
+        changed: false,
+        account: {
+          ...account,
+          proxy: getProxyLabel(account.proxyId, ownerContext)
+        }
+      });
+      return;
+    }
+
+    const now = Date.now();
+    const updated = updateAccount(account.id, {
+      proxyId: selectedProxy.id,
+      lastCheck: new Date(now).toISOString(),
+      error: null
+    });
+    if (!updated) {
+      res.status(404).json({ success: false, error: "Аккаунт не найден" });
+      return;
+    }
+
+    if (accountKey) {
+      accountProxyBindingByAccount.set(accountKey, {
+        proxyId: String(selectedProxy.id),
+        lastChangeAt: now,
+        lastSeenAt: now
+      });
+      accountSessionPreflightByAccount.delete(accountKey);
+      messageboxAccessTokenCacheByAccount.delete(accountKey);
+    }
+
+    invalidateActiveAdsCacheForOwner(ownerContext);
+
+    res.json({
+      success: true,
+      changed: true,
+      previousProxyId: currentProxyId || "",
+      proxyId: String(selectedProxy.id),
+      account: {
+        ...updated,
+        proxy: getProxyLabel(selectedProxy.id, ownerContext)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message || "Ошибка при смене прокси аккаунта" });
   }
 });
 
@@ -2723,7 +3129,11 @@ app.get("/api/ads/active", async (req, res) => {
   }
 });
 
-app.post("/api/ads/:adId/reserve", async (req, res) => {
+const handleAdActionRequest = async (req, res, action) => {
+  const requestId = `ad-action-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const routeKey = `ads-${action}`;
+  let safetyAccountId = null;
+  let accountActionLock = null;
   try {
     const adId = String(req.params.adId || "").trim();
     const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
@@ -2733,6 +3143,7 @@ app.post("/api/ads/:adId/reserve", async (req, res) => {
       res.status(400).json({ success: false, error: "Передайте adId и accountId" });
       return;
     }
+    safetyAccountId = accountId;
 
     const account = getAccountForRequest(accountId, req, res);
     if (!account) return;
@@ -2740,6 +3151,51 @@ app.post("/api/ads/:adId/reserve", async (req, res) => {
     const ownerContext = getOwnerContext(req);
     const selectedProxy = requireAccountProxy(account, res, "управления объявлениями", ownerContext);
     if (!selectedProxy) return;
+
+    const safetyPrecheck = evaluateAccountSafetyPrecheck({
+      accountId,
+      actionKey: routeKey,
+      proxyId: account?.proxyId,
+      touchAction: false
+    });
+    if (!safetyPrecheck.ok) {
+      sendAccountSafetyRejection(res, safetyPrecheck.rejection, {
+        debugId: requestId,
+        requestId
+      });
+      return;
+    }
+
+    await ensureAccountSessionReady({
+      account,
+      proxy: selectedProxy,
+      accountId,
+      route: routeKey
+    });
+
+    accountActionLock = tryAcquireMessageActionLock({
+      accountId,
+      route: routeKey,
+      debugId: requestId,
+      clientRequestId: requestId
+    });
+    if (!accountActionLock?.acquired) {
+      res.status(409).json({
+        success: false,
+        error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
+        code: "ACCOUNT_ACTION_IN_PROGRESS",
+        activeRoute: accountActionLock?.existing?.route || "",
+        activeDebugId: accountActionLock?.existing?.debugId || "",
+        activeRequestId: accountActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: accountActionLock?.existing?.startedAt ? (Date.now() - Number(accountActionLock.existing.startedAt || 0)) : null,
+        debugId: requestId,
+        requestId
+      });
+      return;
+    }
+    registerAccountActionAttempt({ accountId, actionKey: routeKey });
+
+    await humanPause();
 
     const accountLabel = account.profileEmail
       ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
@@ -2749,98 +3205,126 @@ app.post("/api/ads/:adId/reserve", async (req, res) => {
       account,
       proxy: selectedProxy,
       adId,
-      action: "reserve",
+      action,
       accountLabel,
       adHref,
       adTitle
     });
+    const resultCode = String(result?.code || result?.error || "").trim().toUpperCase();
+    const cooldown = result?.success
+      ? null
+      : applyAccountRiskCooldown({
+          accountId,
+          route: routeKey,
+          error: {
+            code: resultCode,
+            message: String(result?.error || "ACTION_FAILED"),
+            details: String(result?.details || "")
+          }
+        });
     if (result?.success) {
+      accountCooldownByAccount.delete(toAccountSafetyKey(accountId));
       invalidateActiveAdsCacheForOwner(ownerContext);
+      res.json(result);
+      return;
     }
-    res.json(result);
+
+    if (resultCode === "AUTH_REQUIRED") {
+      res.status(401).json(withCooldownHint({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        code: resultCode,
+        debugId: requestId,
+        requestId
+      }, cooldown));
+      return;
+    }
+    if (resultCode === "SESSION_CHALLENGE" || resultCode === "TOO_MANY_REQUESTS") {
+      res.status(429).json(withCooldownHint({
+        success: false,
+        error: result?.error || "Аккаунт временно ограничен anti-bot системой Kleinanzeigen.",
+        code: resultCode,
+        details: result?.details || "",
+        debugId: requestId,
+        requestId
+      }, cooldown));
+      return;
+    }
+    if (resultCode === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json(withCooldownHint({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: resultCode,
+        details: result?.details || "",
+        debugId: requestId,
+        requestId
+      }, cooldown));
+      return;
+    }
+
+    res.json(withCooldownHint({
+      ...result,
+      debugId: requestId,
+      requestId
+    }, cooldown));
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    const cooldown = applyAccountRiskCooldown({
+      accountId: safetyAccountId,
+      route: routeKey,
+      error
+    });
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json(withCooldownHint({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId: requestId,
+        requestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "SESSION_CHALLENGE" || error.code === "TOO_MANY_REQUESTS") {
+      res.status(429).json(withCooldownHint({
+        success: false,
+        error: error?.message || "Аккаунт временно ограничен anti-bot системой Kleinanzeigen.",
+        code: error?.code || "",
+        details: error?.details || "",
+        debugId: requestId,
+        requestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json(withCooldownHint({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId: requestId,
+        requestId
+      }, cooldown));
+      return;
+    }
+    res.status(500).json(withCooldownHint({
+      success: false,
+      error: error.message,
+      debugId: requestId,
+      requestId
+    }, cooldown));
+  } finally {
+    releaseMessageActionLock(accountActionLock);
   }
+};
+
+app.post("/api/ads/:adId/reserve", async (req, res) => {
+  await handleAdActionRequest(req, res, "reserve");
 });
 
 app.post("/api/ads/:adId/activate", async (req, res) => {
-  try {
-    const adId = String(req.params.adId || "").trim();
-    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
-    const adHref = req.body?.adHref ? String(req.body.adHref) : "";
-    const adTitle = req.body?.adTitle ? String(req.body.adTitle) : "";
-    if (!adId || !accountId) {
-      res.status(400).json({ success: false, error: "Передайте adId и accountId" });
-      return;
-    }
-
-    const account = getAccountForRequest(accountId, req, res);
-    if (!account) return;
-
-    const ownerContext = getOwnerContext(req);
-    const selectedProxy = requireAccountProxy(account, res, "управления объявлениями", ownerContext);
-    if (!selectedProxy) return;
-
-    const accountLabel = account.profileEmail
-      ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
-      : (account.profileName || account.username || "Аккаунт");
-
-    const result = await performAdAction({
-      account,
-      proxy: selectedProxy,
-      adId,
-      action: "activate",
-      accountLabel,
-      adHref,
-      adTitle
-    });
-    if (result?.success) {
-      invalidateActiveAdsCacheForOwner(ownerContext);
-    }
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+  await handleAdActionRequest(req, res, "activate");
 });
 
 app.post("/api/ads/:adId/delete", async (req, res) => {
-  try {
-    const adId = String(req.params.adId || "").trim();
-    const accountId = req.body?.accountId ? Number(req.body.accountId) : null;
-    const adHref = req.body?.adHref ? String(req.body.adHref) : "";
-    const adTitle = req.body?.adTitle ? String(req.body.adTitle) : "";
-    if (!adId || !accountId) {
-      res.status(400).json({ success: false, error: "Передайте adId и accountId" });
-      return;
-    }
-
-    const account = getAccountForRequest(accountId, req, res);
-    if (!account) return;
-
-    const ownerContext = getOwnerContext(req);
-    const selectedProxy = requireAccountProxy(account, res, "управления объявлениями", ownerContext);
-    if (!selectedProxy) return;
-
-    const accountLabel = account.profileEmail
-      ? `${account.profileName || account.username || "Аккаунт"} (${account.profileEmail})`
-      : (account.profileName || account.username || "Аккаунт");
-
-    const result = await performAdAction({
-      account,
-      proxy: selectedProxy,
-      adId,
-      action: "delete",
-      accountLabel,
-      adHref,
-      adTitle
-    });
-    if (result?.success) {
-      invalidateActiveAdsCacheForOwner(ownerContext);
-    }
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+  await handleAdActionRequest(req, res, "delete");
 });
 
 app.get("/api/messages", async (req, res) => {
@@ -3109,6 +3593,7 @@ app.post("/api/messages/send", async (req, res) => {
     : `msg-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const startedAt = Date.now();
   let safetyAccountId = null;
+  let messageActionLock = null;
   appendServerLog(getMessageActionsLogPath(), {
     event: "start",
     route: "send-message",
@@ -3145,7 +3630,8 @@ app.post("/api/messages/send", async (req, res) => {
     const safetyPrecheck = evaluateAccountSafetyPrecheck({
       accountId,
       actionKey: "send-message",
-      proxyId: account?.proxyId
+      proxyId: account?.proxyId,
+      touchAction: false
     });
     if (!safetyPrecheck.ok) {
       appendServerLog(getMessageActionsLogPath(), {
@@ -3165,6 +3651,48 @@ app.post("/api/messages/send", async (req, res) => {
       return;
     }
 
+    await ensureAccountSessionReady({
+      account,
+      proxy,
+      accountId,
+      route: "send-message"
+    });
+
+    messageActionLock = tryAcquireMessageActionLock({
+      accountId,
+      route: "send-message",
+      debugId,
+      clientRequestId
+    });
+    if (!messageActionLock?.acquired) {
+      appendServerLog(getMessageActionsLogPath(), {
+        event: "action-lock-busy",
+        route: "send-message",
+        debugId,
+        clientRequestId,
+        accountId,
+        lockReason: messageActionLock?.reason || "",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? Date.now() - messageActionLock.existing.startedAt : null
+      });
+      res.status(409).json({
+        success: false,
+        error: "Действие для этого аккаунта уже выполняется. Дождитесь завершения и попробуйте снова.",
+        code: "MESSAGE_ACTION_IN_PROGRESS",
+        activeRoute: messageActionLock?.existing?.route || "",
+        activeDebugId: messageActionLock?.existing?.debugId || "",
+        activeRequestId: messageActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: messageActionLock?.existing?.startedAt ? (Date.now() - Number(messageActionLock.existing.startedAt || 0)) : null,
+        debugId,
+        requestId: clientRequestId
+      });
+      return;
+    }
+    registerAccountActionAttempt({ accountId, actionKey: "send-message" });
+
+    await humanPause();
+
     const result = await sendConversationMessage({
       account,
       proxy,
@@ -3181,6 +3709,8 @@ app.post("/api/messages/send", async (req, res) => {
         conversationId,
         conversationUrl
       }
+    }).finally(() => {
+      releaseMessageActionLock(messageActionLock);
     });
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-success",
@@ -3229,12 +3759,36 @@ app.post("/api/messages/send", async (req, res) => {
       }, cooldown));
       return;
     }
+    if (error.code === "SESSION_CHALLENGE" || error.code === "TOO_MANY_REQUESTS") {
+      res.status(429).json(withCooldownHint({
+        success: false,
+        error: error?.message || "Аккаунт временно ограничен anti-bot системой Kleinanzeigen.",
+        code: error?.code || "",
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json(withCooldownHint({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
     res.status(500).json(withCooldownHint({
       success: false,
       error: error.message,
       debugId,
       requestId: clientRequestId
     }, cooldown));
+  } finally {
+    releaseMessageActionLock(messageActionLock);
   }
 });
 
@@ -3364,6 +3918,13 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       return;
     }
 
+    await ensureAccountSessionReady({
+      account,
+      proxy,
+      accountId,
+      route: "offer-decline"
+    });
+
     messageActionLock = tryAcquireMessageActionLock({
       accountId,
       route: "offer-decline",
@@ -3396,6 +3957,8 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       return;
     }
     registerAccountActionAttempt({ accountId, actionKey: "offer-decline" });
+
+    await humanPause();
 
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
@@ -3532,6 +4095,17 @@ app.post("/api/messages/offer/decline", async (req, res) => {
       res.status(401).json(withCooldownHint({
         success: false,
         error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
+    if (error.code === "SESSION_CHALLENGE" || error.code === "TOO_MANY_REQUESTS") {
+      res.status(429).json(withCooldownHint({
+        success: false,
+        error: error?.message || "Аккаунт временно ограничен anti-bot системой Kleinanzeigen.",
+        code: error?.code || "",
+        details: error?.details || "",
         debugId,
         requestId: clientRequestId
       }, cooldown));
@@ -3746,6 +4320,13 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       return;
     }
 
+    await ensureAccountSessionReady({
+      account,
+      proxy,
+      accountId,
+      route: "send-media"
+    });
+
     messageActionLock = tryAcquireMessageActionLock({
       accountId,
       route: "send-media",
@@ -3778,6 +4359,8 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       return;
     }
     registerAccountActionAttempt({ accountId, actionKey: "send-media" });
+
+    await humanPause();
 
     appendServerLog(getMessageActionsLogPath(), {
       event: "service-start",
@@ -3921,6 +4504,17 @@ app.post("/api/messages/send-media", messageUploadMiddleware, async (req, res) =
       }, cooldown));
       return;
     }
+    if (error.code === "SESSION_CHALLENGE" || error.code === "TOO_MANY_REQUESTS") {
+      res.status(429).json(withCooldownHint({
+        success: false,
+        error: error?.message || "Аккаунт временно ограничен anti-bot системой Kleinanzeigen.",
+        code: error?.code || "",
+        details: error?.details || "",
+        debugId,
+        requestId: clientRequestId
+      }, cooldown));
+      return;
+    }
     if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
       res.status(502).json(withCooldownHint({
         success: false,
@@ -4054,12 +4648,9 @@ app.get("/api/categories", async (req, res) => {
       const account = getAccountForRequest(accountId, req, res);
       if (!account) return;
       const ownerContext = getOwnerContext(req);
-      if (account.proxyId) {
-        const proxy = findProxyById(account.proxyId);
-        if (proxy && isOwnerMatch(proxy, ownerContext)) {
-          selectedProxy = proxy;
-        }
-      }
+      const proxy = requireAccountProxy(account, res, "загрузки категорий", ownerContext);
+      if (!proxy) return;
+      selectedProxy = proxy;
     }
     const data = await getCategories({ forceRefresh, proxy: selectedProxy });
     res.json(data);
@@ -4082,10 +4673,12 @@ app.get("/api/categories/children", async (req, res) => {
     if (accountId && !requestAccount) {
       return;
     }
-    const scopedProxies = filterByOwner(proxies, ownerContext);
-    const selectedProxy = requestAccount?.proxyId
-      ? scopedProxies.find((item) => isSameEntityId(item?.id, requestAccount.proxyId))
+    const selectedProxy = requestAccount
+      ? requireAccountProxy(requestAccount, res, "загрузки дочерних категорий", ownerContext)
       : null;
+    if (requestAccount && !selectedProxy) {
+      return;
+    }
     const cacheKey = buildCategoryChildrenCacheKey({ id, url });
     if (!forceRefresh && cacheKey) {
       const cachedEntry = getCachedCategoryChildrenEntry(cacheKey, { allowStale: allowStaleCache });
@@ -4133,24 +4726,12 @@ app.get("/api/categories/children", async (req, res) => {
       return;
     }
 
-    const account = requestAccount || getAccountById(accountId);
+    const account = requestAccount;
     if (!account) {
       if (DEBUG_CATEGORIES) {
         console.log("[categories/children] account not found, skip puppeteer fallback");
       }
       res.json({ children });
-      return;
-    }
-
-    if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
-      if (DEBUG_CATEGORIES) {
-        console.log("[categories/children] proxy missing, skip puppeteer fallback");
-      }
-      const finalChildren = dedupeChildren(children);
-      if (cacheKey) {
-        setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
-      }
-      res.json({ children: finalChildren });
       return;
     }
 
@@ -7009,6 +7590,8 @@ app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) =
       username: `klein_${Date.now().toString().slice(-6)}`,
       profileName: validation.profileName || "",
       profileEmail: validation.profileEmail || "",
+      profileUserId: validation.profileUserId || "",
+      profileUrl: validation.profileUrl || "",
       status: "active",
       added: new Date().toISOString().slice(0, 10),
       proxyId: selectedProxy.id,
@@ -7029,6 +7612,8 @@ app.post("/api/accounts/upload", upload.single("cookieFile"), async (req, res) =
         username: newAccount.username,
         profileName: newAccount.profileName,
         profileEmail: newAccount.profileEmail,
+        profileUserId: newAccount.profileUserId,
+        profileUrl: newAccount.profileUrl,
         status: newAccount.status,
         added: newAccount.added,
         proxyId: selectedProxy.id,
@@ -7066,6 +7651,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
   );
   let activePublishKey = null;
   let safetyAccountId = null;
+  let accountActionLock = null;
   const releasePublishLock = () => {
     if (!activePublishKey) return;
     const lock = activePublishByAccount.get(activePublishKey);
@@ -7247,7 +7833,8 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
     const safetyPrecheck = evaluateAccountSafetyPrecheck({
       accountId: account.id,
       actionKey: "ads-create",
-      proxyId: account?.proxyId
+      proxyId: account?.proxyId,
+      touchAction: false
     });
     if (!safetyPrecheck.ok) {
       appendServerLog(getPublishRequestLogPath(), {
@@ -7266,11 +7853,51 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       return;
     }
 
+    await ensureAccountSessionReady({
+      account,
+      proxy: selectedProxy,
+      accountId: account.id,
+      route: "ads-create"
+    });
+
+    accountActionLock = tryAcquireMessageActionLock({
+      accountId: account.id,
+      route: "ads-create",
+      debugId: requestId,
+      clientRequestId: requestId
+    });
+    if (!accountActionLock?.acquired) {
+      appendServerLog(getPublishRequestLogPath(), {
+        event: "action-lock-busy",
+        requestId,
+        accountId: account.id,
+        lockReason: accountActionLock?.reason || "",
+        activeRoute: accountActionLock?.existing?.route || "",
+        activeDebugId: accountActionLock?.existing?.debugId || "",
+        activeSinceMs: accountActionLock?.existing?.startedAt ? Date.now() - accountActionLock.existing.startedAt : null
+      });
+      cleanupFiles();
+      res.status(409).json({
+        success: false,
+        error: "Для этого аккаунта уже выполняется действие. Дождитесь завершения текущей операции.",
+        code: "ACCOUNT_ACTION_IN_PROGRESS",
+        activeRoute: accountActionLock?.existing?.route || "",
+        activeDebugId: accountActionLock?.existing?.debugId || "",
+        activeRequestId: accountActionLock?.existing?.clientRequestId || "",
+        activeSinceMs: accountActionLock?.existing?.startedAt ? (Date.now() - Number(accountActionLock.existing.startedAt || 0)) : null,
+        debugId: forceDebug ? requestId : undefined
+      });
+      return;
+    }
+    registerAccountActionAttempt({ accountId: account.id, actionKey: "ads-create" });
+
     activePublishByAccount.set(activePublishKey, {
       requestId,
       startedAt: Date.now(),
       fingerprint
     });
+
+    await humanPause();
 
     const result = await publishAd({
       account,
@@ -7342,12 +7969,45 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       debugId: requestId,
       requestId
     });
+    if (error.code === "AUTH_REQUIRED") {
+      res.status(401).json(withCooldownHint({
+        success: false,
+        error: "Сессия истекла, пожалуйста, перелогиньтесь в Kleinanzeigen.",
+        debugId: forceDebug ? requestId : undefined
+      }, cooldown));
+      appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
+      return;
+    }
+    if (error.code === "SESSION_CHALLENGE" || error.code === "TOO_MANY_REQUESTS") {
+      res.status(429).json(withCooldownHint({
+        success: false,
+        error: error?.message || "Аккаунт временно ограничен anti-bot системой Kleinanzeigen.",
+        code: error?.code || "",
+        details: error?.details || "",
+        debugId: forceDebug ? requestId : undefined
+      }, cooldown));
+      appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
+      return;
+    }
+    if (error.code === "PROXY_TUNNEL_CONNECTION_FAILED") {
+      res.status(502).json(withCooldownHint({
+        success: false,
+        error: "Прокси аккаунта не может подключиться к Kleinanzeigen. Проверьте прокси аккаунта и попробуйте снова.",
+        code: error.code,
+        details: error?.details || "",
+        debugId: forceDebug ? requestId : undefined
+      }, cooldown));
+      appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
+      return;
+    }
     res.status(500).json(withCooldownHint({
       success: false,
       error: error.message,
       debugId: forceDebug ? requestId : undefined
     }, cooldown));
     appendServerLog(getPublishRequestLogPath(), { event: "exception", requestId, error: error?.message || String(error) });
+  } finally {
+    releaseMessageActionLock(accountActionLock);
   }
 });
 

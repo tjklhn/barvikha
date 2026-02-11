@@ -20,6 +20,13 @@ const sanitizeProfileName = (value) => {
   return normalized;
 };
 
+const SATISFACTION_BADGES = new Set(["MIX", "TOP", "OK", "NAJA"]);
+const normalizeSatisfactionBadge = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (SATISFACTION_BADGES.has(normalized)) return normalized;
+  return "MIX";
+};
+
 const normalizeEntityId = (value) => String(value ?? "").trim();
 const isSameEntityId = (left, right) => {
   const leftId = normalizeEntityId(left);
@@ -110,6 +117,31 @@ const fetchAccountAds = async ({ account, proxy, accountLabel }) => {
 
     const profileData = await page.evaluate(() => {
       const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+      const parseSatisfactionBadge = () => {
+        const extract = (text) => {
+          const normalized = normalize(text);
+          if (!normalized) return "";
+          const match = normalized.match(/\b(TOP|OK|NAJA|MIX)\b\s*Zufriedenheit\b/i);
+          return match?.[1] ? String(match[1]).toUpperCase() : "";
+        };
+
+        const selectors = [
+          "[data-testid='user-badge'] .ActivityIndicator--Name",
+          "[data-testid='user-badge']",
+          ".ActivityIndicator--Name"
+        ];
+
+        for (const selector of selectors) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            const badge = extract(node.textContent || "");
+            if (badge) return badge;
+          }
+        }
+
+        const fallbackText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+        return extract(fallbackText);
+      };
       const header = document.querySelector("[data-testid='ownprofile-header']") || document.querySelector(".ownprofile-header");
       const heading = header ? header.querySelector("h2") : Array.from(document.querySelectorAll("h2")).find((node) => {
         const srOnly = node.querySelector("span.sr-only");
@@ -121,13 +153,16 @@ const fetchAccountAds = async ({ account, proxy, accountLabel }) => {
       const postedText = postedAds ? normalize(postedAds.textContent) : "";
       const postedCountMatch = postedText.match(/(\d+)/);
       const postedCount = postedCountMatch ? Number(postedCountMatch[1]) : null;
-      return { name, postedCount };
+      const satisfactionBadge = parseSatisfactionBadge() || "MIX";
+      return { name, postedCount, satisfactionBadge };
     });
 
     const safeProfileName = sanitizeProfileName(profileData?.name || "");
-    if (safeProfileName) {
-      updateAccount(account.id, { profileName: safeProfileName });
-    }
+    const satisfactionBadge = normalizeSatisfactionBadge(profileData?.satisfactionBadge);
+    updateAccount(account.id, {
+      ...(safeProfileName ? { profileName: safeProfileName } : {}),
+      satisfactionBadge
+    });
 
     const ads = await page.evaluate(() => {
       const findMeineAnzeigenSection = () => {
