@@ -75,11 +75,16 @@ const CATEGORY_FIELDS_STALE_MAX_MS = Number(
 );
 const DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH = process.env.KL_CATEGORY_CHILDREN_LIVE_FETCH === "1";
 const DEFAULT_FIELDS_LIVE_FETCH = process.env.KL_FIELDS_LIVE_FETCH === "1";
+const DEBUG_FEATURES_ENABLED = process.env.KL_ENABLE_DEBUG === "1";
+const isDebugFlagEnabled = (name) => DEBUG_FEATURES_ENABLED && process.env[name] === "1";
 const categoryChildrenCache = { items: {} };
 let categoryChildrenCacheSaveTimer = null;
 const categoryFieldsCache = { items: {} };
 let categoryFieldsCacheSaveTimer = null;
-const DEBUG_FIELDS = process.env.KL_DEBUG_FIELDS === "1";
+const DEBUG_FIELDS = isDebugFlagEnabled("KL_DEBUG_FIELDS");
+const DEBUG_CATEGORIES = isDebugFlagEnabled("KL_DEBUG_CATEGORIES");
+const DEBUG_PUBLISH = isDebugFlagEnabled("KL_DEBUG_PUBLISH");
+const DEBUG_LOG_FILES = isDebugFlagEnabled("KL_DEBUG_LOG_FILES");
 let puppeteerStealthReady = false;
 const subscriptionTokens = { items: [] };
 const activePublishByAccount = new Map();
@@ -335,10 +340,10 @@ const ensureDebugDir = () => {
   return debugDir;
 };
 
-const getPublishRequestLogPath = () => path.join(ensureDebugDir(), "publish-requests.log");
-const getServerErrorLogPath = () => path.join(ensureDebugDir(), "server-errors.log");
-const getFieldsRequestLogPath = () => path.join(ensureDebugDir(), "fields-requests.log");
-const getMessageActionsLogPath = () => path.join(ensureDebugDir(), "message-actions.log");
+const getPublishRequestLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "publish-requests.log") : "");
+const getServerErrorLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "server-errors.log") : "");
+const getFieldsRequestLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "fields-requests.log") : "");
+const getMessageActionsLogPath = () => (DEBUG_LOG_FILES ? path.join(ensureDebugDir(), "message-actions.log") : "");
 
 const normalizeTokenValue = (value) => String(value || "").trim();
 const parseEnvTokenList = (value) => String(value || "")
@@ -476,6 +481,7 @@ const extractAccessToken = (req) => {
 };
 
 const appendServerLog = (pathTarget, payload) => {
+  if (!pathTarget) return;
   try {
     const entry = {
       ts: new Date().toISOString(),
@@ -488,12 +494,14 @@ const appendServerLog = (pathTarget, payload) => {
 };
 
 const appendFieldsRequestLog = (payload) => {
+  const pathTarget = getFieldsRequestLogPath();
+  if (!pathTarget) return;
   try {
     const entry = {
       ts: new Date().toISOString(),
       ...payload
     };
-    fs.appendFileSync(getFieldsRequestLogPath(), JSON.stringify(entry) + "\n", "utf8");
+    fs.appendFileSync(pathTarget, JSON.stringify(entry) + "\n", "utf8");
   } catch (error) {
     // ignore logging failures
   }
@@ -2074,7 +2082,7 @@ app.get("/api/ads/active", async (req, res) => {
       step: "fields-exception",
       error: error?.message || "unknown-error",
       extra: { stack: error?.stack || "" },
-      force: req?.query?.debug === "true" || req?.query?.debug === "1"
+      force: DEBUG_FEATURES_ENABLED && (req?.query?.debug === "true" || req?.query?.debug === "1")
     });
     res.status(500).json({ success: false, error: error.message });
   } finally {
@@ -3338,7 +3346,7 @@ app.get("/api/categories/children", async (req, res) => {
     const forceRefresh = req.query.refresh === "true";
     const allowStaleCache = req.query.allowStale !== "0";
     const allowLiveLookup = req.query.live === "1" || forceRefresh || DEFAULT_CATEGORY_CHILDREN_LIVE_FETCH;
-    const forceDebug = req.query.debug === "true" || req.query.debug === "1";
+    const forceDebug = DEBUG_FEATURES_ENABLED && (req.query.debug === "true" || req.query.debug === "1");
     const ownerContext = getOwnerContext(req);
     const requestAccount = accountId ? getAccountForRequest(accountId, req, res) : null;
     if (accountId && !requestAccount) {
@@ -3352,7 +3360,7 @@ app.get("/api/categories/children", async (req, res) => {
     if (!forceRefresh && cacheKey) {
       const cachedEntry = getCachedCategoryChildrenEntry(cacheKey, { allowStale: allowStaleCache });
       if (cachedEntry) {
-        if (process.env.KL_DEBUG_CATEGORIES === "1") {
+        if (DEBUG_CATEGORIES) {
           const sample = (cachedEntry.children || []).slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
           console.log(`[categories/children] cache hit key=${cacheKey} count=${cachedEntry.children?.length || 0} sample=${sample}`);
         }
@@ -3365,7 +3373,7 @@ app.get("/api/categories/children", async (req, res) => {
       }
     }
     let children = await getCategoryChildren({ id, url, proxy: selectedProxy });
-    if (process.env.KL_DEBUG_CATEGORIES === "1") {
+    if (DEBUG_CATEGORIES) {
       console.log(`[categories/children] request id=${id} url=${url} accountId=${accountId} initialChildren=${children.length}`);
     }
     const dedupeChildren = (items) => {
@@ -3384,7 +3392,7 @@ app.get("/api/categories/children", async (req, res) => {
       if (cacheKey) {
         setCachedCategoryChildren(cacheKey, finalChildren, { empty: finalChildren.length === 0 });
       }
-      if (process.env.KL_DEBUG_CATEGORIES === "1") {
+      if (DEBUG_CATEGORIES) {
         const sample = finalChildren.slice(0, 10).map((item) => `${item.id}:${item.name}`).join(", ");
         console.log(`[categories/children] response id=${id} url=${url} count=${finalChildren.length} sample=${sample}`);
       }
@@ -3397,7 +3405,7 @@ app.get("/api/categories/children", async (req, res) => {
 
     const account = requestAccount || getAccountById(accountId);
     if (!account) {
-      if (process.env.KL_DEBUG_CATEGORIES === "1") {
+      if (DEBUG_CATEGORIES) {
         console.log("[categories/children] account not found, skip puppeteer fallback");
       }
       res.json({ children });
@@ -3405,7 +3413,7 @@ app.get("/api/categories/children", async (req, res) => {
     }
 
     if (!account.proxyId || !hasProxyWithId(scopedProxies, account.proxyId)) {
-      if (process.env.KL_DEBUG_CATEGORIES === "1") {
+      if (DEBUG_CATEGORIES) {
         console.log("[categories/children] proxy missing, skip puppeteer fallback");
       }
       const finalChildren = dedupeChildren(children);
@@ -3653,7 +3661,6 @@ app.get("/api/categories/children", async (req, res) => {
 
     let browser = null;
     const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const DEBUG_CATEGORIES = process.env.KL_DEBUG_CATEGORIES === "1";
     const dumpCategoryDebug = async (page, label) => {
       if (!DEBUG_CATEGORIES || !page) return;
       try {
@@ -4923,7 +4930,7 @@ app.get("/api/ads/fields", async (req, res) => {
     const forceRefresh = req.query.refresh === "true";
     const allowStaleCache = req.query.allowStale !== "0";
     const allowLiveFetch = req.query.live === "1" || forceRefresh || DEFAULT_FIELDS_LIVE_FETCH;
-    const forceDebug = req.query.debug === "true" || req.query.debug === "1";
+    const forceDebug = DEBUG_FEATURES_ENABLED && (req.query.debug === "true" || req.query.debug === "1");
     debugEnabled = DEBUG_FIELDS || forceDebug;
     requestStartedAt = Date.now();
     logFields = (payload) => {
@@ -5813,7 +5820,14 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
   };
 
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const forceDebug = true;
+  const forceDebug = DEBUG_FEATURES_ENABLED && (
+    req.query.debug === "true"
+    || req.query.debug === "1"
+    || req.body?.debug === true
+    || req.body?.debug === 1
+    || req.body?.debug === "true"
+    || req.body?.debug === "1"
+  );
   let activePublishKey = null;
   const releasePublishLock = () => {
     if (!activePublishKey) return;
@@ -5859,7 +5873,7 @@ app.post("/api/ads/create", adUploadMiddleware, async (req, res) => {
       categoryPath,
       extraFields
     } = req.body || {};
-    if (process.env.KL_DEBUG_PUBLISH === "1") {
+    if (DEBUG_PUBLISH) {
       console.log("[ads/create] payload", {
         accountId,
         titleLength: title ? String(title).length : 0,

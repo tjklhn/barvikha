@@ -35,15 +35,6 @@ const detectPhoneView = () => {
   return viewportWidth > 0 && viewportWidth <= PHONE_VIEW_MAX_WIDTH;
 };
 
-const getDebugFlag = (key) => {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(key) === "1";
-  } catch (error) {
-    return false;
-  }
-};
-
 function App() {
   const [accounts, setAccounts] = useState([]);
   const [proxies, setProxies] = useState([]);
@@ -84,8 +75,8 @@ function App() {
     categoryKey: "",
     categoryPath: []
   });
-  const debugFieldsEnabled = getDebugFlag("klDebugFields");
-  const debugPublishEnabled = getDebugFlag("klDebugPublish");
+  const debugFieldsEnabled = false;
+  const debugPublishEnabled = false;
 
   const formatAccountLabel = (account) => {
     const rawName = String(account.profileName || "").trim();

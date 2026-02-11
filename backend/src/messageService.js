@@ -26,7 +26,7 @@ puppeteer.use(StealthPlugin());
 const MESSAGE_LIST_URL = "https://www.kleinanzeigen.de/m-nachrichten.html";
 const MESSAGEBOX_API_HOST = "https://gateway.kleinanzeigen.de";
 const MESSAGEBOX_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const DEBUG_MESSAGES = process.env.KL_DEBUG_MESSAGES === "1";
+const DEBUG_MESSAGES = process.env.KL_ENABLE_DEBUG === "1" && process.env.KL_DEBUG_MESSAGES === "1";
 const FORCE_WEB_MESSAGES = process.env.KL_FORCE_WEB_MESSAGES === "1";
 const FAST_SNAPSHOT_TIMEOUT_MS = Number(process.env.KL_FAST_SNAPSHOT_TIMEOUT_MS || 4500);
 const FAST_SNAPSHOT_ATTEMPTS = Math.max(1, Number(process.env.KL_FAST_SNAPSHOT_ATTEMPTS || 1));
@@ -37,7 +37,8 @@ const MESSAGE_ACTION_DEADLINE_MS = Math.max(25000, Number(process.env.KL_MESSAGE
 const MESSAGE_CONSENT_TIMEOUT_MS = Math.max(1200, Number(process.env.KL_MESSAGE_CONSENT_TIMEOUT_MS || 2800));
 const MESSAGE_GDPR_TIMEOUT_MS = Math.max(1800, Number(process.env.KL_MESSAGE_GDPR_TIMEOUT_MS || 5000));
 const PROXY_TUNNEL_ERROR_CODE = "PROXY_TUNNEL_CONNECTION_FAILED";
-const MESSAGE_ACTION_ARTIFACTS_ENABLED = process.env.KL_MESSAGE_ACTION_ARTIFACTS !== "0";
+const MESSAGE_ACTION_ARTIFACTS_ENABLED = process.env.KL_ENABLE_DEBUG === "1"
+  && process.env.KL_MESSAGE_ACTION_ARTIFACTS === "1";
 const MESSAGE_ACTION_ARTIFACTS_DIR = path.join(__dirname, "..", "data", "debug", "message-action-artifacts");
 const MESSAGE_ACTION_PLACEHOLDER_PNG = Buffer.from(
   // Valid 1x1 PNG placeholder (the previous base64 had a bad CRC and could not be opened by PNG decoders).
