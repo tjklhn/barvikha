@@ -1388,41 +1388,81 @@ function App() {
           {proxies.slice(0, 3).map(proxy => (
             <div key={proxy.id} style={{
               display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "16px 20px",
+              alignItems: isPhoneView ? "stretch" : "center",
+              justifyContent: isPhoneView ? "flex-start" : "space-between",
+              flexDirection: isPhoneView ? "column" : "row",
+              padding: isPhoneView ? "14px 16px" : "16px 20px",
               background: "linear-gradient(145deg, rgba(30, 41, 59, 0.5) 0%, rgba(15, 23, 42, 0.8) 100%)",
               borderRadius: "16px",
               marginBottom: "10px",
-              gap: "16px",
+              gap: isPhoneView ? "10px" : "16px",
               border: "1px solid rgba(148,163,184,0.15)",
               color: textPrimary,
-              transition: "all 0.3s ease"
+              transition: "all 0.3s ease",
+              minWidth: 0,
+              maxWidth: "100%",
+              overflow: "hidden",
+              boxSizing: "border-box"
             }}
             onMouseEnter={(e) => {
+              if (isPhoneView) return;
               e.currentTarget.style.transform = "translateX(4px)";
               e.currentTarget.style.borderColor = "rgba(148,163,184,0.3)";
               e.currentTarget.style.boxShadow = "0 10px 25px rgba(0,0,0,0.2)";
             }}
             onMouseLeave={(e) => {
+              if (isPhoneView) return;
               e.currentTarget.style.transform = "translateX(0)";
               e.currentTarget.style.borderColor = "rgba(148,163,184,0.15)";
               e.currentTarget.style.boxShadow = "none";
             }}
             >
-              <div>
-                <strong style={{ fontSize: "15px" }}>{proxy.name}</strong>
-                <span style={{ marginLeft: "12px", color: textMuted, fontSize: "13px" }}>
+              <div style={{
+                display: "flex",
+                flexDirection: isPhoneView ? "column" : "row",
+                alignItems: isPhoneView ? "flex-start" : "center",
+                gap: isPhoneView ? "4px" : "0",
+                minWidth: 0,
+                maxWidth: "100%"
+              }}>
+                <strong style={{
+                  fontSize: "15px",
+                  maxWidth: "100%",
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap"
+                }}>{proxy.name}</strong>
+                <span style={{
+                  marginLeft: isPhoneView ? "0" : "12px",
+                  color: textMuted,
+                  fontSize: "13px",
+                  maxWidth: "100%",
+                  minWidth: 0,
+                  overflowWrap: "anywhere"
+                }}>
                   {proxy.host}:{proxy.port}
                 </span>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                <span style={getBadgeStyle(proxy.status)}>
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                flexWrap: isPhoneView ? "wrap" : "nowrap",
+                justifyContent: isPhoneView ? "flex-start" : "flex-end",
+                minWidth: 0,
+                maxWidth: "100%"
+              }}>
+                <span style={{
+                  ...getBadgeStyle(proxy.status),
+                  maxWidth: "100%",
+                  boxSizing: "border-box"
+                }}>
                   {proxy.status === "active" ? "✓ Работает" :
                      proxy.status === "failed" ? "✗ Не работает" : "⏳ Проверка"}
                 </span>
                 {proxy.checkResult?.location?.country && (
-                  <span style={{ fontSize: "12px", color: textMuted }}>
+                  <span style={{ fontSize: "12px", color: textMuted, maxWidth: "100%", overflowWrap: "anywhere" }}>
                     {proxy.checkResult.location.country}
                   </span>
                 )}
