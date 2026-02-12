@@ -1444,29 +1444,31 @@ function App() {
                   {proxy.host}:{proxy.port}
                 </span>
               </div>
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                flexWrap: isPhoneView ? "wrap" : "nowrap",
-                justifyContent: isPhoneView ? "flex-start" : "flex-end",
-                minWidth: 0,
-                maxWidth: "100%"
-              }}>
-                <span style={{
-                  ...getBadgeStyle(proxy.status),
-                  maxWidth: "100%",
-                  boxSizing: "border-box"
+              {!isPhoneView && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "12px",
+                  flexWrap: "nowrap",
+                  justifyContent: "flex-end",
+                  minWidth: 0,
+                  maxWidth: "100%"
                 }}>
-                  {proxy.status === "active" ? "✓ Работает" :
-                     proxy.status === "failed" ? "✗ Не работает" : "⏳ Проверка"}
-                </span>
-                {proxy.checkResult?.location?.country && (
-                  <span style={{ fontSize: "12px", color: textMuted, maxWidth: "100%", overflowWrap: "anywhere" }}>
-                    {proxy.checkResult.location.country}
+                  <span style={{
+                    ...getBadgeStyle(proxy.status),
+                    maxWidth: "100%",
+                    boxSizing: "border-box"
+                  }}>
+                    {proxy.status === "active" ? "✓ Работает" :
+                       proxy.status === "failed" ? "✗ Не работает" : "⏳ Проверка"}
                   </span>
-                )}
-              </div>
+                  {proxy.checkResult?.location?.country && (
+                    <span style={{ fontSize: "12px", color: textMuted, maxWidth: "100%", overflowWrap: "anywhere" }}>
+                      {proxy.checkResult.location.country}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {proxies.length > 3 && (
