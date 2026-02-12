@@ -28,6 +28,7 @@ import {
 const PHONE_VIEW_MAX_WIDTH = 900;
 const APP_VERSION_RAW = String(process.env.REACT_APP_VERSION || "").trim();
 const APP_VERSION = APP_VERSION_RAW ? `v${APP_VERSION_RAW}` : "vdev";
+const GLOBAL_MESSAGES_AUTO_REFRESH_MS = 60 * 1000;
 
 const detectPhoneView = () => {
   if (typeof window === "undefined") return false;
@@ -55,6 +56,7 @@ function App() {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isPhoneView, setIsPhoneView] = useState(() => detectPhoneView());
   const profilePanelRef = useRef(null);
+  const messageStatsPollInFlight = useRef(false);
   const [checkingAllProxies, setCheckingAllProxies] = useState(false);
   const [adImages, setAdImages] = useState([]);
   const [publishingAd, setPublishingAd] = useState(false);
@@ -262,6 +264,16 @@ function App() {
   }, [activeTab]);
 
   useEffect(() => {
+    if (activeTab === "messages") return undefined;
+    const run = () => {
+      refreshMessageStats().catch(() => {});
+    };
+    run();
+    const intervalId = window.setInterval(run, GLOBAL_MESSAGES_AUTO_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [activeTab]);
+
+  useEffect(() => {
     const handleResize = () => {
       setIsPhoneView(detectPhoneView());
     };
@@ -451,6 +463,27 @@ function App() {
     };
   };
 
+  const refreshMessageStats = async () => {
+    if (messageStatsPollInFlight.current) return;
+    messageStatsPollInFlight.current = true;
+    try {
+      const messageParams = new URLSearchParams();
+      messageParams.set("limit", "30");
+      const messagesRes = await apiFetchJson(`/api/messages?${messageParams.toString()}`, { timeoutMs: 120000 });
+      if (!Array.isArray(messagesRes)) return;
+      const realMessageStats = buildMessagesStats(messagesRes);
+      setStats((prev) => ({
+        ...(prev || {}),
+        messages: realMessageStats
+      }));
+    } catch (error) {
+      handleAuthError(error);
+      console.error("Ошибка автообновления диалогов:", error);
+    } finally {
+      messageStatsPollInFlight.current = false;
+    }
+  };
+
   const validateToken = async (tokenValue) => {
     try {
       const response = await apiFetchJson("/api/auth/validate", {
@@ -509,18 +542,7 @@ function App() {
       });
 
       // Load message stats in the background so a slow proxy/cookies check doesn't block the whole UI.
-      const messageParams = new URLSearchParams();
-      messageParams.set("limit", "30");
-      apiFetchJson(`/api/messages?${messageParams.toString()}`, { timeoutMs: 120000 })
-        .then((messagesRes) => {
-          if (!Array.isArray(messagesRes)) return;
-          const realMessageStats = buildMessagesStats(messagesRes);
-          setStats((prev) => ({
-            ...(prev || statsRes || {}),
-            messages: realMessageStats
-          }));
-        })
-        .catch(() => {});
+      refreshMessageStats().catch(() => {});
     } catch (error) {
       handleAuthError(error);
       console.error("Ошибка загрузки данных:", error);

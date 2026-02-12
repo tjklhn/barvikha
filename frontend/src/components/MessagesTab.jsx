@@ -6,21 +6,6 @@ const SEEN_STORAGE_KEY = "kl_messages_seen_v1";
 const THREAD_CACHE_TTL_MS = 2 * 60 * 1000;
 const MESSAGES_AUTO_REFRESH_MS = 60 * 1000;
 
-const canAutoRefreshMessages = async () => {
-  try {
-    const stats = await apiFetchJson("/api/stats", {
-      timeoutMs: 20000,
-      retry: false
-    });
-    const activeProxyCount = Number(stats?.proxies?.active || 0);
-    if (!Number.isFinite(activeProxyCount)) return true;
-    return activeProxyCount > 0;
-  } catch (error) {
-    console.error("Не удалось проверить состояние прокси для автообновления сообщений:", error);
-    return false;
-  }
-};
-
 const detectMobileView = () => {
   if (typeof window === "undefined") return false;
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
@@ -308,15 +293,9 @@ const MessagesTab = () => {
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      // Avoid background polling when the tab is hidden (mobile data / lower load).
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       if (messagesRefreshInFlight.current) return;
       Promise.resolve()
-        .then(async () => {
-          const proxyReady = await canAutoRefreshMessages();
-          if (!proxyReady) return;
-          await loadMessages({ silent: true });
-        })
+        .then(() => loadMessages({ silent: true }))
         .catch((error) => {
           console.error("Ошибка автообновления сообщений:", error);
         });
