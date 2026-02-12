@@ -2100,13 +2100,24 @@ app.use(express.json());
 loadSubscriptionTokens();
 
 const requireAccessToken = (req, res, next) => {
-  if (process.env.KL_REQUIRE_TOKEN === "0") return next();
   if (req.method === "OPTIONS") return next();
   if (!req.path.startsWith("/api")) return next();
   if (req.path.startsWith("/api/auth/")) return next();
 
   const token = extractAccessToken(req);
   const status = getSubscriptionTokenStatus(token);
+  const requireToken = process.env.KL_REQUIRE_TOKEN !== "0";
+
+  if (!requireToken) {
+    // Even in open mode we still attach owner context when token is valid.
+    // This keeps owner-scoped features (e.g. Telegram routing) working.
+    if (status.valid) {
+      req.subscription = status;
+      req.subscription.token = token;
+    }
+    return next();
+  }
+
   if (!status.valid) {
     res.status(401).json({ success: false, error: status.reason });
     return;
@@ -3398,6 +3409,12 @@ app.get("/api/messages", async (req, res) => {
     res.json(summaries);
     queueTelegramConversationNotifications(summaries, {
       ownerId: ownerContext.ownerId || ""
+    }).then((notifyResult) => {
+      if (notifyResult?.reason) {
+        console.log(
+          `[telegramNotifier] skipped notifications: reason=${notifyResult.reason} ownerId=${ownerContext.ownerId || "none"}`
+        );
+      }
     }).catch((notifyError) => {
       console.log(`[telegramNotifier] Queue failed: ${notifyError?.message || notifyError}`);
     });
