@@ -51,7 +51,7 @@ const {
   declineConversationOffer,
   sendConversationMedia
 } = require("./messageService");
-const { queueTelegramConversationNotifications } = require("./telegramNotifier");
+const { queueTelegramConversationNotifications, setTelegramTokenResolver } = require("./telegramNotifier");
 const { translateText } = require("./translateService");
 
 const app = express();
@@ -1118,6 +1118,20 @@ const getSubscriptionTokenStatus = (token) => {
     isAdmin: isAdminToken(entry)
   };
 };
+
+setTelegramTokenResolver((token) => {
+  const status = getSubscriptionTokenStatus(token);
+  if (!status.valid) {
+    return {
+      ownerId: "",
+      reason: status.reason || "invalid token"
+    };
+  }
+  return {
+    ownerId: status.ownerId || "",
+    label: status.label || ""
+  };
+});
 
 const extractAccessToken = (req) => {
   const header = req.headers?.authorization || "";
@@ -3330,6 +3344,7 @@ app.post("/api/ads/:adId/delete", async (req, res) => {
 
 app.get("/api/messages", async (req, res) => {
   try {
+    const ownerContext = getOwnerContext(req);
     const accountId = req.query.accountId ? Number(req.query.accountId) : null;
     const defaultLimitValue = Number(process.env.KL_MESSAGES_DEFAULT_LIMIT || 30);
     const defaultLimit = Number.isFinite(defaultLimitValue) && defaultLimitValue > 0
@@ -3342,7 +3357,7 @@ app.get("/api/messages", async (req, res) => {
     const maxConversations = wantsFull
       ? undefined
       : (Number.isFinite(limitFromQuery) && limitFromQuery > 0 ? Math.floor(limitFromQuery) : defaultLimit);
-    let accounts = accountId ? [getAccountForRequest(accountId, req, res)].filter(Boolean) : filterByOwner(listAccounts(), getOwnerContext(req));
+    let accounts = accountId ? [getAccountForRequest(accountId, req, res)].filter(Boolean) : filterByOwner(listAccounts(), ownerContext);
 
     if (!accounts.length) {
       res.json([]);
@@ -3350,10 +3365,9 @@ app.get("/api/messages", async (req, res) => {
     }
 
     if (accountId) {
-      const proxy = requireAccountProxy(accounts[0], res, "загрузки сообщений", getOwnerContext(req));
+      const proxy = requireAccountProxy(accounts[0], res, "загрузки сообщений", ownerContext);
       if (!proxy) return;
     } else {
-      const ownerContext = getOwnerContext(req);
       const scopedProxies = filterByOwner(proxies, ownerContext);
       accounts = accounts.filter((account) => {
         if (!account.proxyId) return false;
@@ -3367,7 +3381,7 @@ app.get("/api/messages", async (req, res) => {
 
     const conversations = await fetchMessages({
       accounts,
-      proxies: filterByOwner(proxies, getOwnerContext(req)),
+      proxies: filterByOwner(proxies, ownerContext),
       options: {
         maxConversations,
         // Heavy preview enrichment (Puppeteer) makes the endpoint slow and flaky behind proxies.
@@ -3377,7 +3391,9 @@ app.get("/api/messages", async (req, res) => {
     });
     const summaries = summarizeConversations(conversations);
     res.json(summaries);
-    queueTelegramConversationNotifications(summaries).catch((notifyError) => {
+    queueTelegramConversationNotifications(summaries, {
+      ownerId: ownerContext.ownerId || ""
+    }).catch((notifyError) => {
       console.log(`[telegramNotifier] Queue failed: ${notifyError?.message || notifyError}`);
     });
   } catch (error) {
