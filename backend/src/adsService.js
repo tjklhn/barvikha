@@ -26,6 +26,19 @@ const normalizeSatisfactionBadge = (value) => {
   if (SATISFACTION_BADGES.has(normalized)) return normalized;
   return "MIX";
 };
+const hasCachedSatisfactionBadge = (value) => {
+  const normalized = String(value || "").trim().toUpperCase();
+  return SATISFACTION_BADGES.has(normalized);
+};
+const hasCachedProfileEmail = (value) => {
+  const normalized = String(value || "").trim();
+  return Boolean(normalized && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized));
+};
+const shouldBootstrapProfileSnapshot = (account) => {
+  const hasEmail = hasCachedProfileEmail(account?.profileEmail);
+  const hasBadge = hasCachedSatisfactionBadge(account?.satisfactionBadge);
+  return !(hasEmail && hasBadge);
+};
 
 const normalizeEntityId = (value) => String(value ?? "").trim();
 const isSameEntityId = (left, right) => {
@@ -115,54 +128,108 @@ const fetchAccountAds = async ({ account, proxy, accountLabel }) => {
     await humanPause(180, 360);
     await page.waitForSelector("[data-testid='ownprofile-header'] h2, h2.text-title2", { timeout: 15000 }).catch(() => {});
 
-    const profileData = await page.evaluate(() => {
-      const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
-      const parseSatisfactionBadge = () => {
-        const extract = (text) => {
+    if (shouldBootstrapProfileSnapshot(account)) {
+      const profileData = await page.evaluate(() => {
+        const normalize = (text) => (text || "").replace(/\s+/g, " ").trim();
+        const extractEmail = (text) => {
           const normalized = normalize(text);
           if (!normalized) return "";
-          const match = normalized.match(/\b(TOP|OK|NAJA|MIX)\b\s*Zufriedenheit\b/i);
-          return match?.[1] ? String(match[1]).toUpperCase() : "";
+          const cleaned = normalized.replace(/angemeldet als\s*:?\s*/i, "").trim();
+          const directMatch = cleaned.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+          if (directMatch?.[0]) return directMatch[0].trim();
+          return "";
+        };
+        const parseSatisfactionBadge = () => {
+          const extract = (text) => {
+            const normalized = normalize(text);
+            if (!normalized) return "";
+            const match = normalized.match(/\b(TOP|OK|NAJA|MIX)\b\s*Zufriedenheit\b/i);
+            return match?.[1] ? String(match[1]).toUpperCase() : "";
+          };
+
+          const selectors = [
+            "[data-testid='user-badge'] .ActivityIndicator--Name",
+            "[data-testid='user-badge']",
+            ".ActivityIndicator--Name"
+          ];
+
+          for (const selector of selectors) {
+            const nodes = Array.from(document.querySelectorAll(selector));
+            for (const node of nodes) {
+              const badge = extract(node.textContent || "");
+              if (badge) return badge;
+            }
+          }
+
+          const fallbackText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+          return extract(fallbackText);
+        };
+        const parseProfileEmail = () => {
+          const byId = document.querySelector("#user-email");
+          const emailFromId = extractEmail(byId?.textContent || "");
+          if (emailFromId) return emailFromId;
+
+          const selectors = [
+            "[data-testid='header-user-email']",
+            "[data-testid='user-email']",
+            "header [href^='mailto:']",
+            "a[href^='mailto:']",
+            ".user-email",
+            "[class*='user-email']"
+          ];
+          for (const selector of selectors) {
+            const nodes = Array.from(document.querySelectorAll(selector));
+            for (const node of nodes) {
+              const href = String(node.getAttribute("href") || "");
+              if (href.toLowerCase().startsWith("mailto:")) {
+                const fromHref = extractEmail(href.slice(7));
+                if (fromHref) return fromHref;
+              }
+              const fromText = extractEmail(node.textContent || "");
+              if (fromText) return fromText;
+            }
+          }
+
+          const bodyText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+          const nearLabel = bodyText.match(/angemeldet als\s*:?\s*([^\s,;<>]+@[^\s,;<>]+)/i);
+          if (nearLabel?.[1]) {
+            const fromLabel = extractEmail(nearLabel[1]);
+            if (fromLabel) return fromLabel;
+          }
+          return "";
         };
 
-        const selectors = [
-          "[data-testid='user-badge'] .ActivityIndicator--Name",
-          "[data-testid='user-badge']",
-          ".ActivityIndicator--Name"
-        ];
-
-        for (const selector of selectors) {
-          const nodes = Array.from(document.querySelectorAll(selector));
-          for (const node of nodes) {
-            const badge = extract(node.textContent || "");
-            if (badge) return badge;
-          }
-        }
-
-        const fallbackText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
-        return extract(fallbackText);
-      };
-      const header = document.querySelector("[data-testid='ownprofile-header']") || document.querySelector(".ownprofile-header");
-      const heading = header ? header.querySelector("h2") : Array.from(document.querySelectorAll("h2")).find((node) => {
-        const srOnly = node.querySelector("span.sr-only");
-        return srOnly && /profil von/i.test(srOnly.textContent || "");
+        const header = document.querySelector("[data-testid='ownprofile-header']") || document.querySelector(".ownprofile-header");
+        const heading = header ? header.querySelector("h2") : Array.from(document.querySelectorAll("h2")).find((node) => {
+          const srOnly = node.querySelector("span.sr-only");
+          return srOnly && /profil von/i.test(srOnly.textContent || "");
+        });
+        const rawName = heading ? normalize(heading.textContent) : "";
+        const name = rawName.replace(/profil von/i, "").trim();
+        const postedAds = document.querySelector("[data-testid='posted-ads']");
+        const postedText = postedAds ? normalize(postedAds.textContent) : "";
+        const postedCountMatch = postedText.match(/(\d+)/);
+        const postedCount = postedCountMatch ? Number(postedCountMatch[1]) : null;
+        const satisfactionBadge = parseSatisfactionBadge() || "MIX";
+        const profileEmail = parseProfileEmail();
+        return { name, postedCount, satisfactionBadge, profileEmail };
       });
-      const rawName = heading ? normalize(heading.textContent) : "";
-      const name = rawName.replace(/profil von/i, "").trim();
-      const postedAds = document.querySelector("[data-testid='posted-ads']");
-      const postedText = postedAds ? normalize(postedAds.textContent) : "";
-      const postedCountMatch = postedText.match(/(\d+)/);
-      const postedCount = postedCountMatch ? Number(postedCountMatch[1]) : null;
-      const satisfactionBadge = parseSatisfactionBadge() || "MIX";
-      return { name, postedCount, satisfactionBadge };
-    });
 
-    const safeProfileName = sanitizeProfileName(profileData?.name || "");
-    const satisfactionBadge = normalizeSatisfactionBadge(profileData?.satisfactionBadge);
-    updateAccount(account.id, {
-      ...(safeProfileName ? { profileName: safeProfileName } : {}),
-      satisfactionBadge
-    });
+      const safeProfileName = sanitizeProfileName(profileData?.name || "");
+      const safeProfileEmail = String(profileData?.profileEmail || "").trim();
+      const satisfactionBadge = normalizeSatisfactionBadge(profileData?.satisfactionBadge);
+      const nextSnapshot = {};
+      if (safeProfileName) nextSnapshot.profileName = safeProfileName;
+      if (safeProfileEmail) nextSnapshot.profileEmail = safeProfileEmail;
+      if (satisfactionBadge) nextSnapshot.satisfactionBadge = satisfactionBadge;
+      if (Object.keys(nextSnapshot).length) {
+        updateAccount(account.id, {
+          ...nextSnapshot,
+          profileSnapshotAt: new Date().toISOString()
+        });
+        Object.assign(account, nextSnapshot);
+      }
+    }
 
     const ads = await page.evaluate(() => {
       const findMeineAnzeigenSection = () => {
