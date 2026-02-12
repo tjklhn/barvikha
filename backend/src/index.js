@@ -51,7 +51,11 @@ const {
   declineConversationOffer,
   sendConversationMedia
 } = require("./messageService");
-const { queueTelegramConversationNotifications, setTelegramTokenResolver } = require("./telegramNotifier");
+const {
+  queueTelegramConversationNotifications,
+  setTelegramTokenResolver,
+  startTelegramCommandPolling
+} = require("./telegramNotifier");
 const { translateText } = require("./translateService");
 
 const app = express();
@@ -1132,6 +1136,7 @@ setTelegramTokenResolver((token) => {
     label: status.label || ""
   };
 });
+startTelegramCommandPolling();
 
 const extractAccessToken = (req) => {
   const header = req.headers?.authorization || "";

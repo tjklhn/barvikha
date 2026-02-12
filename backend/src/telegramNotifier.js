@@ -27,6 +27,10 @@ const TELEGRAM_UPDATES_LIMIT = Math.max(1, Math.min(100, Number(process.env.KL_T
 const TELEGRAM_MAX_OWNERS = Math.max(100, Number(process.env.KL_TELEGRAM_MAX_OWNERS || 5000));
 const TELEGRAM_AWAIT_TOKEN_TTL_MS = Math.max(60000, Number(process.env.KL_TELEGRAM_AWAIT_TOKEN_TTL_MS || 1800000));
 const TELEGRAM_TOKEN_BUTTON_TEXT = "Ввести токен";
+const TELEGRAM_POLL_INTERVAL_MS = Math.max(
+  5000,
+  Number(process.env.KL_TELEGRAM_POLL_INTERVAL_MS || TELEGRAM_SYNC_INTERVAL_MS)
+);
 
 const state = {
   loaded: false,
@@ -44,6 +48,7 @@ let bindingResolver = null;
 let syncInFlight = null;
 let lastSyncAt = 0;
 const awaitingTokenByChat = new Map();
+let commandPollTimer = null;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -651,8 +656,25 @@ const queueTelegramConversationNotifications = (conversations = [], options = {}
   return sendQueue;
 };
 
+const startTelegramCommandPolling = () => {
+  if (!TELEGRAM_NOTIFIER_ENABLED) return false;
+  if (commandPollTimer) return true;
+  const run = () => {
+    syncTelegramBindings().catch((error) => {
+      console.log(`[telegramNotifier] background sync failed: ${error?.message || error}`);
+    });
+  };
+  run();
+  commandPollTimer = setInterval(run, TELEGRAM_POLL_INTERVAL_MS);
+  if (typeof commandPollTimer?.unref === "function") {
+    commandPollTimer.unref();
+  }
+  return true;
+};
+
 module.exports = {
   queueTelegramConversationNotifications,
   isTelegramNotifierEnabled: () => TELEGRAM_NOTIFIER_ENABLED,
-  setTelegramTokenResolver
+  setTelegramTokenResolver,
+  startTelegramCommandPolling
 };
