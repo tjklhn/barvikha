@@ -53,6 +53,7 @@ const {
 } = require("./messageService");
 const {
   queueTelegramConversationNotifications,
+  isTelegramNotifierEnabled,
   setTelegramTokenResolver,
   startTelegramCommandPolling
 } = require("./telegramNotifier");
@@ -154,6 +155,17 @@ const ACCOUNT_SESSION_INVALID_TTL_MS = Math.max(
   Number(process.env.KL_ACCOUNT_SESSION_INVALID_TTL_MS || 5 * 60 * 1000)
 );
 const accountSessionPreflightByAccount = new Map();
+const BACKGROUND_MESSAGES_SYNC_ENABLED = process.env.KL_BACKGROUND_MESSAGES_SYNC !== "0";
+const BACKGROUND_MESSAGES_SYNC_INTERVAL_MS = Math.max(
+  30 * 1000,
+  Number(process.env.KL_BACKGROUND_MESSAGES_SYNC_INTERVAL_MS || 60 * 1000)
+);
+const BACKGROUND_MESSAGES_SYNC_LIMIT = Math.max(
+  1,
+  Number(process.env.KL_BACKGROUND_MESSAGES_SYNC_LIMIT || process.env.KL_MESSAGES_DEFAULT_LIMIT || 30)
+);
+let backgroundMessagesSyncTimer = null;
+let backgroundMessagesSyncInFlight = false;
 
 const resolveMessageRouteDeadlineMs = () => {
   const configured = Number(process.env.KL_MESSAGE_ROUTE_DEADLINE_MS || MESSAGE_ROUTE_DEADLINE_DEFAULT_MS);
@@ -3438,6 +3450,81 @@ app.get("/api/messages", async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+const collectMessageSyncOwnerBuckets = () => {
+  const buckets = new Map();
+  const accounts = listAccounts();
+  for (const account of accounts) {
+    if (!account || !account.cookie) continue;
+    const ownerId = String(account.ownerId || "").trim();
+    if (!buckets.has(ownerId)) {
+      buckets.set(ownerId, []);
+    }
+    buckets.get(ownerId).push(account);
+  }
+  return buckets;
+};
+
+const runBackgroundMessagesSync = async () => {
+  if (backgroundMessagesSyncInFlight) return;
+  backgroundMessagesSyncInFlight = true;
+
+  try {
+    if (!isTelegramNotifierEnabled()) return;
+
+    const ownerBuckets = collectMessageSyncOwnerBuckets();
+    for (const [ownerId, ownerAccounts] of ownerBuckets.entries()) {
+      const ownerContext = { ownerId, isAdmin: false };
+      const scopedProxies = filterByOwner(proxies, ownerContext);
+      const accountsForSync = ownerAccounts.filter((account) => {
+        if (!account?.proxyId) return false;
+        return hasProxyWithId(scopedProxies, account.proxyId);
+      });
+      if (!accountsForSync.length) continue;
+
+      try {
+        const conversations = await fetchMessages({
+          accounts: accountsForSync,
+          proxies: scopedProxies,
+          options: {
+            maxConversations: BACKGROUND_MESSAGES_SYNC_LIMIT,
+            enrichImages: false
+          }
+        });
+        const summaries = summarizeConversations(conversations);
+        if (!summaries.length) continue;
+        const notifyResult = await queueTelegramConversationNotifications(summaries, { ownerId });
+        if (notifyResult?.reason) {
+          console.log(
+            `[telegramNotifier] background skipped: reason=${notifyResult.reason} ownerId=${ownerId || "none"}`
+          );
+        }
+      } catch (error) {
+        console.log(
+          `[telegramNotifier] background sync failed for ownerId=${ownerId || "none"}: ${error?.message || error}`
+        );
+      }
+    }
+  } finally {
+    backgroundMessagesSyncInFlight = false;
+  }
+};
+
+const startBackgroundMessagesSync = () => {
+  if (!BACKGROUND_MESSAGES_SYNC_ENABLED) return false;
+  if (backgroundMessagesSyncTimer) return true;
+  const run = () => {
+    runBackgroundMessagesSync().catch((error) => {
+      console.log(`[telegramNotifier] background sync tick failed: ${error?.message || error}`);
+    });
+  };
+  run();
+  backgroundMessagesSyncTimer = setInterval(run, BACKGROUND_MESSAGES_SYNC_INTERVAL_MS);
+  if (typeof backgroundMessagesSyncTimer?.unref === "function") {
+    backgroundMessagesSyncTimer.unref();
+  }
+  return true;
+};
 
 app.get("/api/messages/image", async (req, res) => {
   try {
@@ -8198,6 +8285,8 @@ app.delete("/api/proxies/:id", (req, res) => {
   saveProxies();
   res.json({ success: true });
 });
+
+startBackgroundMessagesSync();
 
 // Запуск сервера
 const server = app.listen(PORT, () => {
