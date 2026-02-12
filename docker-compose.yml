@@ -15,6 +15,8 @@ services:
       KL_ALLOW_ALL_ORIGINS: "1"
       KL_DEBUG_MESSAGES: "1"
       KL_MESSAGE_ACTION_ARTIFACTS: "1"
+      KL_TELEGRAM_BOT_TOKEN: "${KL_TELEGRAM_BOT_TOKEN:-}"
+      KL_TELEGRAM_CHAT_ID: "${KL_TELEGRAM_CHAT_ID:-}"
     ports:
       - "5000:5000"
     volumes:

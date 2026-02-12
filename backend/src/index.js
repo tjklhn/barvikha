@@ -51,6 +51,7 @@ const {
   declineConversationOffer,
   sendConversationMedia
 } = require("./messageService");
+const { queueTelegramConversationNotifications } = require("./telegramNotifier");
 const { translateText } = require("./translateService");
 
 const app = express();
@@ -3376,6 +3377,9 @@ app.get("/api/messages", async (req, res) => {
     });
     const summaries = summarizeConversations(conversations);
     res.json(summaries);
+    queueTelegramConversationNotifications(summaries).catch((notifyError) => {
+      console.log(`[telegramNotifier] Queue failed: ${notifyError?.message || notifyError}`);
+    });
   } catch (error) {
     if (error.code === "AUTH_REQUIRED") {
       res.status(401).json({
