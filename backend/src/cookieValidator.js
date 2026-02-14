@@ -398,8 +398,8 @@ const validateCookies = async (rawCookieText, options = {}) => {
 
   // Primary validation: use the same token endpoint as the web app.
   // This avoids flaky Puppeteer-based checks and works reliably with token cookies.
+  const cookieHeader = buildCookieHeader(cookies);
   try {
-    const cookieHeader = buildCookieHeader(cookies);
     const tokenCheck = await validateCookiesViaAccessToken({
       cookieHeader,
       proxy: options.proxy,
@@ -432,7 +432,33 @@ const validateCookies = async (rawCookieText, options = {}) => {
       };
     }
   } catch (error) {
-    // Fall back to Puppeteer validation below when the token endpoint is unreachable.
+    // Fall through to homepage HTTP validation before trying Puppeteer.
+  }
+
+  // Secondary validation: try lightweight HTTP fetch of homepage with the same cookies+proxy.
+  // This path avoids Chromium launch issues on low-resource hosts.
+  try {
+    const profileFromHomepage = await fetchProfileFromHomepageViaHttp({
+      cookies,
+      proxy: options.proxy,
+      deviceProfile,
+      timeoutMs: 20000
+    });
+    const profileFromCookies = extractProfileFromCookies(cookies);
+    const profile = mergeProfileData(profileFromHomepage, profileFromCookies);
+    if (profile.profileEmail || profile.profileUserId || profile.profileUrl) {
+      return {
+        valid: true,
+        reason: null,
+        deviceProfile,
+        profileName: profile.profileName || "",
+        profileEmail: profile.profileEmail || "",
+        profileUserId: profile.profileUserId || "",
+        profileUrl: buildProfileUrlByUserId(profile.profileUserId) || profile.profileUrl || ""
+      };
+    }
+  } catch (error) {
+    // Fall back to Puppeteer validation below.
   }
 
   const runValidation = async (attempt = 0, useProxyChain = needsProxyChain) => {
@@ -444,7 +470,10 @@ const validateCookies = async (rawCookieText, options = {}) => {
       "--lang=de-DE",
       "--disable-dev-shm-usage",
       "--no-zygote",
-      "--disable-gpu"
+      "--disable-gpu",
+      "--disable-breakpad",
+      "--disable-crash-reporter",
+      "--disable-features=Crashpad"
     ];
 
     if (proxyServer) {
